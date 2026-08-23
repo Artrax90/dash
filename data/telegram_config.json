@@ -1,0 +1,21 @@
+{
+  "enabled": true,
+  "botToken": "",
+  "chatId": "",
+  "alertsEnabled": true,
+  "botUsername": "",
+  "status": "Не настроен",
+  "subscribersCount": 0,
+  "proxyEnabled": false,
+  "proxyType": "SOCKS5",
+  "proxyHost": "",
+  "proxyPort": "1080",
+  "proxyUser": "",
+  "proxyPass": "",
+  "eventsConfig": {
+    "criticalAlerts": true,
+    "morningWakeSummary": true,
+    "eveningShutdownSummary": true,
+    "hardwareChanges": true
+  }
+}

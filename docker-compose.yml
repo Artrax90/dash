@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  workstation-manager:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: workstation-manager
+    restart: unless-stopped
+    ports:
+      - "${PORT:-2301}:${PORT:-2301}"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=${PORT:-2301}
+      - WOL_BROADCAST_IP=255.255.255.255
+      - WOL_PORT=9
+    volumes:
+      # Persistent storage for SQLite database, SuperAdmin accounts, Telegram config, and tokens
+      - ./data:/app/data
+
+    # Optional: if you run on Linux and want direct host networking for physical Wake-on-LAN broadcast packets,
+    # uncomment the line below (and comment out 'ports'):
+    # network_mode: host

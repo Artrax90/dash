@@ -1,0 +1,864 @@
+import sys
+import os
+import re
+import time
+import json
+import socket
+import platform
+import subprocess
+import threading
+from datetime import datetime, timedelta
+import urllib.request
+import urllib.error
+
+def execute_power_command(action: str):
+    act = str(action).upper().strip()
+    print(f"[*] Executing power command: {act}")
+    is_win = platform.system() == "Windows"
+    
+    if act in ["REBOOT", "RESTART"]:
+        if is_win:
+            subprocess.run("shutdown /r /f /t 0", shell=True)
+        else:
+            subprocess.run("systemctl reboot || reboot || shutdown -r now", shell=True)
+    elif act in ["SHUTDOWN", "FORCE_SHUTDOWN", "POWEROFF"]:
+        if is_win:
+            subprocess.run("shutdown /s /f /t 0", shell=True)
+        else:
+            subprocess.run("systemctl poweroff || poweroff || shutdown -h now", shell=True)
+    elif act in ["SLEEP", "SUSPEND"]:
+        if is_win:
+            subprocess.run("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+        else:
+            subprocess.run("systemctl suspend", shell=True)
+    elif act in ["LOGOFF"]:
+        if is_win:
+            subprocess.run("shutdown /l /f", shell=True)
+        else:
+            user = get_current_user()
+            if user and user not in ["root", "User"]:
+                subprocess.run(f"pkill -KILL -u {user}", shell=True)
+
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_PATH = os.environ.get("WM_CONFIG_PATH", os.path.join(SCRIPT_DIR, "config.json"))
+
+def load_config():
+    if os.path.exists(CONFIG_PATH):
+        with open(CONFIG_PATH, "r", encoding="utf-8-sig") as f:
+            return json.load(f)
+    return {
+        "server_url": os.environ.get("WM_SERVER", "http://localhost:2301/api/v1"),
+        "enrollment_token": os.environ.get("WM_TOKEN", ""),
+        "device_id": "",
+        "agent_secret": "",
+        "heartbeat_interval_seconds": 30
+    }
+
+def save_config(cfg):
+    with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+AGENT_VERSION = "2.0.3"
+
+def http_post(url, data):
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(data).encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": f"WorkstationAgent/{AGENT_VERSION}"}
+    )
+    with urllib.request.urlopen(req, timeout=10) as resp:
+        return json.loads(resp.read().decode("utf-8"))
+
+def get_cpu_usage():
+    try:
+        import psutil
+        return int(psutil.cpu_percent(interval=0.5))
+    except Exception:
+        return 5
+
+def get_memory_info():
+    try:
+        import psutil
+        mem = psutil.virtual_memory()
+        return round(mem.total / (1024**3)), int(mem.percent)
+    except Exception:
+        return 16, 30
+
+def get_disk_info():
+    try:
+        import psutil
+        path = "C:\\" if platform.system() == "Windows" else "/"
+        return int(psutil.disk_usage(path).percent)
+    except Exception:
+        return 40
+
+def get_top_processes():
+    procs = []
+    # 1. Try psutil
+    try:
+        import psutil
+        for p in sorted(psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'memory_info', 'username', 'status']), key=lambda x: (x.info.get('cpu_percent') or 0, x.info.get('memory_percent') or 0), reverse=True)[:15]:
+            try:
+                info = p.info
+                name = info.get('name') or 'unknown'
+                pid = info.get('pid') or 0
+                cpu = info.get('cpu_percent') or 0.0
+                mem_info = info.get('memory_info')
+                ram_mb = round(mem_info.rss / (1024 * 1024)) if mem_info else int(info.get('memory_percent') or 0) * 10
+                user = info.get('username') or ('root' if platform.system() == 'Linux' else 'SYSTEM')
+                procs.append({
+                    "pid": pid,
+                    "name": name,
+                    "cpu": f"{cpu:.1f}",
+                    "ram": ram_mb,
+                    "diskIo": "0.1 MB/s",
+                    "user": user.split('\\')[-1] if user else 'SYSTEM',
+                    "status": "Running"
+                })
+            except Exception:
+                continue
+    except Exception:
+        pass
+    
+    # 2. Linux ps command fallback
+    if not procs and platform.system() == "Linux":
+        try:
+            out = subprocess.check_output("ps -eo pid,comm,%cpu,%mem,user --sort=-%cpu | head -n 16", shell=True, text=True)
+            lines = [l.strip() for l in out.splitlines() if l.strip()]
+            for line in lines[1:]:
+                parts = line.split(None, 4)
+                if len(parts) >= 5:
+                    pid_str, comm, cpu_s, mem_s, usr = parts[0], parts[1], parts[2], parts[3], parts[4]
+                    procs.append({
+                        "pid": int(pid_str),
+                        "name": comm,
+                        "cpu": cpu_s,
+                        "ram": round(float(mem_s) * 80),
+                        "diskIo": "0.1 MB/s",
+                        "user": usr,
+                        "status": "Running"
+                    })
+        except Exception:
+            pass
+
+    # 3. Windows PowerShell Get-Process fallback
+    if not procs and platform.system() == "Windows":
+        try:
+            ps_cmd = 'Get-Process | Sort-Object CPU -Descending | Select-Object -First 12 Id, ProcessName, CPU, WorkingSet64 | ConvertTo-Json'
+            raw = run_ps_json(ps_cmd)
+            for item in normalize_list(raw):
+                if item.get("ProcessName"):
+                    procs.append({
+                        "pid": item.get("Id", 0),
+                        "name": f"{item.get('ProcessName')}.exe",
+                        "cpu": f"{round(float(item.get('CPU') or 0) % 100, 1)}",
+                        "ram": round((item.get("WorkingSet64") or 0) / (1024*1024)),
+                        "diskIo": "0.2 MB/s",
+                        "user": get_current_user() or "SYSTEM",
+                        "status": "Running"
+                    })
+        except Exception:
+            pass
+
+    return procs
+
+def get_current_user():
+    # 1. Try psutil users
+    try:
+        import psutil
+        users = [u.name for u in psutil.users()]
+        if users:
+            return users[0]
+    except Exception:
+        pass
+
+    # 2. Try environment variables
+    user = os.environ.get("USERNAME") or os.environ.get("USER")
+    if user and user.lower() not in ["system", "local service", "network service"]:
+        return user
+
+    # 3. Try WMIC on Windows
+    if platform.system() == "Windows":
+        try:
+            out = subprocess.check_output("wmic computersystem get username", shell=True, text=True, timeout=2)
+            lines = [l.strip() for l in out.splitlines() if l.strip() and "UserName" not in l]
+            if lines and lines[0]:
+                return lines[0].split("\\")[-1]
+        except Exception:
+            pass
+
+    return user or "User"
+
+def get_uptime_info():
+    uptime_sec = 0
+    boot_time_iso = None
+    try:
+        if platform.system() == "Windows":
+            try:
+                import psutil
+                btime = psutil.boot_time()
+                uptime_sec = int(time.time() - btime)
+                boot_time_iso = datetime.utcfromtimestamp(btime).isoformat() + "Z"
+            except Exception:
+                import ctypes
+                kernel32 = ctypes.windll.kernel32
+                tick_ms = kernel32.GetTickCount64()
+                uptime_sec = int(tick_ms / 1000.0)
+                boot_time_iso = (datetime.utcnow() - timedelta(seconds=uptime_sec)).isoformat() + "Z"
+        else:
+            try:
+                with open("/proc/uptime", "r") as f:
+                    uptime_sec = int(float(f.readline().split()[0]))
+                boot_time_iso = (datetime.utcnow() - timedelta(seconds=uptime_sec)).isoformat() + "Z"
+            except Exception:
+                import psutil
+                btime = psutil.boot_time()
+                uptime_sec = int(time.time() - btime)
+                boot_time_iso = datetime.utcfromtimestamp(btime).isoformat() + "Z"
+    except Exception:
+        uptime_sec = 0
+
+    if uptime_sec > 0:
+        if not boot_time_iso:
+            boot_time_iso = (datetime.utcnow() - timedelta(seconds=uptime_sec)).isoformat() + "Z"
+        days = uptime_sec // 86400
+        hours = (uptime_sec % 86400) // 3600
+        mins = (uptime_sec % 3600) // 60
+        if days > 0:
+            uptime_str = f"{days}д {hours:02d}ч"
+        elif hours > 0:
+            uptime_str = f"{hours}ч {mins:02d}м"
+        else:
+            uptime_str = f"{mins}м" if mins > 0 else "Менее 1 мин"
+    else:
+        uptime_str = "Только что"
+
+    return uptime_str, uptime_sec, boot_time_iso
+
+def get_primary_mac_and_ip():
+    hostname = socket.gethostname()
+    ip = "127.0.0.1"
+    mac = "00:00:00:00:00:00"
+
+    # 1. Detect primary outgoing LAN IP
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        try:
+            ip = socket.gethostbyname(hostname)
+        except Exception:
+            pass
+
+    # 2. Detect corresponding physical MAC address on Windows
+    if platform.system() == "Windows":
+        try:
+            cmd = f'(Get-NetAdapter -InterfaceIndex (Get-NetIPAddress -IPAddress {ip}).InterfaceIndex).MacAddress'
+            proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, timeout=3)
+            out = proc.stdout.strip()
+            if out and len(out) >= 12:
+                mac = out.replace("-", ":").upper()
+        except Exception:
+            pass
+
+    # 3. Detect corresponding MAC address on Linux
+    if platform.system() == "Linux" and mac == "00:00:00:00:00:00":
+        try:
+            route_out = subprocess.check_output("ip route get 8.8.8.8", shell=True, text=True, timeout=2)
+            dev_match = re.search(r'dev\s+([^\s]+)', route_out)
+            if dev_match:
+                iface = dev_match.group(1)
+                with open(f"/sys/class/net/{iface}/address", "r") as f:
+                    mac = f.read().strip().upper()
+        except Exception:
+            pass
+
+    # 4. Fallback to uuid node
+    if mac == "00:00:00:00:00:00":
+        try:
+            import uuid
+            raw_mac = uuid.getnode()
+            mac = ":".join(("%012X" % raw_mac)[i:i+2] for i in range(0, 12, 2))
+        except Exception:
+            pass
+
+    return hostname, ip, mac
+
+def run_ps_json(cmd: str):
+    try:
+        proc = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd],
+            capture_output=True,
+            text=True,
+            timeout=8
+        )
+        out = proc.stdout.strip()
+        if out:
+            return json.loads(out)
+    except Exception:
+        pass
+    return None
+
+def normalize_list(data):
+    if data is None:
+        return []
+    if isinstance(data, list):
+        return data
+    return [data]
+
+def collect_hardware():
+    hostname, ip, mac = get_primary_mac_and_ip()
+    total_ram, _ = get_memory_info()
+    cores = os.cpu_count() or 4
+
+    # Default baseline spec in case of non-Windows or restricted env
+    spec = {
+        "motherboard": {
+            "manufacturer": "OEM / Motherboard",
+            "model": "System Board",
+            "serialNumber": f"MB-{mac.replace(':', '')[:8]}",
+            "version": "1.0"
+        },
+        "bios": {
+            "vendor": "UEFI BIOS",
+            "version": "1.0",
+            "releaseDate": "2025-01-01"
+        },
+        "cpu": {
+            "model": platform.processor() or f"{platform.machine()} Processor",
+            "cores": cores,
+            "threads": cores * 2,
+            "baseFrequencyGhz": 3.0,
+            "socket": "LGA"
+        },
+        "ram": {
+            "totalGb": total_ram,
+            "slots": []
+        },
+        "storage": [],
+        "gpus": [],
+        "network": [],
+        "sound": []
+    }
+
+    if platform.system() == "Windows":
+        try:
+            # 1. CPU
+            cpu_raw = run_ps_json("Get-CimInstance Win32_Processor | Select-Object Name, NumberOfCores, NumberOfLogicalProcessors, MaxClockSpeed, SocketDesignation | ConvertTo-Json")
+            cpu_items = normalize_list(cpu_raw)
+            if cpu_items:
+                c = cpu_items[0]
+                spec["cpu"]["model"] = c.get("Name") or spec["cpu"]["model"]
+                spec["cpu"]["cores"] = c.get("NumberOfCores") or spec["cpu"]["cores"]
+                spec["cpu"]["threads"] = c.get("NumberOfLogicalProcessors") or spec["cpu"]["threads"]
+                if c.get("MaxClockSpeed"):
+                    spec["cpu"]["baseFrequencyGhz"] = round(c.get("MaxClockSpeed") / 1000.0, 2)
+                if c.get("SocketDesignation"):
+                    spec["cpu"]["socket"] = c.get("SocketDesignation")
+
+            # 2. Motherboard
+            mb_raw = run_ps_json("Get-CimInstance Win32_BaseBoard | Select-Object Manufacturer, Product, SerialNumber, Version | ConvertTo-Json")
+            mb_items = normalize_list(mb_raw)
+            if mb_items:
+                m = mb_items[0]
+                spec["motherboard"]["manufacturer"] = m.get("Manufacturer") or "OEM"
+                spec["motherboard"]["model"] = m.get("Product") or "Motherboard"
+                spec["motherboard"]["serialNumber"] = m.get("SerialNumber") or f"MB-{mac.replace(':', '')[:8]}"
+                spec["motherboard"]["version"] = m.get("Version") or "Rev 1.0"
+
+            # 3. BIOS
+            bios_raw = run_ps_json("Get-CimInstance Win32_BIOS | Select-Object Manufacturer, SMBIOSBIOSVersion, ReleaseDate | ConvertTo-Json")
+            bios_items = normalize_list(bios_raw)
+            if bios_items:
+                b = bios_items[0]
+                spec["bios"]["vendor"] = b.get("Manufacturer") or "AMI"
+                spec["bios"]["version"] = b.get("SMBIOSBIOSVersion") or "v1.0"
+                rel_date = b.get("ReleaseDate")
+                if isinstance(rel_date, str) and "Date(" in rel_date:
+                    try:
+                        ms = int(re.search(r'\d+', rel_date).group())
+                        spec["bios"]["releaseDate"] = datetime.utcfromtimestamp(ms / 1000.0).strftime("%Y-%m-%d")
+                    except Exception:
+                        spec["bios"]["releaseDate"] = "2025-01-01"
+                elif isinstance(rel_date, str):
+                    spec["bios"]["releaseDate"] = rel_date[:10]
+
+            # 4. RAM Slots
+            ram_raw = run_ps_json("Get-CimInstance Win32_PhysicalMemory | Select-Object DeviceLocator, Capacity, Speed, Manufacturer, PartNumber, SerialNumber | ConvertTo-Json")
+            ram_items = normalize_list(ram_raw)
+            slots = []
+            total_bytes = 0
+            for idx, r in enumerate(ram_items):
+                cap = r.get("Capacity") or (8 * 1024**3)
+                total_bytes += cap
+                size_gb = int(round(cap / (1024**3)))
+                speed = r.get("Speed") or 4800
+                ram_type = "DDR5" if speed >= 4800 else "DDR4"
+                slots.append({
+                    "slot": r.get("DeviceLocator") or f"DIMM_{idx+1}",
+                    "sizeGb": size_gb,
+                    "type": ram_type,
+                    "frequencyMhz": speed,
+                    "manufacturer": (r.get("Manufacturer") or "Unknown").strip(),
+                    "partNumber": (r.get("PartNumber") or "OEM-RAM").strip(),
+                    "serialNumber": str(r.get("SerialNumber") or "").strip()
+                })
+            if slots:
+                spec["ram"]["slots"] = slots
+                spec["ram"]["totalGb"] = int(round(total_bytes / (1024**3)))
+
+            # 5. Physical Disks
+            disks_raw = run_ps_json("Get-PhysicalDisk | Select-Object FriendlyName, MediaType, BusType, OperationalStatus, HealthStatus, Size, SerialNumber | ConvertTo-Json")
+            if not disks_raw:
+                disks_raw = run_ps_json("Get-CimInstance Win32_DiskDrive | Select-Object Model, InterfaceType, Size, SerialNumber, MediaType | ConvertTo-Json")
+            
+            disk_items = normalize_list(disks_raw)
+            disks = []
+            for idx, d in enumerate(disk_items):
+                model = (d.get("FriendlyName") or d.get("Model") or f"Disk #{idx}").strip()
+                size_bytes = d.get("Size") or (500 * 1000**3)
+                size_gb = int(round(size_bytes / (1000**3)))
+                serial = str(d.get("SerialNumber") or f"SN-{idx}").strip()
+                bus = str(d.get("BusType") or d.get("InterfaceType") or "").upper()
+                media = str(d.get("MediaType") or "").upper()
+                
+                # Determine accurate drive type
+                if "NVME" in bus or "NVME" in model.upper() or "SNVS" in model.upper():
+                    dtype = "NVMe SSD"
+                elif "SSD" in media or "SSD" in model.upper() or "SOLID" in media:
+                    dtype = "SATA SSD"
+                else:
+                    dtype = "HDD"
+
+                disks.append({
+                    "id": f"disk{idx}",
+                    "model": model,
+                    "serialNumber": serial,
+                    "type": dtype,
+                    "busType": bus or ("NVMe" if "NVMe" in dtype else "SATA"),
+                    "capacityGb": size_gb,
+                    "healthPercent": 100,
+                    "temperatureC": 32 + (idx * 2)
+                })
+            if disks:
+                spec["storage"] = disks
+
+            # 6. GPUs (with nvidia-smi precision if available)
+            gpus = []
+            try:
+                smi_out = subprocess.check_output(
+                    "nvidia-smi --query-gpu=name,memory.total,driver_version,temperature.gpu --format=csv,noheader,nounits",
+                    shell=True, text=True, timeout=2
+                ).strip()
+                for line in smi_out.splitlines():
+                    parts = [p.strip() for p in line.split(",")]
+                    if len(parts) >= 3:
+                        gname = parts[0]
+                        vram_mb = int(parts[1]) if parts[1].isdigit() else 8192
+                        drv = parts[2]
+                        temp = int(parts[3]) if len(parts) >= 4 and parts[3].isdigit() else 35
+                        gpus.append({
+                            "model": gname,
+                            "vramGb": int(round(vram_mb / 1024)),
+                            "driverVersion": drv,
+                            "temperatureC": temp,
+                            "resolution": "2560 x 1440 @ 144Hz"
+                        })
+            except Exception:
+                pass
+
+            if not gpus:
+                gpu_raw = run_ps_json("Get-CimInstance Win32_VideoController | Select-Object Name, DriverVersion, AdapterRAM, VideoModeDescription | ConvertTo-Json")
+                gpu_items = normalize_list(gpu_raw)
+                for g in gpu_items:
+                    name = (g.get("Name") or "").strip()
+                    if not name:
+                        continue
+                    vram_bytes = g.get("AdapterRAM") or (8 * 1024**3)
+                    vram_gb = int(round(vram_bytes / (1024**3)))
+                    if vram_gb < 1:
+                        vram_gb = 8
+                    gpus.append({
+                        "model": name,
+                        "vramGb": vram_gb,
+                        "driverVersion": g.get("DriverVersion") or "Latest",
+                        "resolution": g.get("VideoModeDescription") or "1920 x 1080"
+                    })
+            if gpus:
+                spec["gpus"] = gpus
+
+            # 7. Network Adapters (filter physical & active interfaces)
+            net_raw = run_ps_json("Get-NetAdapter | Select-Object Name, InterfaceDescription, MacAddress, LinkSpeed, Status, PhysicalMediaType | ConvertTo-Json")
+            net_items = normalize_list(net_raw)
+            net_list = []
+            for n in net_items:
+                mac_addr = n.get("MacAddress") or ""
+                desc = n.get("InterfaceDescription") or n.get("Name") or ""
+                status = n.get("Status") or "Disconnected"
+                # Exclude virtual tunnels like TAP, Cisco, VPN, Hamachi from physical view unless active
+                if mac_addr and desc and not ("WAN" in desc or "Fortinet" in desc or "Hamachi" in desc or "Cisco" in desc):
+                    net_list.append({
+                        "name": desc,
+                        "mac": mac_addr,
+                        "ip": ip if (mac_addr.replace("-", ":").upper() == mac.upper()) else "",
+                        "speed": n.get("LinkSpeed") or "1 Gbps",
+                        "status": status
+                    })
+            if net_list:
+                spec["network"] = net_list
+            else:
+                spec["network"] = [{"name": "Realtek 2.5GbE", "mac": mac, "ip": ip, "speed": "2.5 Gbps", "status": "Up"}]
+
+            # 8. Sound Devices
+            sound_raw = run_ps_json("Get-CimInstance Win32_SoundDevice | Select-Object Name, Manufacturer | ConvertTo-Json")
+            sound_items = normalize_list(sound_raw)
+            spec["sound"] = [{"name": s.get("Name"), "manufacturer": s.get("Manufacturer") or "Realtek/NVIDIA"} for s in sound_items if s.get("Name")]
+
+        except Exception as e:
+            print(f"[!] Warning collecting real hardware: {e}")
+
+    elif platform.system() == "Linux":
+        try:
+            # 1. CPU Info
+            if os.path.exists("/proc/cpuinfo"):
+                with open("/proc/cpuinfo", "r") as f:
+                    for line in f:
+                        if line.startswith("model name"):
+                            spec["cpu"]["model"] = line.split(":", 1)[1].strip()
+                            break
+
+            # 2. Motherboard & BIOS
+            try:
+                if os.path.exists("/sys/class/dmi/id/board_vendor"):
+                    with open("/sys/class/dmi/id/board_vendor", "r") as f:
+                        spec["motherboard"]["manufacturer"] = f.read().strip() or "OEM"
+                if os.path.exists("/sys/class/dmi/id/board_name"):
+                    with open("/sys/class/dmi/id/board_name", "r") as f:
+                        spec["motherboard"]["model"] = f.read().strip() or "Motherboard"
+                if os.path.exists("/sys/class/dmi/id/bios_vendor"):
+                    with open("/sys/class/dmi/id/bios_vendor", "r") as f:
+                        spec["bios"]["vendor"] = f.read().strip() or "UEFI BIOS"
+                if os.path.exists("/sys/class/dmi/id/bios_version"):
+                    with open("/sys/class/dmi/id/bios_version", "r") as f:
+                        spec["bios"]["version"] = f.read().strip() or "1.0"
+            except Exception:
+                pass
+
+            # 3. Disks & Storage
+            disks = []
+            try:
+                lsblk_out = subprocess.check_output(
+                    "lsblk -b -d -o NAME,SIZE,TYPE,MODEL,SERIAL,ROTA -n",
+                    shell=True, text=True, timeout=2
+                )
+                for idx, line in enumerate(lsblk_out.strip().splitlines()):
+                    parts = line.split()
+                    if len(parts) >= 3 and parts[2] == "disk":
+                        dname = parts[0]
+                        size_bytes = int(parts[1]) if parts[1].isdigit() else 0
+                        size_gb = int(round(size_bytes / (1000**3))) if size_bytes else 500
+                        model = " ".join(parts[3:5]) if len(parts) >= 4 else f"Disk /dev/{dname}"
+                        serial = parts[5] if len(parts) >= 6 else f"SN-{idx}"
+                        rota = parts[-1] if len(parts) >= 6 else "1"
+                        dtype = "HDD" if rota == "1" else ("NVMe SSD" if "nvme" in dname else "SATA SSD")
+                        disks.append({
+                            "id": f"disk{idx}",
+                            "model": model,
+                            "serialNumber": serial,
+                            "type": dtype,
+                            "busType": "NVMe" if "nvme" in dname else "SATA",
+                            "capacityGb": size_gb,
+                            "healthPercent": 100,
+                            "temperatureC": 35
+                        })
+            except Exception:
+                pass
+
+            if not disks:
+                import shutil
+                total, used, free = shutil.disk_usage("/")
+                disks.append({
+                    "id": "disk0",
+                    "model": "Root Storage Drive",
+                    "serialNumber": "ROOT-DISK-01",
+                    "type": "SSD",
+                    "busType": "SATA",
+                    "capacityGb": int(round(total / (1000**3))),
+                    "healthPercent": 100,
+                    "temperatureC": 35
+                })
+            spec["storage"] = disks
+
+            # 4. Network
+            spec["network"] = [{
+                "name": "Ethernet / Primary NIC",
+                "mac": mac,
+                "ip": ip,
+                "speed": "1 Gbps",
+                "status": "Up"
+            }]
+
+        except Exception as e:
+            print(f"[!] Warning collecting Linux hardware: {e}")
+
+    return spec
+
+def execute_agent_update(server_base: str, cfg: dict, update_url: str = "", target_version: str = "1.5.0"):
+    print(f"[*] Initiating remote agent update to v{target_version}...")
+    device_id = cfg.get("device_id", "")
+    prev_ver = AGENT_VERSION
+    
+    # 1. Report update in progress
+    try:
+        http_post(f"{server_base}/agents/update-status", {
+            "deviceId": device_id,
+            "status": "UPDATING",
+            "previousVersion": prev_ver,
+            "targetVersion": target_version,
+            "details": f"Начата загрузка пакета обновления до v{target_version}"
+        })
+    except Exception as e:
+        print(f"[!] Warning reporting update start: {e}")
+
+    # 2. Download updated payload
+    effective_url = update_url
+    if not effective_url:
+        root_server = server_base.replace("/api/v1", "").rstrip("/")
+        effective_url = f"{root_server}/agent.py"
+
+    print(f"[*] Downloading updated agent code from: {effective_url}")
+    try:
+        req = urllib.request.Request(effective_url, headers={"User-Agent": f"WorkstationAgent/{AGENT_VERSION}"})
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            new_code = resp.read().decode("utf-8")
+        
+        if len(new_code) < 1000 or "Workstation Manager" not in new_code:
+            raise ValueError("Downloaded payload is invalid or truncated")
+
+        # 3. Validate python syntax
+        compile(new_code, "<update_test>", "exec")
+
+        # 4. Write to current script path
+        script_path = os.path.abspath(sys.argv[0])
+        backup_path = f"{script_path}.bak"
+        tmp_path = f"{script_path}.new"
+
+        with open(tmp_path, "w", encoding="utf-8") as f:
+            f.write(new_code)
+
+        try:
+            if os.path.exists(backup_path):
+                os.remove(backup_path)
+            if os.path.exists(script_path):
+                os.replace(script_path, backup_path)
+            os.replace(tmp_path, script_path)
+        except Exception:
+            # Fallback direct write
+            with open(script_path, "w", encoding="utf-8") as f:
+                f.write(new_code)
+
+        print(f"[OK] Successfully wrote updated script to {script_path}")
+
+        # 5. Report success
+        try:
+            http_post(f"{server_base}/agents/update-status", {
+                "deviceId": device_id,
+                "status": "SUCCESS",
+                "previousVersion": prev_ver,
+                "newVersion": target_version,
+                "details": f"Агент успешно обновлен до версии v{target_version}"
+            })
+        except Exception as e:
+            print(f"[!] Warning reporting update success: {e}")
+
+        # 6. Restart agent process
+        print("[*] Spawning updated agent process and exiting old instance...")
+        python_exe = sys.executable
+        if platform.system() == "Windows":
+            subprocess.Popen([python_exe, script_path], creationflags=subprocess.CREATE_NO_WINDOW if hasattr(subprocess, 'CREATE_NO_WINDOW') else 0)
+        else:
+            subprocess.Popen([python_exe, script_path])
+        
+        # Clean exit
+        os._exit(0)
+
+    except Exception as e:
+        err_msg = str(e)
+        print(f"[!] Agent update failed: {err_msg}")
+        try:
+            http_post(f"{server_base}/agents/update-status", {
+                "deviceId": device_id,
+                "status": "FAILED",
+                "previousVersion": prev_ver,
+                "targetVersion": target_version,
+                "details": f"Ошибка при обновлении агента: {err_msg}",
+                "error": err_msg
+            })
+        except Exception:
+            pass
+
+def main():
+    print("==================================================")
+    print(f" Workstation Manager Background Agent v{AGENT_VERSION}")
+    print("==================================================")
+    cfg = load_config()
+    server_base = cfg["server_url"].rstrip("/")
+    if not server_base.endswith("/api/v1"):
+        server_base = f"{server_base}/api/v1"
+
+    # 1. Check enrollment
+    if not cfg.get("device_id"):
+        hostname, ip, mac = get_primary_mac_and_ip()
+        token = cfg.get("enrollment_token") or os.environ.get("WM_TOKEN", "")
+        print(f"[*] Enrolling device ({hostname} / {ip} / {mac}) to server: {server_base}")
+        try:
+            res = http_post(f"{server_base}/agents/enroll", {
+                "token": token,
+                "hostname": hostname,
+                "ip": ip,
+                "mac": mac,
+                "osType": platform.system(),
+                "currentUser": get_current_user(),
+                "agentVersion": AGENT_VERSION
+            })
+            cfg["device_id"] = res.get("deviceId", f"PC-{mac.replace(':', '')[-4:]}")
+            cfg["agent_secret"] = res.get("agentSecret", "sec_live")
+            save_config(cfg)
+            print(f"[OK] Successfully enrolled! Device ID: {cfg['device_id']}")
+        except Exception as e:
+            print(f"[!] Enrollment failed: {e}. Retrying in 10 seconds...")
+            time.sleep(10)
+            return
+
+    # 2. Send hardware inventory
+    print("[*] Sending hardware inventory...")
+    try:
+        hw = collect_hardware()
+        http_post(f"{server_base}/agents/inventory", {
+            "deviceId": cfg["device_id"],
+            "hardwareSpec": hw
+        })
+        print("[OK] Hardware inventory accepted.")
+    except Exception as e:
+        print(f"[!] Hardware report error: {e}")
+
+    # 3. Start background UDP direct command listener (port 48123)
+    def udp_listener_loop():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            sock.bind(("0.0.0.0", 48123))
+            while True:
+                data, addr = sock.recvfrom(1024)
+                if data:
+                    msg = data.decode("utf-8", errors="ignore").strip()
+                    if msg.startswith("WM_CMD:"):
+                        parts = msg.split(":")
+                        if len(parts) >= 2:
+                            cmd_act = parts[1].strip()
+                            tgt_id = parts[2].strip() if len(parts) >= 3 else ""
+                            tgt_mac = parts[3].strip() if len(parts) >= 4 else ""
+                            tgt_host = parts[4].strip() if len(parts) >= 5 else ""
+                            
+                            my_id = (cfg.get("device_id") or "").upper()
+                            _, _, my_mac = get_primary_mac_and_ip()
+                            my_mac_clean = my_mac.replace(":", "").replace("-", "").upper()
+                            tgt_mac_clean = tgt_mac.replace(":", "").replace("-", "").upper()
+                            my_host = socket.gethostname().upper()
+                            
+                            matched = True
+                            if tgt_id or tgt_mac or tgt_host:
+                                matched = (
+                                    (tgt_id and tgt_id.upper() == my_id) or
+                                    (tgt_mac_clean and tgt_mac_clean == my_mac_clean) or
+                                    (tgt_host and tgt_host.upper() == my_host)
+                                )
+                            if matched:
+                                if cmd_act.upper() in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
+                                    threading.Thread(target=execute_agent_update, args=(server_base, cfg), daemon=True).start()
+                                else:
+                                    execute_power_command(cmd_act)
+        except Exception:
+            pass
+
+    t = threading.Thread(target=udp_listener_loop, daemon=True)
+    t.start()
+
+    # 4. Heartbeat loop
+    print("[*] Entering live heartbeat & telemetry loop (30s interval)...")
+    is_startup = True
+
+    import signal
+    def handle_shutdown(signum, frame):
+        print("\n[*] Detected system shutdown / termination signal. Reporting to server...")
+        try:
+            http_post(f"{server_base}/agents/power-event", {
+                "deviceId": cfg["device_id"],
+                "action": "SHUTDOWN",
+                "initiator": "Локальный пользователь (Завершение работы ОС)",
+                "source": "LOCAL",
+                "details": "Локальное выключение через ОС"
+            })
+        except Exception:
+            pass
+        sys.exit(0)
+
+    try:
+        signal.signal(signal.SIGINT, handle_shutdown)
+        signal.signal(signal.SIGTERM, handle_shutdown)
+    except Exception:
+        pass
+
+    while True:
+        try:
+            total_ram, ram_percent = get_memory_info()
+            cpu_percent = get_cpu_usage()
+            disk_percent = get_disk_info()
+            user = get_current_user()
+            uptime_str, uptime_sec, boot_time_iso = get_uptime_info()
+
+            resp = http_post(f"{server_base}/agents/heartbeat", {
+                "deviceId": cfg["device_id"],
+                "cpuPercent": cpu_percent,
+                "ramPercent": ram_percent,
+                "diskPercent": disk_percent,
+                "currentUser": user,
+                "uptime": uptime_str,
+                "uptimeSeconds": uptime_sec,
+                "bootTime": boot_time_iso,
+                "osType": platform.system(),
+                "osVersion": f"{platform.system()} {platform.release()}",
+                "agentVersion": AGENT_VERSION,
+                "isStartup": is_startup,
+                "processes": get_top_processes()
+            })
+            print(f"[Heartbeat] CPU: {cpu_percent}% | RAM: {ram_percent}% | User: {user} | v{AGENT_VERSION}")
+            is_startup = False
+
+            if resp and isinstance(resp, dict):
+                if resp.get("heartbeatInterval"):
+                    cfg["heartbeat_interval_seconds"] = int(resp.get("heartbeatInterval"))
+                
+                # Automatic OTA self-update if server advertises newer version
+                latest_srv_ver = resp.get("latestVersion") or resp.get("targetVersion")
+                if latest_srv_ver and latest_srv_ver != AGENT_VERSION:
+                    print(f"[*] Auto-update triggered by heartbeat: v{AGENT_VERSION} -> v{latest_srv_ver}")
+                    execute_agent_update(server_base, cfg, target_version=latest_srv_ver)
+
+                for cmd in resp.get("pendingCommands", []):
+                    if isinstance(cmd, dict) and cmd.get("action"):
+                        c_act = cmd.get("action", "").upper()
+                        if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "1.9.0"
+                            u_url = cmd.get("updateUrl") or ""
+                            execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
+                        else:
+                            execute_power_command(c_act)
+        except Exception as e:
+            print(f"[Heartbeat Error] {e}")
+
+        time.sleep(cfg.get("heartbeat_interval_seconds", 30))
+
+if __name__ == "__main__":
+    main()

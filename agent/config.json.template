@@ -1,0 +1,9 @@
+{
+  "server_url": "https://manager.northstar.local:8443",
+  "enrollment_token": "wm_tok_YOUR_TOKEN_HERE",
+  "device_id": "",
+  "agent_secret": "",
+  "heartbeat_interval_seconds": 30,
+  "telemetry_interval_seconds": 60,
+  "inventory_interval_seconds": 3600
+}

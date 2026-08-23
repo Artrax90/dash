@@ -1,0 +1,4 @@
+requests==2.32.3
+psutil==6.0.0
+wmi==1.5.1; sys_platform == 'win32'
+pypiwin32==223; sys_platform == 'win32'
