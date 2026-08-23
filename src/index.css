@@ -2774,3 +2774,55 @@
   gap: 16px !important;
 }
 
+/* Polished User Avatars */
+.user-avatar {
+  width: 38px !important;
+  height: 38px !important;
+  min-width: 38px !important;
+  border-radius: 50% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 13px !important;
+  font-weight: 700 !important;
+  color: #ffffff !important;
+  letter-spacing: 0.5px !important;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.14), inset 0 1px 1px rgba(255, 255, 255, 0.25) !important;
+  flex-shrink: 0 !important;
+  user-select: none !important;
+}
+
+.top-avatar {
+  width: 34px !important;
+  height: 34px !important;
+  min-width: 34px !important;
+  border-radius: 50% !important;
+  display: flex !important;
+  align-items: center !important;
+  justify-content: center !important;
+  font-size: 12px !important;
+  font-weight: 700 !important;
+  color: #ffffff !important;
+  background: linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%) !important;
+  box-shadow: 0 2px 8px rgba(59, 130, 246, 0.3) !important;
+  flex-shrink: 0 !important;
+  user-select: none !important;
+  cursor: pointer !important;
+  transition: transform 0.15s ease, box-shadow 0.15s ease !important;
+}
+
+.top-avatar:hover {
+  transform: scale(1.06) !important;
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.45) !important;
+}
+
+/* Balanced Operation Row Spacing */
+.operation-row {
+  padding: 14px 24px !important;
+}
+
+.operation-row time {
+  margin-left: 20px !important;
+  padding-right: 4px !important;
+}
+

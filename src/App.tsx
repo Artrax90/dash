@@ -4739,8 +4739,8 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
             </div>
           ) : (
             devicePowerLogs.map(log => (
-              <div key={log.id} className="operation-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 0' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', flex: 1, minWidth: 0 }}>
+              <div key={log.id} className="operation-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 24px' }}>
+                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', flex: 1, minWidth: 0 }}>
                   <div className={log.status === 'ok' ? 'operation-ok' : 'operation-fail'} style={{ marginTop: '2px', flexShrink: 0 }}>
                     {log.status === 'ok' ? <Check size={13} /> : <AlertTriangle size={13} />}
                   </div>
@@ -4750,20 +4750,20 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
                       {log.initiator && (
                         <span style={{
                           fontSize: '11px',
-                          padding: '1px 6px',
-                          borderRadius: '4px',
+                          padding: '2px 8px',
+                          borderRadius: '5px',
                           backgroundColor: log.source === 'SCHEDULE' ? 'rgba(139, 92, 246, 0.15)' : 'rgba(59, 130, 246, 0.12)',
                           color: log.source === 'SCHEDULE' ? '#8b5cf6' : 'var(--primary)',
-                          fontWeight: 500
+                          fontWeight: 600
                         }}>
                           {log.source === 'SCHEDULE' ? '⏰ ' : '👤 '}{log.initiator}
                         </span>
                       )}
                     </div>
-                    <small style={{ color: 'var(--muted)', fontSize: '12px', marginTop: '2px', display: 'block' }}>{log.detail}</small>
+                    <small style={{ color: 'var(--muted)', fontSize: '12px', marginTop: '3px', display: 'block' }}>{log.detail}</small>
                   </div>
                 </div>
-                <time style={{ fontSize: '12px', color: 'var(--muted)', whiteSpace: 'nowrap', marginLeft: '12px' }}>{log.time}</time>
+                <time style={{ fontSize: '12px', color: 'var(--muted)', whiteSpace: 'nowrap', marginLeft: '24px', flexShrink: 0, paddingRight: '4px' }}>{log.time}</time>
               </div>
             ))
           )}
@@ -6925,14 +6925,36 @@ function UsersPage({ notify }: { notify: (message: string) => void }) {
           {filtered.map(user => {
             const isCustomScope = Array.isArray(user.allowedGroups) && user.allowedGroups.length > 0;
             return (
-              <div className="user-row" key={user.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1.6fr 1.1fr 1.4fr 1.1fr auto auto auto', alignItems: 'center', gap: '14px', padding: '12px 18px' }}>
-                <div className="user-avatar" style={{ background: user.role === 'Суперадминистратор' ? 'var(--blue)' : user.role === 'Администратор парка' ? 'var(--green)' : 'rgba(255,255,255,0.08)' }}>
-                  {user.displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() || user.username.slice(0, 2).toUpperCase()}
+              <div className="user-row" key={user.id} style={{ display: 'grid', gridTemplateColumns: 'auto 1.6fr 1.1fr 1.4fr 1.1fr auto auto auto', alignItems: 'center', gap: '14px', padding: '14px 20px' }}>
+                <div
+                  className="user-avatar"
+                  style={{
+                    width: '38px',
+                    height: '38px',
+                    minWidth: '38px',
+                    borderRadius: '50%',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    background: user.role === 'Суперадминистратор'
+                      ? 'linear-gradient(135deg, #3b82f6 0%, #1d4ed8 100%)'
+                      : user.role === 'Администратор парка'
+                      ? 'linear-gradient(135deg, #10b981 0%, #047857 100%)'
+                      : 'linear-gradient(135deg, #6366f1 0%, #4338ca 100%)',
+                    color: '#ffffff',
+                    fontWeight: 700,
+                    fontSize: '13px',
+                    letterSpacing: '0.5px',
+                    boxShadow: '0 2px 8px rgba(0,0,0,0.12), inset 0 1px 1px rgba(255,255,255,0.25)',
+                    flexShrink: 0
+                  }}
+                >
+                  {user.displayName ? user.displayName.split(' ').filter(Boolean).map(n => n[0]).join('').slice(0, 2).toUpperCase() : (user.username || 'AD').slice(0, 2).toUpperCase()}
                 </div>
                 
                 <div className="user-main">
-                  <strong>{user.displayName}</strong>
-                  <span style={{ fontSize: '12px', color: 'var(--muted)' }}>@{user.username} · {user.email}</span>
+                  <strong style={{ fontSize: '13px', fontWeight: 600 }}>{user.displayName}</strong>
+                  <span style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '2px', display: 'block' }}>@{user.username} · {user.email}</span>
                 </div>
 
                 <div>
