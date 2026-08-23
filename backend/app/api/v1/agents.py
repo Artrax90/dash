@@ -16,26 +16,84 @@ from backend.app.ws.manager import ws_manager
 
 from backend.app.core.config import settings
 
+import json
+
 router = APIRouter(prefix="/agents", tags=["agents"])
 
-# In-memory storage for remote update events and active update operations
-agent_update_logs: List[Dict[str, Any]] = []
+TOKENS_FILE = os.path.join(settings.DATA_DIR, "tokens.json")
+UPDATE_LOGS_FILE = os.path.join(settings.DATA_DIR, "agent_update_logs.json")
+
+def get_default_tokens() -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": "TOK-01",
+            "token": "wm_tok_live_7f8a92b3c4d5e6f7",
+            "targetGroup": "Office",
+            "serverUrl": f"http://localhost:{settings.PORT}",
+            "createdAt": "2026-08-20 10:00",
+            "expiresAt": "2026-09-20 10:00",
+            "isReusable": True,
+            "usedCount": 0,
+            "createdBy": "Administrator",
+        }
+    ]
+
+def load_tokens() -> List[Dict[str, Any]]:
+    if os.path.exists(TOKENS_FILE):
+        try:
+            with open(TOKENS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except Exception as e:
+            print(f"Error loading tokens file: {e}")
+    defaults = get_default_tokens()
+    save_tokens(defaults)
+    return defaults
+
+def save_tokens(tokens: List[Dict[str, Any]]):
+    try:
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        tmp_file = TOKENS_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(tokens, f, ensure_ascii=False, indent=2)
+        if os.path.exists(TOKENS_FILE):
+            os.replace(tmp_file, TOKENS_FILE)
+        else:
+            os.rename(tmp_file, TOKENS_FILE)
+    except Exception as e:
+        print(f"Error saving tokens file: {e}")
+
+def load_update_logs() -> List[Dict[str, Any]]:
+    if os.path.exists(UPDATE_LOGS_FILE):
+        try:
+            with open(UPDATE_LOGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception as e:
+            print(f"Error loading update logs: {e}")
+    return []
+
+def save_update_logs(logs: List[Dict[str, Any]]):
+    try:
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        tmp_file = UPDATE_LOGS_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(logs[:200], f, ensure_ascii=False, indent=2)
+        if os.path.exists(UPDATE_LOGS_FILE):
+            os.replace(tmp_file, UPDATE_LOGS_FILE)
+        else:
+            os.rename(tmp_file, UPDATE_LOGS_FILE)
+    except Exception as e:
+        print(f"Error saving update logs: {e}")
+
+# Persistent storage for remote update events and active update operations
+agent_update_logs: List[Dict[str, Any]] = load_update_logs()
 agent_update_statuses: Dict[str, Dict[str, Any]] = {}
 
-# In-memory token storage for rapid enrollment & DB sync
-tokens_store = [
-    {
-        "id": "TOK-01",
-        "token": "wm_tok_live_7f8a92b3c4d5e6f7",
-        "targetGroup": "Office",
-        "serverUrl": f"http://localhost:{settings.PORT}",
-        "createdAt": "2026-08-20 10:00",
-        "expiresAt": "2026-09-20 10:00",
-        "isReusable": True,
-        "usedCount": 0,
-        "createdBy": "Administrator",
-    }
-]
+# Persistent token storage for rapid enrollment & DB sync
+tokens_store: List[Dict[str, Any]] = load_tokens()
 
 @router.get("/download-bundle")
 async def download_agent_bundle(token: str = "", server_url: str = ""):
@@ -224,6 +282,7 @@ async def create_token(payload: Dict[str, Any]):
         "createdBy": creator,
     }
     tokens_store.insert(0, new_token)
+    save_tokens(tokens_store)
     return new_token
 
 @router.put("/tokens/{token_id}")
@@ -241,6 +300,7 @@ async def update_token(token_id: str, payload: Dict[str, Any]):
     if "maxUses" in payload:
         matched["maxUses"] = payload["maxUses"]
 
+    save_tokens(tokens_store)
     return matched
 
 @router.delete("/tokens/{token_id}")
@@ -248,6 +308,7 @@ async def delete_token(token_id: str):
     idx = next((i for i, t in enumerate(tokens_store) if t["id"] == token_id or t["token"] == token_id), None)
     if idx is not None:
         deleted = tokens_store.pop(idx)
+        save_tokens(tokens_store)
         return {"status": "deleted", "token": deleted}
     return {"status": "not_found"}
 
@@ -266,6 +327,7 @@ async def enroll_agent(payload: Dict[str, Any], db: AsyncSession = Depends(get_d
     target_group = matched["targetGroup"] if matched else "Office"
     if matched:
         matched["usedCount"] += 1
+        save_tokens(tokens_store)
 
     hostname = payload.get("hostname", "Workstation")
     ip = payload.get("ip", "127.0.0.1")
@@ -1106,7 +1168,9 @@ async def report_agent_update_status(payload: Dict[str, Any], db: AsyncSession =
                 agent_update_logs.remove(entry)
 
     if len(agent_update_logs) > 100:
-        del agent_update_logs[100:]
+        agent_update_logs[:] = agent_update_logs[:100]
+
+    save_update_logs(agent_update_logs)
 
     if device:
         from backend.app.api.v1.devices import log_device_power_event, format_device_summary
@@ -1287,6 +1351,8 @@ async def trigger_bulk_agent_update(payload: Dict[str, Any], request: Request, d
         }
         agent_update_logs.insert(0, log_entry)
         affected_devices.append(device.id)
+
+    save_update_logs(agent_update_logs)
 
     await ws_manager.broadcast_event("agents.bulk_update_started", {
         "count": len(affected_devices),
