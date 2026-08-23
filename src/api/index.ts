@@ -47,6 +47,39 @@ const getApiBase = () => {
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || getApiBase();
 
+export function getActiveUserName(): string {
+  try {
+    if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('wm_user_session');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed) {
+          const name = parsed.displayName || parsed.name || parsed.username;
+          if (name && name.trim()) return name.trim();
+        }
+      }
+    }
+  } catch {}
+  return 'Оператор';
+}
+
+export function getAuthHeaders(): Record<string, string> {
+  const userName = getActiveUserName();
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-User-Name': encodeURIComponent(userName)
+  };
+  try {
+    if (typeof window !== 'undefined') {
+      const token = localStorage.getItem('wm_token');
+      if (token) {
+        headers['Authorization'] = `Bearer ${token}`;
+      }
+    }
+  } catch {}
+  return headers;
+}
+
 const wait = async <T,>(value: T, ms = 50): Promise<T> => new Promise((resolve) => setTimeout(() => resolve(value), ms));
 
 export const devicesApi = {
@@ -190,16 +223,25 @@ export const devicesApi = {
     } catch {}
     return true;
   },
-  setBaseline: async (deviceId: string, spec: HardwareSpec, approvedBy: string): Promise<HardwareBaseline> => {
-    const dev = devices.find((d) => d.id === deviceId);
+  setBaseline: async (deviceId: string, spec: HardwareSpec, approvedBy?: string): Promise<HardwareBaseline> => {
+    const author = approvedBy || getActiveUserName();
+    try {
+      const res = await fetch(`${API_BASE}/hardware/baseline/${deviceId}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ approvedBy: author, spec }),
+      });
+      if (res.ok) return await res.json();
+    } catch {}
     const newBaseline: HardwareBaseline = {
-      id: `BL-${Date.now()}`,
+      id: `bl-${deviceId}`,
       deviceId,
       createdAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
       updatedAt: new Date().toISOString().replace('T', ' ').substring(0, 16),
-      approvedBy,
+      approvedBy: author,
       spec,
     };
+    const dev = devices.find((d) => d.id === deviceId);
     if (dev) {
       dev.baseline = newBaseline;
       dev.hardwareChangesCount = 0;
@@ -208,7 +250,10 @@ export const devicesApi = {
   },
   toggleMaintenance: async (deviceId: string): Promise<boolean> => {
     try {
-      const res = await fetch(`${API_BASE}/devices/${deviceId}/maintenance`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/devices/${deviceId}/maintenance`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
       if (res.ok) {
         const data = await res.json();
         return data.maintenance;
@@ -224,11 +269,12 @@ export const devicesApi = {
     return wait(false);
   },
   wake: async (deviceId: string, meta?: { user?: string; source?: string }): Promise<boolean> => {
+    const operator = meta?.user || getActiveUserName();
     try {
       const res = await fetch(`${API_BASE}/devices/${deviceId}/wake`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(meta || { user: 'Администратор', source: 'MANUAL' }),
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ user: operator, initiator: operator, source: meta?.source || 'MANUAL' }),
       });
       if (res.ok) return true;
     } catch {}
@@ -240,15 +286,17 @@ export const devicesApi = {
     force: boolean = true,
     meta?: { user?: string; source?: string; reason?: string }
   ): Promise<boolean> => {
+    const operator = meta?.user || getActiveUserName();
     try {
       const res = await fetch(`${API_BASE}/devices/${deviceId}/power`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify({
           action,
           force,
-          reason: meta?.reason || 'Command from Web UI',
-          user: meta?.user || 'Администратор',
+          reason: meta?.reason || `Command from Web UI by ${operator}`,
+          user: operator,
+          initiator: operator,
           source: meta?.source || 'MANUAL',
         }),
       });
@@ -256,19 +304,25 @@ export const devicesApi = {
     } catch {}
     return true;
   },
-  updateAgent: async (deviceId: string): Promise<boolean> => {
+  updateAgent: async (deviceId: string, user?: string): Promise<boolean> => {
+    const operator = user || getActiveUserName();
     try {
-      const res = await fetch(`${API_BASE}/agents/update/${deviceId}`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/agents/update/${deviceId}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ user: operator, initiator: operator })
+      });
       if (res.ok) return true;
     } catch {}
     return true;
   },
-  bulkOperation: async (deviceIds: string[], action: string): Promise<boolean> => {
+  bulkOperation: async (deviceIds: string[], action: string, meta?: { user?: string }): Promise<boolean> => {
+    const operator = meta?.user || getActiveUserName();
     try {
       const res = await fetch(`${API_BASE}/devices/bulk`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceIds, action }),
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ deviceIds, action, user: operator, initiator: operator }),
       });
       if (res.ok) return true;
     } catch {}
@@ -493,11 +547,12 @@ export const agentsApi = {
     return wait(agentBuilds);
   },
   createToken: async (payload: { targetGroup: string; expiry?: string; expiresAt?: string; isReusable?: boolean; maxUses?: number; createdBy?: string }): Promise<AgentEnrollmentToken> => {
+    const author = payload.createdBy || getActiveUserName();
     try {
       const res = await fetch(`${API_BASE}/agents/tokens`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ ...payload, createdBy: author }),
       });
       if (res.ok) return await res.json();
     } catch {}
@@ -511,7 +566,7 @@ export const agentsApi = {
       isReusable: payload.isReusable !== false,
       usedCount: 0,
       maxUses: payload.maxUses,
-      createdBy: payload.createdBy || 'Администратор',
+      createdBy: author,
     };
     agentTokens.unshift(newToken);
     return wait(newToken);
@@ -520,7 +575,7 @@ export const agentsApi = {
     try {
       const res = await fetch(`${API_BASE}/agents/tokens/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(payload),
       });
       if (res.ok) return await res.json();
@@ -534,7 +589,10 @@ export const agentsApi = {
   },
   revokeToken: async (id: string): Promise<boolean> => {
     try {
-      const res = await fetch(`${API_BASE}/agents/tokens/${id}`, { method: 'DELETE' });
+      const res = await fetch(`${API_BASE}/agents/tokens/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
       if (res.ok) return true;
     } catch {}
     const idx = agentTokens.findIndex((t) => t.id === id || t.token === id);
@@ -562,7 +620,7 @@ export const agentsApi = {
     try {
       const res = await fetch(`${API_BASE}/agents/settings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(settings)
       });
       if (res.ok) return await res.json();
@@ -585,9 +643,14 @@ export const agentsApi = {
       updatingCount: 0
     };
   },
-  updateAgent: async (deviceId: string): Promise<{ status: string; message: string; deviceId: string; targetVersion?: string }> => {
+  updateAgent: async (deviceId: string, user?: string): Promise<{ status: string; message: string; deviceId: string; targetVersion?: string }> => {
+    const operator = user || getActiveUserName();
     try {
-      const res = await fetch(`${API_BASE}/agents/update/${deviceId}`, { method: 'POST' });
+      const res = await fetch(`${API_BASE}/agents/update/${deviceId}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ user: operator, initiator: operator })
+      });
       if (res.ok) return await res.json();
     } catch {}
     return {
@@ -597,12 +660,13 @@ export const agentsApi = {
       targetVersion: '2.0.3'
     };
   },
-  updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {
+  updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {
+    const operator = user || getActiveUserName();
     try {
       const res = await fetch(`${API_BASE}/agents/update-bulk`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ deviceIds, updateAllOutdated })
+        headers: getAuthHeaders(),
+        body: JSON.stringify({ deviceIds, updateAllOutdated, user: operator, initiator: operator })
       });
       if (res.ok) return await res.json();
     } catch {}

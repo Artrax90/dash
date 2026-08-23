@@ -53,9 +53,16 @@ def log_device_power_event(
     action: str,
     details: str,
     status: str = "Success",
-    initiator: str = "Администратор",
+    initiator: str = "Оператор",
     source: str = "MANUAL"
 ):
+    import urllib.parse
+    if initiator and "%" in initiator:
+        try:
+            initiator = urllib.parse.unquote(initiator)
+        except Exception:
+            pass
+
     now_iso = datetime.utcnow().isoformat() + "Z"
     act_upper = action.upper()
 
@@ -114,6 +121,18 @@ def log_device_power_event(
     # Keep last 50 events per device
     if len(device_power_logs[device_id]) > 50:
         device_power_logs[device_id] = device_power_logs[device_id][:50]
+
+    try:
+        from backend.app.api.v1.audit import record_audit
+        record_audit(
+            user=initiator,
+            action=f"POWER_{act_upper}",
+            target=device_id,
+            result=status.upper(),
+            details=f"{title}: {details}"
+        )
+    except Exception:
+        pass
 
 def format_device_summary(d: Device) -> Dict[str, Any]:
     if d.group_name is not None and d.group_name.strip():
@@ -661,7 +680,9 @@ async def wake_device(device_id: str, request: Request, db: AsyncSession = Depen
         body = await request.json()
     except Exception:
         body = {}
-    initiator = body.get("user") or body.get("initiator") or request.headers.get("X-User-Name") or "System"
+    raw_user = body.get("user") or body.get("initiator") or request.headers.get("X-User-Name") or "Оператор"
+    import urllib.parse
+    initiator = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
     source = body.get("source", "MANUAL")
 
     result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
@@ -746,7 +767,9 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
     """
     action = payload.get("action", "REBOOT").upper()
     force = payload.get("force", True)
-    initiator = payload.get("user") or payload.get("initiator") or request.headers.get("X-User-Name") or "System"
+    raw_user = payload.get("user") or payload.get("initiator") or request.headers.get("X-User-Name") or "Оператор"
+    import urllib.parse
+    initiator = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
     source = payload.get("source", "MANUAL")
     reason = payload.get("reason", f"Command by {initiator}")
 
@@ -845,9 +868,12 @@ async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
     return {"status": "deleted", "deviceId": dev_id}
 
 @router.post("/bulk")
-async def execute_bulk_operation(payload: BulkOperationRequestSchema, db: AsyncSession = Depends(get_db)):
+async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: Request, db: AsyncSession = Depends(get_db)):
     action = payload.action.upper()
     device_ids = payload.deviceIds
+    raw_user = payload.user or payload.initiator or request.headers.get("X-User-Name") or "Оператор"
+    import urllib.parse
+    initiator = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
     from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
 
     result = await db.execute(select(Device).where((Device.id.in_(device_ids)) | (Device.hostname.in_(device_ids))))
@@ -870,32 +896,72 @@ async def execute_bulk_operation(payload: BulkOperationRequestSchema, db: AsyncS
                 ip_address=dev.ip_address
             )
             dev.power_status = PowerStatus.ON
+            log_device_power_event(
+                device_id=dev.id,
+                action="WAKE",
+                details=f"Групповой Magic Packet отправлен на MAC {dev.mac_address}",
+                status="Success",
+                initiator=initiator,
+                source="MANUAL"
+            )
             await ws_manager.broadcast_event("device.waking", {"deviceId": dev.id, "deviceName": dev.name})
         elif action in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
-            queue_device_command(dev.id, action, force=True, reason="Bulk operation from Web UI")
+            queue_device_command(dev.id, action, force=True, reason=f"Bulk operation from Web UI by {initiator}")
             if dev.hostname and dev.hostname != dev.id:
-                queue_device_command(dev.hostname, action, force=True, reason="Bulk operation from Web UI")
+                queue_device_command(dev.hostname, action, force=True, reason=f"Bulk operation from Web UI by {initiator}")
             dev.power_status = PowerStatus.OFF
             dev.agent_status = AgentStatus.DISCONNECTED
+            log_device_power_event(
+                device_id=dev.id,
+                action=action,
+                details="Групповая команда выключения отправлена по LAN",
+                status="Success",
+                initiator=initiator,
+                source="MANUAL"
+            )
         elif action in ["REBOOT", "RESTART"]:
-            queue_device_command(dev.id, "REBOOT", force=True, reason="Bulk operation from Web UI")
+            queue_device_command(dev.id, "REBOOT", force=True, reason=f"Bulk operation from Web UI by {initiator}")
             if dev.hostname and dev.hostname != dev.id:
-                queue_device_command(dev.hostname, "REBOOT", force=True, reason="Bulk operation from Web UI")
+                queue_device_command(dev.hostname, "REBOOT", force=True, reason=f"Bulk operation from Web UI by {initiator}")
             dev.power_status = PowerStatus.OFF
+            log_device_power_event(
+                device_id=dev.id,
+                action="REBOOT",
+                details="Групповая команда перезагрузки отправлена по LAN",
+                status="Success",
+                initiator=initiator,
+                source="MANUAL"
+            )
         elif action in ["SLEEP", "HIBERNATE", "LOGOFF"]:
-            queue_device_command(dev.id, action, force=True, reason="Bulk operation from Web UI")
+            queue_device_command(dev.id, action, force=True, reason=f"Bulk operation from Web UI by {initiator}")
             if dev.hostname and dev.hostname != dev.id:
-                queue_device_command(dev.hostname, action, force=True, reason="Bulk operation from Web UI")
+                queue_device_command(dev.hostname, action, force=True, reason=f"Bulk operation from Web UI by {initiator}")
+            log_device_power_event(
+                device_id=dev.id,
+                action=action,
+                details=f"Групповая команда {action} отправлена по LAN",
+                status="Success",
+                initiator=initiator,
+                source="MANUAL"
+            )
         elif action in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-            queue_device_command(dev.id, "UPDATE_AGENT", force=True, reason="Bulk agent update from Web UI")
+            queue_device_command(dev.id, "UPDATE_AGENT", force=True, reason=f"Bulk agent update by {initiator}")
             if dev.hostname and dev.hostname != dev.id:
-                queue_device_command(dev.hostname, "UPDATE_AGENT", force=True, reason="Bulk agent update from Web UI")
+                queue_device_command(dev.hostname, "UPDATE_AGENT", force=True, reason=f"Bulk agent update by {initiator}")
             from backend.app.api.v1.agents import agent_update_statuses
             agent_update_statuses[dev.id] = {
                 "status": "UPDATING",
                 "targetVersion": settings.LATEST_AGENT_VERSION,
                 "startedAt": datetime.utcnow().isoformat() + "Z"
             }
+            log_device_power_event(
+                device_id=dev.id,
+                action="UPDATE_AGENT",
+                details=f"Запущено удаленное обновление агента до v{settings.LATEST_AGENT_VERSION}",
+                status="Pending",
+                initiator=initiator,
+                source="REMOTE"
+            )
 
     await db.commit()
     await ws_manager.broadcast_event("devices.bulkAction", {"action": action, "count": len(devices)})

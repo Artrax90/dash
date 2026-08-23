@@ -207,6 +207,10 @@ async def create_token(payload: Dict[str, Any]):
     else:
         max_uses = None
 
+    raw_creator = payload.get("createdBy") or request.headers.get("X-User-Name") or "Оператор"
+    import urllib.parse
+    creator = urllib.parse.unquote(raw_creator) if "%" in raw_creator else raw_creator
+
     new_token = {
         "id": f"TOK-{secrets.token_hex(2).upper()}",
         "token": f"wm_tok_{secrets.token_hex(8)}",
@@ -217,7 +221,7 @@ async def create_token(payload: Dict[str, Any]):
         "isReusable": payload.get("isReusable", True),
         "usedCount": 0,
         "maxUses": max_uses,
-        "createdBy": payload.get("createdBy", "Администратор"),
+        "createdBy": creator,
     }
     tokens_store.insert(0, new_token)
     return new_token
@@ -1158,6 +1162,15 @@ async def trigger_device_agent_update(device_id: str, request: Request, db: Asyn
             hostname=device.hostname
         )
 
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    raw_user = body.get("user") or body.get("initiator") or request.headers.get("X-User-Name") or "Оператор"
+    import urllib.parse
+    initiator = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
+
     # 3. Track update status
     agent_update_statuses[device.id] = {
         "status": "UPDATING",
@@ -1174,7 +1187,7 @@ async def trigger_device_agent_update(device_id: str, request: Request, db: Asyn
         "status": "UPDATING",
         "timestamp": datetime.utcnow().isoformat() + "Z",
         "details": f"Отправлена команда обновления на v{target_ver} (Прямой LAN сигнал + очередь Heartbeat)",
-        "initiator": "Администратор (Web UI)"
+        "initiator": initiator
     }
     agent_update_logs.insert(0, log_entry)
 
@@ -1184,7 +1197,7 @@ async def trigger_device_agent_update(device_id: str, request: Request, db: Asyn
         action="UPDATE_AGENT",
         details=f"Запущено удаленное обновление агента до v{target_ver}",
         status="Pending",
-        initiator="Администратор (Web UI)",
+        initiator=initiator,
         source="REMOTE"
     )
 
@@ -1205,12 +1218,15 @@ async def trigger_device_agent_update(device_id: str, request: Request, db: Asyn
     }
 
 @router.post("/update-bulk")
-async def trigger_bulk_agent_update(payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
+async def trigger_bulk_agent_update(payload: Dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)):
     """
     Trigger remote update for multiple workstations or all outdated stations at once.
     """
     device_ids = payload.get("deviceIds") or []
     update_all_outdated = payload.get("updateAllOutdated", False)
+    raw_user = payload.get("user") or payload.get("initiator") or request.headers.get("X-User-Name") or "Оператор"
+    import urllib.parse
+    initiator = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
 
     target_ver = settings.LATEST_AGENT_VERSION
 
@@ -1231,14 +1247,14 @@ async def trigger_bulk_agent_update(payload: Dict[str, Any], db: AsyncSession = 
             device.id,
             "UPDATE_AGENT",
             force=True,
-            reason=f"Массовое удаленное обновление агентов до v{target_ver}"
+            reason=f"Массовое удаленное обновление агентов до v{target_ver} от {initiator}"
         )
         if device.hostname and device.hostname != device.id:
             queue_device_command(
                 device.hostname,
                 "UPDATE_AGENT",
                 force=True,
-                reason=f"Массовое удаленное обновление агентов до v{target_ver}"
+                reason=f"Массовое удаленное обновление агентов до v{target_ver} от {initiator}"
             )
 
         if device.ip_address:
@@ -1265,7 +1281,7 @@ async def trigger_bulk_agent_update(payload: Dict[str, Any], db: AsyncSession = 
             "status": "UPDATING",
             "timestamp": datetime.utcnow().isoformat() + "Z",
             "details": f"Массовое обновление: отправлена команда на v{target_ver}",
-            "initiator": "Администратор (Web UI)"
+            "initiator": initiator
         }
         agent_update_logs.insert(0, log_entry)
         affected_devices.append(device.id)

@@ -7,7 +7,7 @@ import {
   Edit3, Lock, Download, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
   Eye, EyeOff, Sparkles, Pencil
 } from 'lucide-react';
-import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi } from '@/api';
+import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, getActiveUserName } from '@/api';
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
 import { monitoringSeries } from '@/api/mockData';
 import { useLanguage } from '@/i18n/LanguageContext';
@@ -4520,7 +4520,7 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
             id: l.id || Math.random().toString(),
             action: l.title || defaultTitle,
             detail: isSuccess ? `${l.details || 'Сигнал успешно отправлен'}` : `Ошибка: ${l.details || 'Сбой выполнения'}`,
-            initiator: l.initiator || (isSch ? 'Планировщик' : isLocal ? 'Локальный пользователь' : 'Администратор'),
+            initiator: l.initiator || (isSch ? 'Планировщик' : isLocal ? 'Локальный пользователь' : getActiveUserName()),
             source: l.source || (isSch ? 'SCHEDULE' : isLocal ? 'LOCAL' : 'MANUAL'),
             time: l.timestamp ? formatLogTime(l.timestamp) : 'Недавно',
             status: (isSuccess ? 'ok' : 'fail') as 'ok' | 'fail'
@@ -4622,7 +4622,7 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
 
   const handleExecutePowerAction = async (action: string) => {
     const nowStr = `Сегодня ${new Date().toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })}`;
-    const currentAdminName = 'Администратор';
+    const currentAdminName = getActiveUserName();
     try {
       if (action === 'Wake on LAN' || action === 'WAKE') {
         await devicesApi.wake(device.id, { user: currentAdminName, source: 'MANUAL' });
@@ -7614,7 +7614,7 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
       expiry: expiryOption,
       expiresAt: expStr,
       maxUses: maxU,
-      createdBy: 'Администратор'
+      createdBy: getActiveUserName()
     });
 
     setTokens(prev => [newToken, ...prev]);

@@ -145,3 +145,5 @@ class BulkOperationRequestSchema(BaseModel):
     action: str # WAKE, SHUTDOWN, FORCE_SHUTDOWN, REBOOT, LOGOFF_SESSIONS, UPDATE_AGENT
     deviceIds: List[str]
     parameters: Optional[Dict[str, Any]] = None
+    user: Optional[str] = None
+    initiator: Optional[str] = None

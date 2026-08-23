@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Request
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,8 +41,10 @@ async def get_changes(device_id: Optional[str] = None, db: AsyncSession = Depend
     return hardware_changes_db
 
 @router.post("/baseline/{device_id}")
-async def set_baseline(device_id: str, payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
-    approved_by = payload.get("approvedBy", "Administrator")
+async def set_baseline(device_id: str, payload: Dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)):
+    raw_user = payload.get("approvedBy") or request.headers.get("X-User-Name") or "Оператор"
+    import urllib.parse
+    approved_by = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
     spec = payload.get("spec")
     
     if not spec:
