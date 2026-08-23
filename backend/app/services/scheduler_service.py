@@ -98,7 +98,8 @@ class SchedulerService:
                         details=f"Выполнено по расписанию: '{sch_name}'",
                         status="Success",
                         initiator=f"Планировщик ('{sch_name}')",
-                        source="SCHEDULE"
+                        source="SCHEDULE",
+                        device_name=getattr(dev, "name", None)
                     )
         except Exception as e:
             print(f"[Scheduler] Error logging device power event: {e}")
@@ -191,7 +192,8 @@ class SchedulerService:
                                     details=f"Связь с агентом прервана (компьютер выключен локально, пользователь: {curr_user})",
                                     status="Success",
                                     initiator="Локальный пользователь (Завершение работы ОС / Кнопка)",
-                                    source="LOCAL"
+                                    source="LOCAL",
+                                    device_name=dev.name
                                 )
                             
                             await ws_manager.broadcast_event("device.updated", format_device_summary(dev))

@@ -641,7 +641,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         details=f"Компьютер включен локально (пользователь: {curr_user}, аптайм: {uptime_str})",
                         status="Success",
                         initiator="Локальный пользователь (Кнопка питания / Автостарт)",
-                        source="LOCAL"
+                        source="LOCAL",
+                        device_name=device.name
                     )
 
             if cpu_val is not None:
@@ -1198,7 +1199,8 @@ async def trigger_device_agent_update(device_id: str, request: Request, db: Asyn
         details=f"Запущено удаленное обновление агента до v{target_ver}",
         status="Pending",
         initiator=initiator,
-        source="REMOTE"
+        source="REMOTE",
+        device_name=device.name
     )
 
     await ws_manager.broadcast_event("agent.update_started", {

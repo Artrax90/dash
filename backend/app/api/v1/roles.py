@@ -3,11 +3,11 @@ import os
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List
 from pydantic import BaseModel
+from backend.app.core.config import settings
 
 router = APIRouter(prefix="/roles", tags=["roles"])
 
-DATA_DIR = os.path.join(os.getcwd(), "data")
-ROLES_FILE = os.path.join(DATA_DIR, "roles.json")
+ROLES_FILE = os.path.join(settings.DATA_DIR, "roles.json")
 
 def load_roles() -> List[Dict[str, Any]]:
     default = [

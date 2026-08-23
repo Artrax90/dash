@@ -15,11 +15,42 @@ from backend.app.core.config import settings
 
 import collections
 import time
+import json
+import os
+from datetime import datetime, timezone
+from backend.app.core.config import settings
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
-# In-memory storage of device-specific power and execution events
-device_power_logs: Dict[str, List[Dict[str, Any]]] = collections.defaultdict(list)
+POWER_LOGS_FILE = os.path.join(settings.DATA_DIR, "power_logs.json")
+
+def load_device_power_logs() -> Dict[str, List[Dict[str, Any]]]:
+    if os.path.exists(POWER_LOGS_FILE):
+        try:
+            with open(POWER_LOGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    return collections.defaultdict(list, {k.upper(): v for k, v in data.items() if isinstance(v, list)})
+        except Exception as e:
+            print(f"Error loading power logs: {e}")
+    return collections.defaultdict(list)
+
+def save_device_power_logs(logs: Dict[str, List[Dict[str, Any]]]):
+    try:
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        cleaned = {k.upper(): v[:100] for k, v in logs.items() if v}
+        tmp_file = POWER_LOGS_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(cleaned, f, ensure_ascii=False, indent=2)
+        if os.path.exists(POWER_LOGS_FILE):
+            os.replace(tmp_file, POWER_LOGS_FILE)
+        else:
+            os.rename(tmp_file, POWER_LOGS_FILE)
+    except Exception as e:
+        print(f"Error saving power logs: {e}")
+
+# Persistent storage of device-specific power and execution events
+device_power_logs: Dict[str, List[Dict[str, Any]]] = load_device_power_logs()
 # In-memory storage of live reported processes per device
 device_live_processes: Dict[str, List[Dict[str, Any]]] = {}
 # In-memory storage of fleet telemetry points
@@ -54,7 +85,8 @@ def log_device_power_event(
     details: str,
     status: str = "Success",
     initiator: str = "Оператор",
-    source: str = "MANUAL"
+    source: str = "MANUAL",
+    device_name: Optional[str] = None
 ):
     import urllib.parse
     if initiator and "%" in initiator:
@@ -63,8 +95,10 @@ def log_device_power_event(
         except Exception:
             pass
 
-    now_iso = datetime.utcnow().isoformat() + "Z"
+    now_utc = datetime.now(timezone.utc)
+    now_iso = now_utc.isoformat()
     act_upper = action.upper()
+    target_name = device_name or device_id
 
     # Generate human-friendly title reflecting reason / source
     if str(source).upper() in ["SCHEDULE", "CRON", "РАСПИСАНИЕ"]:
@@ -107,29 +141,35 @@ def log_device_power_event(
             title = f"Команда питания: {action}"
 
     entry = {
-        "id": f"EVT-{int(time.time() * 1000)}",
+        "id": f"EVT-{int(now_utc.timestamp() * 1000)}",
         "action": action,
         "title": title,
         "timestamp": now_iso,
-        "time": datetime.utcnow().strftime("%H:%M:%S"),
+        "time": now_iso,
         "status": status,
         "details": details,
         "initiator": initiator,
-        "source": source
+        "source": source,
+        "deviceId": device_id,
+        "deviceName": target_name
     }
-    device_power_logs[device_id].insert(0, entry)
-    # Keep last 50 events per device
-    if len(device_power_logs[device_id]) > 50:
-        device_power_logs[device_id] = device_power_logs[device_id][:50]
+    
+    key = device_id.upper()
+    device_power_logs[key].insert(0, entry)
+    if len(device_power_logs[key]) > 100:
+        device_power_logs[key] = device_power_logs[key][:100]
+        
+    save_device_power_logs(device_power_logs)
 
     try:
         from backend.app.api.v1.audit import record_audit
         record_audit(
             user=initiator,
             action=f"POWER_{act_upper}",
-            target=device_id,
+            target=target_name,
             result=status.upper(),
-            details=f"{title}: {details}"
+            details=f"{title}: {details}",
+            device_name=target_name
         )
     except Exception:
         pass
@@ -731,7 +771,8 @@ async def wake_device(device_id: str, request: Request, db: AsyncSession = Depen
         details=f"Magic Packet отправлен на MAC {device.mac_address}",
         status="Success" if success else "Failed",
         initiator=initiator,
-        source=source
+        source=source,
+        device_name=device.name
     )
     await db.commit()
     await ws_manager.broadcast_event("device.waking", {"deviceId": device.id, "deviceName": device.name, "mac": device.mac_address, "macs": list(macs_to_wake)})
@@ -742,8 +783,15 @@ async def wake_device(device_id: str, request: Request, db: AsyncSession = Depen
 async def get_device_power_logs(device_id: str, db: AsyncSession = Depends(get_db)):
     """Retrieve executed power commands and schedule actions for a specific device."""
     key = device_id.upper()
+    found_logs: List[Dict[str, Any]] = []
+    seen_ids = set()
+    
     if key in device_power_logs and device_power_logs[key]:
-        return device_power_logs[key]
+        for l in device_power_logs[key]:
+            lid = l.get("id")
+            if lid not in seen_ids:
+                seen_ids.add(lid)
+                found_logs.append(l)
     
     # Check alternate keys
     res = await db.execute(
@@ -756,9 +804,15 @@ async def get_device_power_logs(device_id: str, db: AsyncSession = Depends(get_d
     dev = res.scalar_one_or_none()
     if dev:
         for alt in [dev.id.upper(), (dev.hostname or "").upper(), (dev.name or "").upper()]:
-            if alt in device_power_logs and device_power_logs[alt]:
-                return device_power_logs[alt]
-    return []
+            if alt and alt in device_power_logs and device_power_logs[alt]:
+                for l in device_power_logs[alt]:
+                    lid = l.get("id")
+                    if lid not in seen_ids:
+                        seen_ids.add(lid)
+                        found_logs.append(l)
+
+    found_logs.sort(key=lambda x: str(x.get("timestamp", "")), reverse=True)
+    return found_logs[:100]
 
 @router.post("/{device_id}/power")
 async def execute_device_power_action(device_id: str, payload: Dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)):
@@ -825,7 +879,8 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
         details=detail_msg,
         status="Success",
         initiator=initiator,
-        source=source
+        source=source,
+        device_name=device.name
     )
 
     await db.commit()
@@ -902,7 +957,8 @@ async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: R
                 details=f"Групповой Magic Packet отправлен на MAC {dev.mac_address}",
                 status="Success",
                 initiator=initiator,
-                source="MANUAL"
+                source="MANUAL",
+                device_name=dev.name
             )
             await ws_manager.broadcast_event("device.waking", {"deviceId": dev.id, "deviceName": dev.name})
         elif action in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
@@ -917,7 +973,8 @@ async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: R
                 details="Групповая команда выключения отправлена по LAN",
                 status="Success",
                 initiator=initiator,
-                source="MANUAL"
+                source="MANUAL",
+                device_name=dev.name
             )
         elif action in ["REBOOT", "RESTART"]:
             queue_device_command(dev.id, "REBOOT", force=True, reason=f"Bulk operation from Web UI by {initiator}")
@@ -930,7 +987,8 @@ async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: R
                 details="Групповая команда перезагрузки отправлена по LAN",
                 status="Success",
                 initiator=initiator,
-                source="MANUAL"
+                source="MANUAL",
+                device_name=dev.name
             )
         elif action in ["SLEEP", "HIBERNATE", "LOGOFF"]:
             queue_device_command(dev.id, action, force=True, reason=f"Bulk operation from Web UI by {initiator}")
@@ -942,7 +1000,8 @@ async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: R
                 details=f"Групповая команда {action} отправлена по LAN",
                 status="Success",
                 initiator=initiator,
-                source="MANUAL"
+                source="MANUAL",
+                device_name=dev.name
             )
         elif action in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
             queue_device_command(dev.id, "UPDATE_AGENT", force=True, reason=f"Bulk agent update by {initiator}")
@@ -960,7 +1019,8 @@ async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: R
                 details=f"Запущено удаленное обновление агента до v{settings.LATEST_AGENT_VERSION}",
                 status="Pending",
                 initiator=initiator,
-                source="REMOTE"
+                source="REMOTE",
+                device_name=dev.name
             )
 
     await db.commit()

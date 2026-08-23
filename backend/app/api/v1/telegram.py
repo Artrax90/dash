@@ -9,11 +9,12 @@ from pydantic import BaseModel
 from backend.app.api.v1.users import load_users
 from backend.app.api.v1.audit import record_audit
 
+from backend.app.core.config import settings
+
 router = APIRouter(prefix="/telegram", tags=["telegram"])
 
-DATA_DIR = os.path.join(os.getcwd(), "data")
-CONFIG_FILE = os.path.join(DATA_DIR, "telegram_config.json")
-DEVICES_FILE = os.path.join(DATA_DIR, "devices.json")
+CONFIG_FILE = os.path.join(settings.DATA_DIR, "telegram_config.json")
+DEVICES_FILE = os.path.join(settings.DATA_DIR, "devices.json")
 
 import httpx
 

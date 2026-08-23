@@ -9,8 +9,7 @@ from pydantic import BaseModel
 
 router = APIRouter(prefix="/users", tags=["users"])
 
-DATA_DIR = os.path.join(os.getcwd(), "data")
-USERS_FILE = os.path.join(DATA_DIR, "users.json")
+USERS_FILE = os.path.join(settings.DATA_DIR, "users.json")
 
 def hash_password(password: str, salt: str = None) -> tuple[str, str]:
     if not salt:

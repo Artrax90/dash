@@ -8913,17 +8913,63 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
 // ----------------------------------------------------
 // 14. AUDIT LOG
 // ----------------------------------------------------
+function formatAuditTimestamp(raw?: string): string {
+  if (!raw) return '—';
+  // Check if ISO format (e.g. 2026-08-23T20:46:37Z or 2026-08-23T20:46:37+00:00)
+  if (raw.includes('T') || raw.endsWith('Z')) {
+    const d = new Date(raw);
+    if (!isNaN(d.getTime())) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+  }
+  // Check if legacy "DD.MM.YYYY HH:MM:SS" which was stored as UTC
+  const match = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
+  if (match) {
+    const [_, day, month, year, hour, min, sec] = match;
+    const d = new Date(Date.UTC(parseInt(year), parseInt(month) - 1, parseInt(day), parseInt(hour), parseInt(min), parseInt(sec)));
+    if (!isNaN(d.getTime())) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    }
+  }
+  return raw;
+}
+
 function AuditLog({ compact = false, deviceId }: { compact?: boolean; deviceId?: string }) {
   const { t } = useLanguage();
   const [items, setItems] = useState<AuditEntry[]>([]);
+  const [deviceMap, setDeviceMap] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
 
   useEffect(() => {
     auditApi.list().then(setItems);
+    devicesApi.list().then(devs => {
+      if (Array.isArray(devs)) {
+        const map: Record<string, string> = {};
+        devs.forEach(d => {
+          if (d.id) map[d.id.toUpperCase()] = d.name;
+          if (d.hostname) map[d.hostname.toUpperCase()] = d.name;
+        });
+        setDeviceMap(map);
+      }
+    }).catch(() => {});
   }, []);
 
-  const filtered = (deviceId ? items.filter(item => item.target === deviceId) : items)
-    .filter(e => `${e.action} ${e.user} ${e.target} ${e.details}`.toLowerCase().includes(query.toLowerCase()));
+  const getTargetDisplayName = (rawTarget: string) => {
+    if (!rawTarget) return 'Fleet';
+    const upper = rawTarget.toUpperCase();
+    if (deviceMap[upper]) {
+      return deviceMap[upper];
+    }
+    return rawTarget;
+  };
+
+  const filtered = (deviceId ? items.filter(item => item.target === deviceId || item.target === getTargetDisplayName(deviceId)) : items)
+    .filter(e => {
+      const targetName = getTargetDisplayName(e.target);
+      return `${e.action} ${e.user} ${e.target} ${targetName} ${e.details}`.toLowerCase().includes(query.toLowerCase());
+    });
 
   return (
     <>
@@ -8958,10 +9004,10 @@ function AuditLog({ compact = false, deviceId }: { compact?: boolean; deviceId?:
           ) : (
             filtered.map(entry => (
               <div className="audit-row" key={entry.id}>
-                <span className="muted-text">{entry.timestamp}</span>
+                <span className="muted-text">{formatAuditTimestamp(entry.timestamp)}</span>
                 <strong>{entry.user}</strong>
                 <span className="action-code">{entry.action}</span>
-                <span>{entry.target}</span>
+                <span>{getTargetDisplayName(entry.target)}</span>
                 <StatusPill status={entry.result} />
                 <span className="muted-text audit-detail">{entry.details}</span>
               </div>
