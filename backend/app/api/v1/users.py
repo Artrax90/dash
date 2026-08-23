@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
+from backend.app.core.config import settings
 
 router = APIRouter(prefix="/users", tags=["users"])
 
