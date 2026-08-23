@@ -119,6 +119,12 @@ class SchedulerService:
             "details": f"{summary}. Инициировано правилом расписания."
         }
         execution_logs_db.insert(0, log_entry)
+        try:
+            from backend.app.api.v1.schedules import save_schedule_logs, save_schedules, schedules_db
+            save_schedule_logs(execution_logs_db)
+            save_schedules(schedules_db)
+        except Exception:
+            pass
         
         # Broadcast via WebSocket
         await ws_manager.broadcast_event("SCHEDULE_EXECUTED", {

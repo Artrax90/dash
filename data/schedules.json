@@ -1,0 +1,145 @@
+[
+  {
+    "id": "SCH-01",
+    "name": "Полный суточный цикл (Офис)",
+    "type": "Lifecycle",
+    "description": "Единый рабочий цикл: утренний WoL старт, вечерний сброс RDP и ночное выключение.",
+    "enabled": true,
+    "timezone": "Europe/Moscow",
+    "days": "Пн-Пт",
+    "daysList": [
+      "ПН",
+      "ВТ",
+      "СР",
+      "ЧТ",
+      "ПТ"
+    ],
+    "action": "LIFECYCLE",
+    "target": "Office",
+    "time": "07:45",
+    "steps": [
+      {
+        "id": "step-1",
+        "action": "WAKE",
+        "time": "07:45",
+        "enabled": true,
+        "gracePeriodMinutes": 0,
+        "warningMessage": "",
+        "forceShutdown": false
+      },
+      {
+        "id": "step-2",
+        "action": "RDP_CLEANUP",
+        "time": "21:45",
+        "enabled": true,
+        "gracePeriodMinutes": 0,
+        "warningMessage": "",
+        "forceShutdown": false
+      },
+      {
+        "id": "step-3",
+        "action": "SHUTDOWN",
+        "time": "22:00",
+        "enabled": true,
+        "gracePeriodMinutes": 5,
+        "warningMessage": "Внимание! Через 5 минут компьютер будет автоматически выключен.",
+        "forceShutdown": true
+      }
+    ],
+    "gracePeriodMinutes": 5,
+    "warningMessage": "Внимание! Через 5 минут компьютер будет автоматически выключен.",
+    "forceShutdown": true,
+    "lastRun": null,
+    "lastRunResult": null,
+    "lastRunSummary": "Ожидает первого запуска"
+  },
+  {
+    "id": "SCH-02",
+    "name": "Суточный цикл отдела разработки",
+    "type": "Lifecycle",
+    "description": "Автоматизация рабочего дня для разработчиков: старт в 09:00 и завершение в 23:00.",
+    "enabled": true,
+    "timezone": "Europe/Moscow",
+    "days": "Пн-Пт",
+    "daysList": [
+      "ПН",
+      "ВТ",
+      "СР",
+      "ЧТ",
+      "ПТ"
+    ],
+    "action": "LIFECYCLE",
+    "target": "All",
+    "time": "09:00",
+    "steps": [
+      {
+        "id": "step-1",
+        "action": "WAKE",
+        "time": "09:00",
+        "enabled": true,
+        "gracePeriodMinutes": 0,
+        "warningMessage": "",
+        "forceShutdown": false
+      },
+      {
+        "id": "step-2",
+        "action": "RDP_CLEANUP",
+        "time": "22:45",
+        "enabled": true,
+        "gracePeriodMinutes": 0,
+        "warningMessage": "",
+        "forceShutdown": false
+      },
+      {
+        "id": "step-3",
+        "action": "SHUTDOWN",
+        "time": "23:00",
+        "enabled": true,
+        "gracePeriodMinutes": 10,
+        "warningMessage": "Окончание смены. Завершение работы через 10 минут.",
+        "forceShutdown": true
+      }
+    ],
+    "gracePeriodMinutes": 10,
+    "warningMessage": "Окончание смены. Завершение работы через 10 минут.",
+    "forceShutdown": true,
+    "lastRun": null,
+    "lastRunResult": null,
+    "lastRunSummary": "Ожидает первого запуска"
+  },
+  {
+    "id": "SCH-03",
+    "name": "Профилактическая перезагрузка (Выходные)",
+    "type": "Reboot",
+    "description": "Еженедельный перезапуск рабочих станций для применения системных обновлений.",
+    "enabled": true,
+    "timezone": "Europe/Moscow",
+    "days": "Воскресенье",
+    "daysList": [
+      "ВС"
+    ],
+    "time": "04:00",
+    "action": "REBOOT",
+    "target": "All",
+    "steps": [
+      {
+        "id": "step-1",
+        "action": "REBOOT",
+        "time": "04:00",
+        "enabled": true,
+        "daysList": [
+          "ВС"
+        ],
+        "gracePeriodMinutes": 0,
+        "warningMessage": "Запланированная перезагрузка Windows",
+        "forceShutdown": true
+      }
+    ],
+    "gracePeriodMinutes": 0,
+    "warningMessage": "Запланированная перезагрузка Windows",
+    "forceShutdown": true,
+    "lastRun": null,
+    "lastRunResult": null,
+    "lastRunSummary": "Ожидает первого запуска"
+  }
+]

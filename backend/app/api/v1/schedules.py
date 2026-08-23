@@ -2,148 +2,207 @@ from fastapi import APIRouter, Depends, HTTPException, Body
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import asyncio
+import json
+import os
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
+from backend.app.core.config import settings
 from backend.app.db.session import get_db
 from backend.app.models.device import Device
 from backend.app.services.wol_service import wol_service
 
 router = APIRouter(prefix="/schedules", tags=["schedules"])
 
-# In-memory execution logs store
-execution_logs_db: List[Dict[str, Any]] = []
+SCHEDULES_FILE = os.path.join(settings.DATA_DIR, "schedules.json")
+SCHEDULE_LOGS_FILE = os.path.join(settings.DATA_DIR, "schedule_logs.json")
 
-# Initial rich schedules database with composite lifecycle rules
-schedules_db: List[Dict[str, Any]] = [
-    {
-        "id": "SCH-01",
-        "name": "Полный суточный цикл (Офис)",
-        "type": "Lifecycle",
-        "description": "Единый рабочий цикл: утренний WoL старт, вечерний сброс RDP и ночное выключение.",
-        "enabled": True,
-        "timezone": "Europe/Moscow",
-        "days": "Пн-Пт",
-        "daysList": ["ПН", "ВТ", "СР", "ЧТ", "ПТ"],
-        "action": "LIFECYCLE",
-        "target": "Office",
-        "time": "07:45",
-        "steps": [
-            {
-                "id": "step-1",
-                "action": "WAKE",
-                "time": "07:45",
-                "enabled": True,
-                "gracePeriodMinutes": 0,
-                "warningMessage": "",
-                "forceShutdown": False
-            },
-            {
-                "id": "step-2",
-                "action": "RDP_CLEANUP",
-                "time": "21:45",
-                "enabled": True,
-                "gracePeriodMinutes": 0,
-                "warningMessage": "",
-                "forceShutdown": False
-            },
-            {
-                "id": "step-3",
-                "action": "SHUTDOWN",
-                "time": "22:00",
-                "enabled": True,
-                "gracePeriodMinutes": 5,
-                "warningMessage": "Внимание! Через 5 минут компьютер будет автоматически выключен.",
-                "forceShutdown": True
-            }
-        ],
-        "gracePeriodMinutes": 5,
-        "warningMessage": "Внимание! Через 5 минут компьютер будет автоматически выключен.",
-        "forceShutdown": True,
-        "lastRun": (datetime.utcnow() - timedelta(hours=15)).strftime("%Y-%m-%d %H:%M:%S"),
-        "lastRunResult": "Success",
-        "lastRunSummary": "Этап WoL: Успешно включено 1/1 ПК"
-    },
-    {
-        "id": "SCH-02",
-        "name": "Суточный цикл отдела разработки",
-        "type": "Lifecycle",
-        "description": "Автоматизация рабочего дня для разработчиков: старт в 09:00 и завершение в 23:00.",
-        "enabled": True,
-        "timezone": "Europe/Moscow",
-        "days": "Пн-Пт",
-        "daysList": ["ПН", "ВТ", "СР", "ЧТ", "ПТ"],
-        "action": "LIFECYCLE",
-        "target": "All",
-        "time": "09:00",
-        "steps": [
-            {
-                "id": "step-1",
-                "action": "WAKE",
-                "time": "09:00",
-                "enabled": True,
-                "gracePeriodMinutes": 0,
-                "warningMessage": "",
-                "forceShutdown": False
-            },
-            {
-                "id": "step-2",
-                "action": "RDP_CLEANUP",
-                "time": "22:45",
-                "enabled": True,
-                "gracePeriodMinutes": 0,
-                "warningMessage": "",
-                "forceShutdown": False
-            },
-            {
-                "id": "step-3",
-                "action": "SHUTDOWN",
-                "time": "23:00",
-                "enabled": True,
-                "gracePeriodMinutes": 10,
-                "warningMessage": "Окончание смены. Завершение работы через 10 минут.",
-                "forceShutdown": True
-            }
-        ],
-        "gracePeriodMinutes": 10,
-        "warningMessage": "Окончание смены. Завершение работы через 10 минут.",
-        "forceShutdown": True,
-        "lastRun": (datetime.utcnow() - timedelta(days=1, hours=2)).strftime("%Y-%m-%d %H:%M:%S"),
-        "lastRunResult": "Success",
-        "lastRunSummary": "Этап Выключение: 1/1 ПК выключено"
-    },
-    {
-        "id": "SCH-03",
-        "name": "Профилактическая перезагрузка (Выходные)",
-        "type": "Reboot",
-        "description": "Еженедельный перезапуск рабочих станций для применения системных обновлений.",
-        "enabled": True,
-        "timezone": "Europe/Moscow",
-        "days": "Воскресенье",
-        "daysList": ["ВС"],
-        "time": "04:00",
-        "action": "REBOOT",
-        "target": "All",
-        "steps": [
-            {
-                "id": "step-1",
-                "action": "REBOOT",
-                "time": "04:00",
-                "enabled": True,
-                "gracePeriodMinutes": 0,
-                "warningMessage": "Запланированная перезагрузка Windows",
-                "forceShutdown": True
-            }
-        ],
-        "gracePeriodMinutes": 0,
-        "warningMessage": "Запланированная перезагрузка Windows",
-        "forceShutdown": True,
-        "lastRun": (datetime.utcnow() - timedelta(days=5)).strftime("%Y-%m-%d %H:%M:%S"),
-        "lastRunResult": "Success",
-        "lastRunSummary": "Перезагрузка выполнена успешно"
-    }
-]
+def get_default_schedules() -> List[Dict[str, Any]]:
+    return [
+        {
+            "id": "SCH-01",
+            "name": "Полный суточный цикл (Офис)",
+            "type": "Lifecycle",
+            "description": "Единый рабочий цикл: утренний WoL старт, вечерний сброс RDP и ночное выключение.",
+            "enabled": True,
+            "timezone": "Europe/Moscow",
+            "days": "Пн-Пт",
+            "daysList": ["ПН", "ВТ", "СР", "ЧТ", "ПТ"],
+            "action": "LIFECYCLE",
+            "target": "Office",
+            "time": "07:45",
+            "steps": [
+                {
+                    "id": "step-1",
+                    "action": "WAKE",
+                    "time": "07:45",
+                    "enabled": True,
+                    "gracePeriodMinutes": 0,
+                    "warningMessage": "",
+                    "forceShutdown": False
+                },
+                {
+                    "id": "step-2",
+                    "action": "RDP_CLEANUP",
+                    "time": "21:45",
+                    "enabled": True,
+                    "gracePeriodMinutes": 0,
+                    "warningMessage": "",
+                    "forceShutdown": False
+                },
+                {
+                    "id": "step-3",
+                    "action": "SHUTDOWN",
+                    "time": "22:00",
+                    "enabled": True,
+                    "gracePeriodMinutes": 5,
+                    "warningMessage": "Внимание! Через 5 минут компьютер будет автоматически выключен.",
+                    "forceShutdown": True
+                }
+            ],
+            "gracePeriodMinutes": 5,
+            "warningMessage": "Внимание! Через 5 минут компьютер будет автоматически выключен.",
+            "forceShutdown": True,
+            "lastRun": None,
+            "lastRunResult": None,
+            "lastRunSummary": "Ожидает первого запуска"
+        },
+        {
+            "id": "SCH-02",
+            "name": "Суточный цикл отдела разработки",
+            "type": "Lifecycle",
+            "description": "Автоматизация рабочего дня для разработчиков: старт в 09:00 и завершение в 23:00.",
+            "enabled": True,
+            "timezone": "Europe/Moscow",
+            "days": "Пн-Пт",
+            "daysList": ["ПН", "ВТ", "СР", "ЧТ", "ПТ"],
+            "action": "LIFECYCLE",
+            "target": "All",
+            "time": "09:00",
+            "steps": [
+                {
+                    "id": "step-1",
+                    "action": "WAKE",
+                    "time": "09:00",
+                    "enabled": True,
+                    "gracePeriodMinutes": 0,
+                    "warningMessage": "",
+                    "forceShutdown": False
+                },
+                {
+                    "id": "step-2",
+                    "action": "RDP_CLEANUP",
+                    "time": "22:45",
+                    "enabled": True,
+                    "gracePeriodMinutes": 0,
+                    "warningMessage": "",
+                    "forceShutdown": False
+                },
+                {
+                    "id": "step-3",
+                    "action": "SHUTDOWN",
+                    "time": "23:00",
+                    "enabled": True,
+                    "gracePeriodMinutes": 10,
+                    "warningMessage": "Окончание смены. Завершение работы через 10 минут.",
+                    "forceShutdown": True
+                }
+            ],
+            "gracePeriodMinutes": 10,
+            "warningMessage": "Окончание смены. Завершение работы через 10 минут.",
+            "forceShutdown": True,
+            "lastRun": None,
+            "lastRunResult": None,
+            "lastRunSummary": "Ожидает первого запуска"
+        },
+        {
+            "id": "SCH-03",
+            "name": "Профилактическая перезагрузка (Выходные)",
+            "type": "Reboot",
+            "description": "Еженедельный перезапуск рабочих станций для применения системных обновлений.",
+            "enabled": True,
+            "timezone": "Europe/Moscow",
+            "days": "Воскресенье",
+            "daysList": ["ВС"],
+            "time": "04:00",
+            "action": "REBOOT",
+            "target": "All",
+            "steps": [
+                {
+                    "id": "step-1",
+                    "action": "REBOOT",
+                    "time": "04:00",
+                    "enabled": True,
+                    "daysList": ["ВС"],
+                    "gracePeriodMinutes": 0,
+                    "warningMessage": "Запланированная перезагрузка Windows",
+                    "forceShutdown": True
+                }
+            ],
+            "gracePeriodMinutes": 0,
+            "warningMessage": "Запланированная перезагрузка Windows",
+            "forceShutdown": True,
+            "lastRun": None,
+            "lastRunResult": None,
+            "lastRunSummary": "Ожидает первого запуска"
+        }
+    ]
+
+def load_schedules() -> List[Dict[str, Any]]:
+    if os.path.exists(SCHEDULES_FILE):
+        try:
+            with open(SCHEDULES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except Exception as e:
+            print(f"Error loading schedules: {e}")
+    defaults = get_default_schedules()
+    save_schedules(defaults)
+    return defaults
+
+def save_schedules(schedules: List[Dict[str, Any]]):
+    try:
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        tmp_file = SCHEDULES_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(schedules, f, ensure_ascii=False, indent=2)
+        if os.path.exists(SCHEDULES_FILE):
+            os.replace(tmp_file, SCHEDULES_FILE)
+        else:
+            os.rename(tmp_file, SCHEDULES_FILE)
+    except Exception as e:
+        print(f"Error saving schedules: {e}")
+
+def load_schedule_logs() -> List[Dict[str, Any]]:
+    if os.path.exists(SCHEDULE_LOGS_FILE):
+        try:
+            with open(SCHEDULE_LOGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    return data
+        except Exception as e:
+            print(f"Error loading schedule logs: {e}")
+    return []
+
+def save_schedule_logs(logs: List[Dict[str, Any]]):
+    try:
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        tmp_file = SCHEDULE_LOGS_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(logs[:500], f, ensure_ascii=False, indent=2)
+        if os.path.exists(SCHEDULE_LOGS_FILE):
+            os.replace(tmp_file, SCHEDULE_LOGS_FILE)
+        else:
+            os.rename(tmp_file, SCHEDULE_LOGS_FILE)
+    except Exception as e:
+        print(f"Error saving schedule logs: {e}")
+
+# Persistent schedules database
+schedules_db: List[Dict[str, Any]] = load_schedules()
+# Persistent execution logs store
+execution_logs_db: List[Dict[str, Any]] = load_schedule_logs()
 
 class ScheduleStepSchema(BaseModel):
     id: Optional[str] = None
@@ -366,6 +425,7 @@ async def create_schedule(payload: ScheduleCreateUpdateSchema, db: AsyncSession 
         "lastRunSummary": "Ожидает первого запуска"
     }
     schedules_db.append(new_schedule)
+    save_schedules(schedules_db)
     return new_schedule
 
 @router.put("/{schedule_id}")
@@ -413,6 +473,7 @@ async def update_schedule(schedule_id: str, payload: ScheduleCreateUpdateSchema)
             s["gracePeriodMinutes"] = payload.gracePeriodMinutes or 0
             s["warningMessage"] = payload.warningMessage or ""
             s["forceShutdown"] = bool(payload.forceShutdown)
+            save_schedules(schedules_db)
             return s
             
     raise HTTPException(status_code=404, detail="Schedule not found")
@@ -424,6 +485,7 @@ async def delete_schedule(schedule_id: str):
     init_len = len(schedules_db)
     schedules_db = [s for s in schedules_db if s["id"] != schedule_id]
     if len(schedules_db) < init_len:
+        save_schedules(schedules_db)
         return {"status": "deleted", "id": schedule_id}
     raise HTTPException(status_code=404, detail="Schedule not found")
 
@@ -433,6 +495,7 @@ async def toggle_schedule(schedule_id: str):
     for s in schedules_db:
         if s["id"] == schedule_id:
             s["enabled"] = not s["enabled"]
+            save_schedules(schedules_db)
             return {"id": schedule_id, "enabled": s["enabled"]}
     raise HTTPException(status_code=404, detail="Schedule not found")
 

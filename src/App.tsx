@@ -4470,6 +4470,10 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
           if (wakeStep.time) setMorningTime(wakeStep.time);
           if (wakeStep.daysList && wakeStep.daysList.length > 0) setMorningDays(wakeStep.daysList);
           else if (found.daysList && found.daysList.length > 0) setMorningDays(found.daysList);
+        } else if (found.action === 'WAKE') {
+          setMorningEnabled(found.enabled !== false);
+          if (found.time) setMorningTime(found.time);
+          if (found.daysList && found.daysList.length > 0) setMorningDays(found.daysList);
         } else if (found.steps && found.steps.length > 0) {
           setMorningEnabled(false);
         }
@@ -4482,15 +4486,22 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
           if (shutdownStep.daysList && shutdownStep.daysList.length > 0) setEveningDays(shutdownStep.daysList);
           else if (found.daysList && found.daysList.length > 0) setEveningDays(found.daysList);
         } else if (found.action === 'SHUTDOWN') {
-          setEveningEnabled(true);
+          setEveningEnabled(found.enabled !== false);
           if (found.time) setEveningTime(found.time);
           if (found.daysList && found.daysList.length > 0) setEveningDays(found.daysList);
+        } else if (found.steps && found.steps.length > 0) {
+          setEveningEnabled(false);
         }
 
         const rebootStep = found.steps?.find(st => st.action === 'REBOOT');
         if (rebootStep) {
           setRebootEnabled(rebootStep.enabled !== false);
           if (rebootStep.time) setRebootTime(rebootStep.time);
+        } else if (found.action === 'REBOOT') {
+          setRebootEnabled(found.enabled !== false);
+          if (found.time) setRebootTime(found.time);
+        } else if (found.steps && found.steps.length > 0) {
+          setRebootEnabled(false);
         }
       }
     }).catch(console.error);
