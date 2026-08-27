@@ -710,11 +710,23 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
     effective_interval = agent_settings.get("defaultHeartbeatInterval", 60)
     device = None
 
+    lookup_conds = []
     if device_id:
-        result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
+        lookup_conds.append(func.lower(Device.id) == str(device_id).lower())
+        lookup_conds.append(func.lower(Device.hostname) == str(device_id).lower())
+    if payload.get("hostname"):
+        lookup_conds.append(func.lower(Device.hostname) == str(payload.get("hostname")).lower())
+    if payload.get("mac"):
+        mac_clean = str(payload.get("mac")).replace("-", ":").upper()
+        lookup_conds.append(Device.mac_address == mac_clean)
+        lookup_conds.append(func.lower(Device.mac_address) == mac_clean.lower())
+
+    if lookup_conds:
+        result = await db.execute(select(Device).where(or_(*lookup_conds)))
         device = result.scalar_one_or_none()
-        if device:
-            # Check if device just turned on / booted up physically
+
+    if device:
+        # Check if device just turned on / booted up physically
             prev_status = device.power_status
             prev_last_seen = device.last_seen
             now_utc = datetime.utcnow()

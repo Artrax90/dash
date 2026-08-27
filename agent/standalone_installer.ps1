@@ -373,7 +373,7 @@ try {
 `$DeviceMac = '$mac'
 `$AgentVersion = '2.1.0'
 `$osCaption = '$osCaption'
-`$script:currentInterval = 60
+`$script:currentInterval = 10
 
 function Update-AgentService([string]`$targetVer = "2.1.0") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
@@ -710,8 +710,8 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             deviceId = `$DeviceId
             ip = `$currentIp
             ipAddress = `$currentIp
-            mac = `$currentMac
-            macAddress = `$currentMac
+            mac = if (`$currentMac) { `$currentMac } else { `$DeviceMac }
+            macAddress = if (`$currentMac) { `$currentMac } else { `$DeviceMac }
             hostname = `$env:COMPUTERNAME
             cpu = `$cpu
             ram = `$ram

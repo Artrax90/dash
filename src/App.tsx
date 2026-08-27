@@ -1193,6 +1193,39 @@ function Dashboard({
 
   useEffect(() => {
     loadData();
+    const interval = setInterval(() => {
+      Promise.all([
+        dashboardApi.stats(),
+        devicesApi.list(),
+        alertsApi.list(),
+        schedulesApi.list(),
+        hardwareApi.getChanges()
+      ]).then(([s, d, a, sch, hw]) => {
+        setStats(s);
+        setDevices(d);
+        setAlerts(a);
+        setSchedules(sch || []);
+        setHardwareChanges(hw || []);
+      }).catch(() => {});
+    }, 4000);
+
+    const unsubUpdated = wsClient.on('device.updated', (updatedDev: any) => {
+      if (updatedDev && updatedDev.id) {
+        setDevices(prev => prev.map(d => d.id === updatedDev.id ? { ...d, ...updatedDev } : d));
+        dashboardApi.stats().then(setStats).catch(() => {});
+      }
+    });
+
+    const unsubAlert = wsClient.on('alert.created', () => {
+      alertsApi.list().then(setAlerts).catch(() => {});
+      dashboardApi.stats().then(setStats).catch(() => {});
+    });
+
+    return () => {
+      clearInterval(interval);
+      unsubUpdated();
+      unsubAlert();
+    };
   }, []);
 
   const filtered = devices.filter((d) => `${d.name} ${d.id} ${d.ip} ${getDeviceGroups(d).join(' ')}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
@@ -1755,6 +1788,22 @@ function Devices({
 
   useEffect(() => {
     loadFleet();
+    const interval = setInterval(() => {
+      devicesApi.list().then((data) => {
+        setItems(data);
+      }).catch(() => {});
+    }, 4000);
+
+    const unsubUpdated = wsClient.on('device.updated', (updatedDev: any) => {
+      if (updatedDev && updatedDev.id) {
+        setItems(prev => prev.map(d => d.id === updatedDev.id ? { ...d, ...updatedDev } : d));
+      }
+    });
+
+    return () => {
+      clearInterval(interval);
+      unsubUpdated();
+    };
   }, []);
 
   useEffect(() => {
@@ -2302,6 +2351,26 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
 
   useEffect(() => {
     loadDeviceData();
+    const interval = setInterval(() => {
+      devicesApi.get(deviceId).then(d => {
+        if (d) {
+          setDevice(d);
+          setSpec(d.hardware);
+          setBaseline(d.baseline);
+        }
+      }).catch(() => {});
+    }, 4000);
+
+    const unsubUpdated = wsClient.on('device.updated', (updatedDev: any) => {
+      if (updatedDev && (updatedDev.id === deviceId || updatedDev.deviceId === deviceId)) {
+        setDevice(prev => prev ? { ...prev, ...updatedDev } : updatedDev);
+      }
+    });
+
+    return () => {
+      clearInterval(interval);
+      unsubUpdated();
+    };
   }, [deviceId]);
 
   if (!device) return <div className="loading-state"><LoaderCircle className="spin" size={24} /> Загрузка устройства...</div>;

@@ -51,7 +51,7 @@ def load_config():
         "enrollment_token": os.environ.get("WM_TOKEN", ""),
         "device_id": "",
         "agent_secret": "",
-        "heartbeat_interval_seconds": 30
+        "heartbeat_interval_seconds": 10
     }
 
 def save_config(cfg):
