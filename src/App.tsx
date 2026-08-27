@@ -4403,17 +4403,17 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
     status: 'ok' | 'fail';
   }>>([]);
 
-  // Schedules state (default all 7 days for weekend reliability)
-  const [morningEnabled, setMorningEnabled] = useState(true);
+  // Schedules state (default: disabled for newly added devices)
+  const [morningEnabled, setMorningEnabled] = useState(false);
   const [morningTime, setMorningTime] = useState('07:50');
   const [morningDays, setMorningDays] = useState<string[]>(['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']);
 
-  const [eveningEnabled, setEveningEnabled] = useState(true);
+  const [eveningEnabled, setEveningEnabled] = useState(false);
   const [eveningTime, setEveningTime] = useState('22:00');
   const [eveningDays, setEveningDays] = useState<string[]>(['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС']);
   const [forceShutdown, setForceShutdown] = useState(false);
 
-  const [rebootEnabled, setRebootEnabled] = useState(true);
+  const [rebootEnabled, setRebootEnabled] = useState(false);
   const [rebootTime, setRebootTime] = useState('04:00');
 
   const allDays = ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'];
@@ -4447,62 +4447,65 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
       if (!isMounted || !list) return;
       const targetDevId = (device.id || '').toLowerCase();
       const targetDevHost = (device.hostname || '').toLowerCase();
-      const targetDevName = (device.name || '').toLowerCase();
 
       const found = list.find(s => {
         const tLower = (s.target || '').toLowerCase();
         const nLower = (s.name || '').toLowerCase();
         return (
           tLower === targetDevId ||
-          tLower === targetDevHost ||
-          tLower === targetDevName ||
-          nLower.includes(targetDevId) ||
-          nLower.includes(targetDevHost) ||
-          nLower.includes(targetDevName)
+          (targetDevHost && tLower === targetDevHost) ||
+          (nLower.includes('персональное расписание') && (tLower === targetDevId || nLower.includes(targetDevId)))
         );
       });
 
       if (found) {
         setExistingScheduleId(found.id);
+        const isOverallEnabled = found.enabled !== false;
+
         const wakeStep = found.steps?.find(st => st.action === 'WAKE');
         if (wakeStep) {
-          setMorningEnabled(wakeStep.enabled !== false);
+          setMorningEnabled(isOverallEnabled && wakeStep.enabled !== false);
           if (wakeStep.time) setMorningTime(wakeStep.time);
           if (wakeStep.daysList && wakeStep.daysList.length > 0) setMorningDays(wakeStep.daysList);
           else if (found.daysList && found.daysList.length > 0) setMorningDays(found.daysList);
         } else if (found.action === 'WAKE') {
-          setMorningEnabled(found.enabled !== false);
+          setMorningEnabled(isOverallEnabled && found.enabled !== false);
           if (found.time) setMorningTime(found.time);
           if (found.daysList && found.daysList.length > 0) setMorningDays(found.daysList);
-        } else if (found.steps && found.steps.length > 0) {
+        } else {
           setMorningEnabled(false);
         }
 
         const shutdownStep = found.steps?.find(st => st.action === 'SHUTDOWN' || st.action === 'FORCE_SHUTDOWN');
         if (shutdownStep) {
-          setEveningEnabled(shutdownStep.enabled !== false);
+          setEveningEnabled(isOverallEnabled && shutdownStep.enabled !== false);
           if (shutdownStep.time) setEveningTime(shutdownStep.time);
           setForceShutdown(Boolean(shutdownStep.forceShutdown));
           if (shutdownStep.daysList && shutdownStep.daysList.length > 0) setEveningDays(shutdownStep.daysList);
           else if (found.daysList && found.daysList.length > 0) setEveningDays(found.daysList);
         } else if (found.action === 'SHUTDOWN') {
-          setEveningEnabled(found.enabled !== false);
+          setEveningEnabled(isOverallEnabled && found.enabled !== false);
           if (found.time) setEveningTime(found.time);
           if (found.daysList && found.daysList.length > 0) setEveningDays(found.daysList);
-        } else if (found.steps && found.steps.length > 0) {
+        } else {
           setEveningEnabled(false);
         }
 
         const rebootStep = found.steps?.find(st => st.action === 'REBOOT');
         if (rebootStep) {
-          setRebootEnabled(rebootStep.enabled !== false);
+          setRebootEnabled(isOverallEnabled && rebootStep.enabled !== false);
           if (rebootStep.time) setRebootTime(rebootStep.time);
         } else if (found.action === 'REBOOT') {
-          setRebootEnabled(found.enabled !== false);
+          setRebootEnabled(isOverallEnabled && found.enabled !== false);
           if (found.time) setRebootTime(found.time);
-        } else if (found.steps && found.steps.length > 0) {
+        } else {
           setRebootEnabled(false);
         }
+      } else {
+        setExistingScheduleId(null);
+        setMorningEnabled(false);
+        setEveningEnabled(false);
+        setRebootEnabled(false);
       }
     }).catch(console.error);
 
