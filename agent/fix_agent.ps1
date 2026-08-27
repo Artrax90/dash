@@ -93,14 +93,30 @@ if (Test-Path $runServiceScript) {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         }
 
-        $taskAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
+        $launcherVbs = Join-Path $InstallDir "launcher.vbs"
+        $vbsCode = @"
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$runServiceScript""", 0, False
+"@
+        Set-Content -Path $launcherVbs -Value $vbsCode -Encoding ASCII
+
+        $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
         $triggerBoot = New-ScheduledTaskTrigger -AtStartup
         $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
-        $taskPrincipal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+        $taskPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
         $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
         Register-ScheduledTask -TaskName "WorkstationManagerAgent" -Action $taskAction -Trigger @($triggerBoot, $triggerLogon) -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
-        Start-ScheduledTask -TaskName "WorkstationManagerAgent" | Out-Null
-        Write-Host "      [OK] Background service restarted under SYSTEM." -ForegroundColor Green
+        
+        $commonStartup = [Environment]::GetFolderPath("CommonStartup")
+        if ($commonStartup -and (Test-Path $commonStartup)) {
+            Copy-Item -Path $launcherVbs -Destination (Join-Path $commonStartup "WorkstationManagerAgent.vbs") -Force -ErrorAction SilentlyContinue
+        }
+        Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "WorkstationManagerAgent" -Value "`"$env:SystemRoot\System32\wscript.exe`" `"$launcherVbs`"" -Type String -ErrorAction SilentlyContinue
+
+        try { & wscript.exe "$launcherVbs" } catch {}
+        try { Start-ScheduledTask -TaskName "WorkstationManagerAgent" | Out-Null } catch {}
+        Write-Host "      [OK] Multi-layer background service restarted under SYSTEM." -ForegroundColor Green
     } catch {
         Write-Host "      [*] Service warning: $($_.Exception.Message)" -ForegroundColor Gray
     }

@@ -375,6 +375,13 @@ try {
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
+`$mutexName = "Global\WorkstationManagerAgentMutex"
+`$createdNew = `$false
+`$global:agentMutex = New-Object System.Threading.Mutex(`$true, `$mutexName, [ref]`$createdNew)
+if (-not `$createdNew) {
+    exit
+}
+
 function Update-AgentService([string]`$targetVer = "2.1.0") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
         `$targetVer = "2.1.0"
@@ -875,48 +882,68 @@ while (`$true) {
         }
     } catch {}
 
-    # Clean up any legacy registry run keys that cause interactive PowerShell console windows
+    # Create launcher.vbs helper for 100% silent execution and path immunity
+    $launcherVbs = Join-Path $InstallDir "launcher.vbs"
+    $vbsCode = @"
+Set WshShell = CreateObject("WScript.Shell")
+WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$runServiceScript""", 0, False
+"@
+    Set-Content -Path $launcherVbs -Value $vbsCode -Encoding ASCII
+
+    # Clean legacy keys
     try {
-        Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "WorkstationManagerAgent" -ErrorAction SilentlyContinue
         Remove-ItemProperty -Path "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "WorkstationManagerAgent" -ErrorAction SilentlyContinue
-        $commonStartup = [Environment]::GetFolderPath("CommonStartup")
-        if ($commonStartup) { Remove-Item (Join-Path $commonStartup "WorkstationManagerAgent.vbs") -Force -ErrorAction SilentlyContinue }
+        & schtasks.exe /delete /tn "WorkstationManagerAgent_User" /f 2>&1 | Out-Null
     } catch {}
 
-    # Register Multi-layer Persistence (100% Hidden Background)
+    # Register Multi-layer Persistence (100% Hidden Background on Boot & Logon)
     if ($IsAdmin) {
         # 1. Scheduled Task: AtStartup + AtLogOn under SYSTEM (Session 0, zero desktop windows)
         $taskCreated = $false
         try {
-            $taskAction = New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
+            & schtasks.exe /delete /tn "WorkstationManagerAgent" /f 2>&1 | Out-Null
+            $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+            $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
             $triggerBoot = New-ScheduledTaskTrigger -AtStartup
             $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
-            $taskPrincipal = New-ScheduledTaskPrincipal -UserId "NT AUTHORITY\SYSTEM" -LogonType ServiceAccount -RunLevel Highest
+            $taskPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
             $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
             Register-ScheduledTask -TaskName "WorkstationManagerAgent" -Action $taskAction -Trigger @($triggerBoot, $triggerLogon) -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
             $taskCreated = $true
             Write-Host "      [OK] Системная служба успешно зарегистрирована (SYSTEM / Фоновый режим без окон)" -ForegroundColor Green
         } catch {
-            & schtasks.exe /create /tn "WorkstationManagerAgent" /tr "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`"" /sc ONSTART /ru "SYSTEM" /f 2>&1 | Out-Null
+            $trCmd = "`"$env:SystemRoot\System32\wscript.exe`" `"$launcherVbs`""
+            & schtasks.exe /create /tn "WorkstationManagerAgent" /tr $trCmd /sc ONSTART /ru "SYSTEM" /f 2>&1 | Out-Null
             Write-Host "      [OK] Системная задача создана (schtasks ONSTART)" -ForegroundColor Green
         }
+
+        # 2. Common Startup folder for all users
+        try {
+            $commonStartup = [Environment]::GetFolderPath("CommonStartup")
+            if ($commonStartup -and (Test-Path $commonStartup)) {
+                $destVbs = Join-Path $commonStartup "WorkstationManagerAgent.vbs"
+                Copy-Item -Path $launcherVbs -Destination $destVbs -Force -ErrorAction SilentlyContinue
+            }
+        } catch {}
+
+        # 3. Registry Run Key for HKLM
+        try {
+            Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "WorkstationManagerAgent" -Value "`"$env:SystemRoot\System32\wscript.exe`" `"$launcherVbs`"" -Type String -ErrorAction SilentlyContinue
+        } catch {}
     } else {
         $userStartup = [Environment]::GetFolderPath("Startup")
         if ($userStartup -and (Test-Path $userStartup)) {
-            $vbsPath = Join-Path $userStartup "WorkstationManagerAgent.vbs"
-            $vbsCode = "CreateObject(""Wscript.Shell"").Run ""powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File """"$runServiceScript"""""", 0, False"
-            Set-Content -Path $vbsPath -Value $vbsCode -Encoding ASCII
+            $destVbs = Join-Path $userStartup "WorkstationManagerAgent.vbs"
+            Copy-Item -Path $launcherVbs -Destination $destVbs -Force -ErrorAction SilentlyContinue
         }
     }
 
-    # Launch background loop / Start Scheduled Task
+    # Launch background loop immediately
+    try { & wscript.exe "$launcherVbs" } catch {}
     if ($IsAdmin) {
         try { Start-ScheduledTask -TaskName "WorkstationManagerAgent" -ErrorAction SilentlyContinue } catch {}
         try { & schtasks.exe /run /tn "WorkstationManagerAgent" 2>&1 | Out-Null } catch {}
     }
-    try {
-        Start-Process -FilePath "powershell.exe" -ArgumentList @("-NoProfile", "-WindowStyle", "Hidden", "-ExecutionPolicy", "Bypass", "-File", $runServiceScript) -WindowStyle Hidden
-    } catch {}
     Write-Host "      [OK] Фоновый процесс мониторинга успешно запущен в фоновом режиме." -ForegroundColor Green
 } catch {
     Write-Host ("      [*] Уведомление службы: " + $_.Exception.Message) -ForegroundColor Gray
