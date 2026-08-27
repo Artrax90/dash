@@ -439,7 +439,9 @@ export const alertsApi = {
 export const schedulesApi = {
   list: async (): Promise<Schedule[]> => {
     try {
-      const res = await fetch(`${API_BASE}/schedules`);
+      const res = await fetch(`${API_BASE}/schedules`, {
+        headers: getAuthHeaders()
+      });
       if (res.ok) return await res.json();
     } catch {
       // fallback
@@ -447,11 +449,16 @@ export const schedulesApi = {
     return wait(schedules);
   },
   create: async (payload: Partial<Schedule>): Promise<Schedule> => {
+    const creator = payload.createdBy || getActiveUserName() || 'Администратор';
+    const enrichedPayload = { ...payload, createdBy: creator };
     try {
       const res = await fetch(`${API_BASE}/schedules`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
+        headers: {
+          'Content-Type': 'application/json',
+          ...getAuthHeaders()
+        },
+        body: JSON.stringify(enrichedPayload)
       });
       if (res.ok) return await res.json();
     } catch {
@@ -462,6 +469,8 @@ export const schedulesApi = {
       name: payload.name || 'Новое расписание',
       description: payload.description || '',
       enabled: payload.enabled ?? true,
+      createdBy: creator,
+      createdAt: new Date().toISOString(),
       timezone: payload.timezone || 'Europe/Moscow',
       days: payload.days || 'Пн-Пт',
       daysList: payload.daysList || ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ'],
@@ -997,3 +1006,7 @@ export const bulkApi = {
     return wait(progress, 300);
   },
 };
+
+export { wsClient } from '@/services/websocket';
+export { notificationService } from '@/services/notificationService';
+

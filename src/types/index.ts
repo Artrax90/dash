@@ -240,6 +240,8 @@ export interface Schedule {
   nextStepAction?: string;
   nextStepTime?: string;
   targetDeviceCount?: number;
+  createdBy?: string;
+  createdAt?: string;
 }
 
 export interface ScheduleExecutionLog {

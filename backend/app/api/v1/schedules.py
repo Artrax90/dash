@@ -19,148 +19,18 @@ SCHEDULES_FILE = os.path.join(settings.DATA_DIR, "schedules.json")
 SCHEDULE_LOGS_FILE = os.path.join(settings.DATA_DIR, "schedule_logs.json")
 
 def get_default_schedules() -> List[Dict[str, Any]]:
-    return [
-        {
-            "id": "SCH-01",
-            "name": "Полный суточный цикл (Офис)",
-            "type": "Lifecycle",
-            "description": "Единый рабочий цикл: утренний WoL старт, вечерний сброс RDP и ночное выключение.",
-            "enabled": True,
-            "timezone": "Europe/Moscow",
-            "days": "Пн-Пт",
-            "daysList": ["ПН", "ВТ", "СР", "ЧТ", "ПТ"],
-            "action": "LIFECYCLE",
-            "target": "Office",
-            "time": "07:45",
-            "steps": [
-                {
-                    "id": "step-1",
-                    "action": "WAKE",
-                    "time": "07:45",
-                    "enabled": True,
-                    "gracePeriodMinutes": 0,
-                    "warningMessage": "",
-                    "forceShutdown": False
-                },
-                {
-                    "id": "step-2",
-                    "action": "RDP_CLEANUP",
-                    "time": "21:45",
-                    "enabled": True,
-                    "gracePeriodMinutes": 0,
-                    "warningMessage": "",
-                    "forceShutdown": False
-                },
-                {
-                    "id": "step-3",
-                    "action": "SHUTDOWN",
-                    "time": "22:00",
-                    "enabled": True,
-                    "gracePeriodMinutes": 5,
-                    "warningMessage": "Внимание! Через 5 минут компьютер будет автоматически выключен.",
-                    "forceShutdown": True
-                }
-            ],
-            "gracePeriodMinutes": 5,
-            "warningMessage": "Внимание! Через 5 минут компьютер будет автоматически выключен.",
-            "forceShutdown": True,
-            "lastRun": None,
-            "lastRunResult": None,
-            "lastRunSummary": "Ожидает первого запуска"
-        },
-        {
-            "id": "SCH-02",
-            "name": "Суточный цикл отдела разработки",
-            "type": "Lifecycle",
-            "description": "Автоматизация рабочего дня для разработчиков: старт в 09:00 и завершение в 23:00.",
-            "enabled": True,
-            "timezone": "Europe/Moscow",
-            "days": "Пн-Пт",
-            "daysList": ["ПН", "ВТ", "СР", "ЧТ", "ПТ"],
-            "action": "LIFECYCLE",
-            "target": "All",
-            "time": "09:00",
-            "steps": [
-                {
-                    "id": "step-1",
-                    "action": "WAKE",
-                    "time": "09:00",
-                    "enabled": True,
-                    "gracePeriodMinutes": 0,
-                    "warningMessage": "",
-                    "forceShutdown": False
-                },
-                {
-                    "id": "step-2",
-                    "action": "RDP_CLEANUP",
-                    "time": "22:45",
-                    "enabled": True,
-                    "gracePeriodMinutes": 0,
-                    "warningMessage": "",
-                    "forceShutdown": False
-                },
-                {
-                    "id": "step-3",
-                    "action": "SHUTDOWN",
-                    "time": "23:00",
-                    "enabled": True,
-                    "gracePeriodMinutes": 10,
-                    "warningMessage": "Окончание смены. Завершение работы через 10 минут.",
-                    "forceShutdown": True
-                }
-            ],
-            "gracePeriodMinutes": 10,
-            "warningMessage": "Окончание смены. Завершение работы через 10 минут.",
-            "forceShutdown": True,
-            "lastRun": None,
-            "lastRunResult": None,
-            "lastRunSummary": "Ожидает первого запуска"
-        },
-        {
-            "id": "SCH-03",
-            "name": "Профилактическая перезагрузка (Выходные)",
-            "type": "Reboot",
-            "description": "Еженедельный перезапуск рабочих станций для применения системных обновлений.",
-            "enabled": True,
-            "timezone": "Europe/Moscow",
-            "days": "Воскресенье",
-            "daysList": ["ВС"],
-            "time": "04:00",
-            "action": "REBOOT",
-            "target": "All",
-            "steps": [
-                {
-                    "id": "step-1",
-                    "action": "REBOOT",
-                    "time": "04:00",
-                    "enabled": True,
-                    "daysList": ["ВС"],
-                    "gracePeriodMinutes": 0,
-                    "warningMessage": "Запланированная перезагрузка Windows",
-                    "forceShutdown": True
-                }
-            ],
-            "gracePeriodMinutes": 0,
-            "warningMessage": "Запланированная перезагрузка Windows",
-            "forceShutdown": True,
-            "lastRun": None,
-            "lastRunResult": None,
-            "lastRunSummary": "Ожидает первого запуска"
-        }
-    ]
+    return []
 
 def load_schedules() -> List[Dict[str, Any]]:
     if os.path.exists(SCHEDULES_FILE):
         try:
             with open(SCHEDULES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list):
                     return data
         except Exception as e:
             print(f"Error loading schedules: {e}")
-    defaults = get_default_schedules()
-    save_schedules(defaults)
-    return defaults
+    return []
 
 def save_schedules(schedules: List[Dict[str, Any]]):
     try:
@@ -229,6 +99,7 @@ class ScheduleCreateUpdateSchema(BaseModel):
     gracePeriodMinutes: Optional[int] = 0
     warningMessage: Optional[str] = ""
     forceShutdown: Optional[bool] = False
+    createdBy: Optional[str] = "Администратор"
 
 def calculate_single_time_next_run(time_str: str, days_list: List[str]) -> Optional[Dict[str, Any]]:
     """Helper to calculate next run timestamp for a single time string."""
@@ -404,6 +275,7 @@ async def create_schedule(payload: ScheduleCreateUpdateSchema, db: AsyncSession 
             "forceShutdown": bool(payload.forceShutdown)
         }]
 
+    now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
     new_schedule = {
         "id": new_id,
         "name": payload.name,
@@ -420,6 +292,8 @@ async def create_schedule(payload: ScheduleCreateUpdateSchema, db: AsyncSession 
         "gracePeriodMinutes": payload.gracePeriodMinutes or 0,
         "warningMessage": payload.warningMessage or "",
         "forceShutdown": bool(payload.forceShutdown),
+        "createdBy": payload.createdBy or "Администратор",
+        "createdAt": now_str,
         "lastRun": None,
         "lastRunResult": None,
         "lastRunSummary": "Ожидает первого запуска"
@@ -473,6 +347,9 @@ async def update_schedule(schedule_id: str, payload: ScheduleCreateUpdateSchema)
             s["gracePeriodMinutes"] = payload.gracePeriodMinutes or 0
             s["warningMessage"] = payload.warningMessage or ""
             s["forceShutdown"] = bool(payload.forceShutdown)
+            if payload.createdBy:
+                s["updatedBy"] = payload.createdBy
+            s["updatedAt"] = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
             save_schedules(schedules_db)
             return s
             

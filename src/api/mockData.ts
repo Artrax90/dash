@@ -86,32 +86,7 @@ export const customRoles: CustomRole[] = [
   }
 ];
 
-export const schedules: Schedule[] = [
-  {
-    id: 'SCH-01',
-    name: 'Утреннее включение (WoL)',
-    description: 'Включение рабочих станций перед началом смены',
-    enabled: true,
-    timezone: 'Europe/Moscow',
-    days: 'ПН, ВТ, СР, ЧТ, ПТ',
-    time: '07:50',
-    action: 'WAKE',
-    target: 'Все группы',
-    type: 'Morning Wake',
-  },
-  {
-    id: 'SCH-02',
-    name: 'Вечернее завершение работы',
-    description: 'Автоматическое выключение станций в конце рабочего дня',
-    enabled: true,
-    timezone: 'Europe/Moscow',
-    days: 'ПН, ВТ, СР, ЧТ, ПТ',
-    time: '22:00',
-    action: 'SHUTDOWN',
-    target: 'Все группы',
-    type: 'Evening Shutdown',
-  }
-];
+export const schedules: Schedule[] = [];
 
 export const agentBuilds: AgentBuild[] = [
   {

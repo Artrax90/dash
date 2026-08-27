@@ -7,7 +7,7 @@ import {
   Edit3, Lock, Download, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
   Eye, EyeOff, Sparkles, Pencil
 } from 'lucide-react';
-import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, getActiveUserName } from '@/api';
+import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, getActiveUserName, wsClient, notificationService } from '@/api';
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
 import { monitoringSeries } from '@/api/mockData';
 import { useLanguage } from '@/i18n/LanguageContext';
@@ -665,15 +665,27 @@ function App() {
 
   // Sync with browser Back/Forward buttons (popstate)
   useEffect(() => {
+    notificationService.initAutoPrompt();
+
     const handlePopState = () => {
       const parsed = parseUrlHash();
       setRoute(parsed);
     };
     window.addEventListener('popstate', handlePopState);
     window.addEventListener('hashchange', handlePopState);
+
+    const unsubAlert = wsClient.on('alert.created', () => {
+      setActiveAlertsCount(prev => prev + 1);
+    });
+    const unsubResolved = wsClient.on('alert.resolved', () => {
+      alertsApi.list().then(list => setActiveAlertsCount(list.filter(a => a.state !== 'Resolved').length)).catch(() => {});
+    });
+
     return () => {
       window.removeEventListener('popstate', handlePopState);
       window.removeEventListener('hashchange', handlePopState);
+      unsubAlert();
+      unsubResolved();
     };
   }, []);
 
@@ -5263,13 +5275,32 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
   const [query, setQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<'ALL' | 'Critical' | 'Warning' | 'Info'>('ALL');
   const [showResolved, setShowResolved] = useState<boolean>(false);
+  const [browserNotifPerm, setBrowserNotifPerm] = useState<NotificationPermission>(notificationService.getPermission());
 
   const loadAlerts = () => {
     alertsApi.list().then(setItems);
   };
 
+  const handleRequestPush = async () => {
+    const granted = await notificationService.requestPermission();
+    setBrowserNotifPerm(notificationService.getPermission());
+    if (granted) {
+      notify('Браузерные уведомления успешно включены! Вы будете получать всплывающие оповещения об инцидентах.');
+      notificationService.showNotification('✅ Уведомления Northstar включены', {
+        body: 'Вы будете мгновенно получать всплывающие оповещения о критических событиях и изменениях железа ПК.'
+      });
+    } else {
+      notify('Разрешение на отправку уведомлений не было предоставлено.');
+    }
+  };
+
   useEffect(() => {
     loadAlerts();
+    // Proactively prompt user if not decided
+    if (notificationService.getPermission() === 'default') {
+      notificationService.initAutoPrompt();
+    }
+    
     const unsub1 = wsClient.on('alert.created', (newAlert: any) => {
       setItems(prev => [newAlert, ...prev.filter(a => a.id !== newAlert.id)]);
     });
@@ -5330,6 +5361,11 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
         description="Централизованный журнал событий, инцидентов и аварийных ситуаций парка ПК."
         actions={
           <div style={{ display: 'flex', gap: '8px' }}>
+            {browserNotifPerm !== 'granted' && (
+              <Button icon={<Bell size={15} />} onClick={handleRequestPush}>
+                Включить Desktop Push
+              </Button>
+            )}
             <Button icon={<Check size={15} />} onClick={handleResolveAll} disabled={totalActive === 0}>
               Закрыть все активные
             </Button>
@@ -5817,6 +5853,7 @@ function Schedules({ notify }: { notify: (message: string) => void }) {
         daysList: formDaysList,
         timezone: formTimezone,
         steps,
+        createdBy: getActiveUserName() || 'Администратор',
         description: formDescription || `Суточный цикл (${steps.length} этапов) для ${formTarget}`
       };
     } else {
@@ -5832,6 +5869,7 @@ function Schedules({ notify }: { notify: (message: string) => void }) {
         gracePeriodMinutes: formSingleGrace,
         warningMessage: formSingleWarning,
         forceShutdown: formSingleForce,
+        createdBy: getActiveUserName() || 'Администратор',
         steps: [{
           id: 'step-single',
           action: formSingleAction,
@@ -6118,6 +6156,12 @@ function Schedules({ notify }: { notify: (message: string) => void }) {
                         <span className="meta-chip">
                           <Globe size={11} style={{ color: 'var(--blue)' }} /> {schedule.timezone}
                         </span>
+
+                        {schedule.createdBy && (
+                          <span className="meta-chip">
+                            <UserRound size={11} style={{ color: 'var(--blue)' }} /> Автор: <strong>{schedule.createdBy}</strong>
+                          </span>
+                        )}
 
                         {schedule.lastRunSummary && (
                           <span className="meta-chip success">
@@ -10157,7 +10201,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.0.3 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.1.0 · © 2026 Сергей Ерёмин
               </span>
             </div>
             <div style={{ flexShrink: 0 }}>
