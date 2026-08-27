@@ -415,6 +415,13 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
         spec_model = HardwareSpecModel(device_id=device_id, raw_spec=raw_spec)
         db.add(spec_model)
     else:
+        # Safely merge incoming partial spec with existing hardware spec
+        if isinstance(spec_model.raw_spec, dict) and isinstance(raw_spec, dict):
+            merged = dict(spec_model.raw_spec)
+            for k, v in raw_spec.items():
+                if v:
+                    merged[k] = v
+            raw_spec = merged
         spec_model.raw_spec = raw_spec
         spec_model.updated_at = datetime.utcnow()
 
@@ -446,6 +453,17 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
             dev_name = dev.name if dev else device_id
 
             for c in changes:
+                # Check DB if a change for this exact component and value was already recorded
+                existing_same_val_res = await db.execute(
+                    select(HardwareChangeModel).where(
+                        HardwareChangeModel.device_id == device_id,
+                        HardwareChangeModel.component == c["component"],
+                        HardwareChangeModel.current_value == c["currentValue"]
+                    )
+                )
+                if existing_same_val_res.scalars().first():
+                    continue
+
                 # Check DB for existing unacknowledged change or open alert
                 existing_change_res = await db.execute(
                     select(HardwareChangeModel).where(
@@ -881,6 +899,17 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                 changes = hardware_diff_service.compare_specs(baseline.spec, raw_spec, device.id)
                                 if changes:
                                     for c in changes:
+                                        # Check DB if a change for this exact component and value was already recorded
+                                        existing_same_val_res = await db.execute(
+                                            select(HardwareChangeModel).where(
+                                                HardwareChangeModel.device_id == device.id,
+                                                HardwareChangeModel.component == c["component"],
+                                                HardwareChangeModel.current_value == c["currentValue"]
+                                            )
+                                        )
+                                        if existing_same_val_res.scalars().first():
+                                            continue
+
                                         # Check DB for existing unacknowledged change or open alert
                                         existing_change_res = await db.execute(
                                             select(HardwareChangeModel).where(
