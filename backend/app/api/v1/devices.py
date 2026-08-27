@@ -187,7 +187,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     dev_interval = d.heartbeat_interval or 60
     timeout_threshold = max(75, dev_interval * 2 + 15)
     
-    is_online = (sec_since_last_seen <= timeout_threshold) and (d.power_status != PowerStatus.OFF)
+    is_online = (sec_since_last_seen <= timeout_threshold)
     
     effective_power = "On" if is_online else "Off"
     effective_agent = "Connected" if is_online else "Disconnected"
@@ -313,7 +313,7 @@ async def get_device_stats(db: AsyncSession = Depends(get_db)):
     def check_online(d):
         sec = (now_utc - d.last_seen).total_seconds() if d.last_seen else 999999
         timeout = max(75, (d.heartbeat_interval or 60) * 2 + 15)
-        return (sec <= timeout) and (d.power_status != PowerStatus.OFF)
+        return (sec <= timeout)
 
     total = len(devices)
     online = sum(1 for d in devices if check_online(d))
