@@ -298,12 +298,21 @@ try {
     }
 } catch {}
 
+$osCaption = "Windows 10 Pro"
+try {
+    $osObj = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+    if ($osObj -and $osObj.Caption) {
+        $osCaption = $osObj.Caption.Replace("Microsoft ", "").Trim()
+    }
+} catch {}
+
 $enrollPayload = @{
     token = $Token
     hostname = $hostname
     ip = $ip
     mac = $mac
     osType = "Windows"
+    osVersion = $osCaption
     currentUser = $user
     agentVersion = "2.1.0"
 }
@@ -363,6 +372,7 @@ try {
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
 `$AgentVersion = '2.1.0'
+`$osCaption = '$osCaption'
 `$script:currentInterval = 60
 
 function Update-AgentService([string]`$targetVer = "2.1.0") {
@@ -732,6 +742,8 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                 temperature = 42.0
             }
             currentUser = `$user
+            osType = "Windows"
+            osVersion = `$osCaption
             processes = `$procList
         }
 

@@ -347,6 +347,8 @@ async def enroll_agent(payload: Dict[str, Any], db: AsyncSession = Depends(get_d
 
     reported_version = payload.get("agentVersion") or payload.get("version") or settings.LATEST_AGENT_VERSION
 
+    detected_os_ver = payload.get("osVersion") or payload.get("os_version") or (f"{os_type} 10 Pro" if os_type == "Windows" else "Linux")
+
     if not device:
         # Generate clean ID
         device_id = f"PC-{mac.replace(':', '')[-4:].upper()}" if mac else f"PC-{secrets.token_hex(2).upper()}"
@@ -359,7 +361,7 @@ async def enroll_agent(payload: Dict[str, Any], db: AsyncSession = Depends(get_d
             mac_address=mac,
             broadcast_ip="255.255.255.255",
             os_type=os_type,
-            os_version=f"{os_type} 11 Pro" if os_type == "Windows" else "Ubuntu 24.04 LTS",
+            os_version=detected_os_ver,
             agent_version=reported_version,
             power_status=PowerStatus.ON,
             agent_status=AgentStatus.CONNECTED,
@@ -377,6 +379,8 @@ async def enroll_agent(payload: Dict[str, Any], db: AsyncSession = Depends(get_d
     else:
         device.ip_address = ip
         device.mac_address = mac
+        device.os_type = os_type
+        device.os_version = detected_os_ver
         device.agent_version = reported_version
         device.current_user = payload.get("currentUser") or device.current_user
         device.power_status = PowerStatus.ON
@@ -796,6 +800,16 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 if device.id in agent_update_statuses and rep_ver == settings.LATEST_AGENT_VERSION:
                     agent_update_statuses[device.id]["status"] = "SUCCESS"
                     agent_update_statuses[device.id]["completedAt"] = datetime.utcnow().isoformat()
+
+            # Dynamic Dual-Boot OS detection update
+            hb_os_type = payload.get("osType") or payload.get("os_type")
+            hb_os_ver = payload.get("osVersion") or payload.get("os_version")
+            if hb_os_type and device.os_type != hb_os_type:
+                print(f"[Heartbeat] Device {device.id} OS Type switched: {device.os_type} -> {hb_os_type}")
+                device.os_type = hb_os_type
+            if hb_os_ver and device.os_version != hb_os_ver:
+                print(f"[Heartbeat] Device {device.id} OS Version updated: {device.os_version} -> {hb_os_ver}")
+                device.os_version = hb_os_ver
 
             if "processes" in payload and isinstance(payload["processes"], list) and len(payload["processes"]) > 0:
                 from backend.app.api.v1.devices import device_live_processes

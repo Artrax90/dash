@@ -235,6 +235,37 @@ def get_uptime_info():
 
     return uptime_str, uptime_sec, boot_time_iso
 
+def get_os_info():
+    sys_type = platform.system()
+    if sys_type == "Windows":
+        try:
+            cmd = "(Get-CimInstance Win32_OperatingSystem).Caption"
+            proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", cmd], capture_output=True, text=True, timeout=3)
+            out = proc.stdout.strip().replace("Microsoft ", "").strip()
+            if out:
+                return "Windows", out
+        except Exception:
+            pass
+        return "Windows", f"Windows {platform.release()}"
+    elif sys_type == "Linux":
+        distro_name = "Linux"
+        try:
+            if os.path.exists("/etc/os-release"):
+                with open("/etc/os-release", "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("PRETTY_NAME="):
+                            distro_name = line.split("=", 1)[1].strip().strip('"')
+                            break
+                        elif line.startswith("NAME=") and distro_name == "Linux":
+                            distro_name = line.split("=", 1)[1].strip().strip('"')
+        except Exception:
+            pass
+        return "Linux", distro_name
+    elif sys_type == "Darwin":
+        return "macOS", f"macOS {platform.mac_ver()[0]}"
+    return sys_type, sys_type
+
 def get_primary_mac_and_ip():
     hostname = socket.gethostname()
     ip = "127.0.0.1"
@@ -712,14 +743,16 @@ def main():
     if not cfg.get("device_id"):
         hostname, ip, mac = get_primary_mac_and_ip()
         token = cfg.get("enrollment_token") or os.environ.get("WM_TOKEN", "")
-        print(f"[*] Enrolling device ({hostname} / {ip} / {mac}) to server: {server_base}")
+        os_type, os_ver = get_os_info()
+        print(f"[*] Enrolling device ({hostname} / {ip} / {mac} / {os_ver}) to server: {server_base}")
         try:
             res = http_post(f"{server_base}/agents/enroll", {
                 "token": token,
                 "hostname": hostname,
                 "ip": ip,
                 "mac": mac,
-                "osType": platform.system(),
+                "osType": os_type,
+                "osVersion": os_ver,
                 "currentUser": get_current_user(),
                 "agentVersion": AGENT_VERSION
             })
@@ -840,6 +873,8 @@ def main():
             last_ram_stick_count = len(ram_slots)
             last_ram_total_gb = total_ram_gb
 
+            os_type, os_ver = get_os_info()
+
             resp = http_post(f"{server_base}/agents/heartbeat", {
                 "deviceId": cfg["device_id"],
                 "cpuPercent": cpu_percent,
@@ -852,8 +887,8 @@ def main():
                 "uptime": uptime_str,
                 "uptimeSeconds": uptime_sec,
                 "bootTime": boot_time_iso,
-                "osType": platform.system(),
-                "osVersion": f"{platform.system()} {platform.release()}",
+                "osType": os_type,
+                "osVersion": os_ver,
                 "agentVersion": AGENT_VERSION,
                 "isStartup": is_startup,
                 "processes": get_top_processes()

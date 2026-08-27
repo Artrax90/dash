@@ -5353,6 +5353,25 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
   const infoCount = items.filter(a => a.severity === 'Info' && a.state !== 'Resolved').length;
   const totalActive = items.filter(a => a.state !== 'Resolved').length;
 
+  const formatAlertTime = (dateStr?: string) => {
+    if (!dateStr) return '';
+    try {
+      let d: Date;
+      if (dateStr.includes('T')) {
+        d = new Date(dateStr.endsWith('Z') ? dateStr : dateStr + 'Z');
+      } else if (dateStr.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/)) {
+        d = new Date(dateStr.replace(' ', 'T') + 'Z');
+      } else {
+        d = new Date(dateStr);
+      }
+      if (isNaN(d.getTime())) return dateStr;
+      const pad = (n: number) => String(n).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    } catch {
+      return dateStr;
+    }
+  };
+
   return (
     <>
       <PageHeader
@@ -5463,7 +5482,7 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
                   </div>
                   <span>{alert.description}</span>
                   <small style={{ cursor: onDevice ? 'pointer' : 'default' }} onClick={() => onDevice && onDevice(alert.deviceId || alert.device)}>
-                    {alert.device || alert.deviceId || 'Рабочая станция'} · {alert.id} · {alert.time || alert.timestamp}
+                    {alert.device || alert.deviceId || 'Рабочая станция'} · {alert.id} · {formatAlertTime(alert.time || alert.timestamp || alert.createdAt)}
                   </small>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
