@@ -305,7 +305,7 @@ $enrollPayload = @{
     mac = $mac
     osType = "Windows"
     currentUser = $user
-    agentVersion = "2.0.3"
+    agentVersion = "2.1.0"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -362,12 +362,12 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.0.3'
+`$AgentVersion = '2.1.0'
 `$script:currentInterval = 60
 
-function Update-AgentService([string]`$targetVer = "2.0.3") {
+function Update-AgentService([string]`$targetVer = "2.1.0") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.0.3"
+        `$targetVer = "2.1.0"
     }
     try {
         # 1. Report update in progress
@@ -470,7 +470,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.0.3"
+        Update-AgentService "2.1.0"
         return
     }
 

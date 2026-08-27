@@ -384,6 +384,13 @@ export const alertsApi = {
     return wait(alerts);
   },
   acknowledge: async (id: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}/alerts/${id}/acknowledge`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      if (res.ok) return true;
+    } catch {}
     const alert = alerts.find((a) => a.id === id);
     if (alert) {
       alert.state = 'Acknowledged';
@@ -392,6 +399,13 @@ export const alertsApi = {
     return wait(false);
   },
   resolve: async (id: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}/alerts/${id}/resolve`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      if (res.ok) return true;
+    } catch {}
     const alert = alerts.find((a) => a.id === id);
     if (alert) {
       alert.state = 'Resolved';
@@ -399,6 +413,27 @@ export const alertsApi = {
     }
     return wait(false);
   },
+  resolveAll: async (): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}/alerts/resolve-all`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+      if (res.ok) return true;
+    } catch {}
+    alerts.forEach(a => { a.state = 'Resolved'; });
+    return wait(true);
+  },
+  delete: async (id: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}/alerts/${id}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      if (res.ok) return true;
+    } catch {}
+    return true;
+  }
 };
 
 export const schedulesApi = {
@@ -633,10 +668,10 @@ export const agentsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return {
-      currentVersion: '2.0.3',
-      releaseDate: '2026-08-23',
+      currentVersion: '2.1.0',
+      releaseDate: '2026-08-27',
       minSupportedVersion: '1.0.0',
-      changelog: 'Централизованное OTA-обновление агентов v2.0.3: транзакционный журнал OTA, Zero-Exit Hot Reloading',
+      changelog: 'Релиз v2.1.0: непрерывный мониторинг планок памяти RAM, обнаружение извлечения/замены ОЗУ, горячий Hot-Reload',
       totalAgents: 0,
       upToDateCount: 0,
       outdatedCount: 0,
@@ -657,7 +692,7 @@ export const agentsApi = {
       status: 'queued',
       deviceId,
       message: `Команда обновления отправлена на ${deviceId}`,
-      targetVersion: '2.0.3'
+      targetVersion: '2.1.0'
     };
   },
   updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {

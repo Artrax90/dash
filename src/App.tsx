@@ -530,7 +530,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.0.3</span>
+            <span>v2.1.0</span>
           </div>
         </div>
       </div>
@@ -604,7 +604,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.0.3</span>
+          <span style={{ color: '#475569' }}>v2.1.0</span>
         </div>
       </div>
     </div>
@@ -1567,7 +1567,7 @@ function DeviceTable({
                           {device.id}{device.name !== device.hostname ? ` · ${device.hostname}` : ''} · {device.ip}
                           {device.isOutdated && (
                             <span style={{ marginLeft: '6px', color: 'var(--yellow)', fontWeight: 600 }}>
-                              · v{device.agentVersion || '1.4.2'} (Доступно v{device.latestAgentVersion || '2.0.3'})
+                              · v{device.agentVersion || '1.4.2'} (Доступно v{device.latestAgentVersion || '2.1.0'})
                             </span>
                           )}
                         </small>
@@ -1647,7 +1647,7 @@ function DeviceTable({
                             onAction(`Команда обновления агента отправлена на ${device.name}`);
                           }}
                         >
-                          <RotateCw size={14} style={{ color: 'var(--blue)' }} /> Обновить агент (до v{device.latestAgentVersion || '2.0.3'})
+                          <RotateCw size={14} style={{ color: 'var(--blue)' }} /> Обновить агент (до v{device.latestAgentVersion || '2.1.0'})
                         </button>
                         {onEditMetadata && (
                           <button
@@ -5262,6 +5262,7 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
   const [items, setItems] = useState<Alert[]>([]);
   const [query, setQuery] = useState('');
   const [severityFilter, setSeverityFilter] = useState<'ALL' | 'Critical' | 'Warning' | 'Info'>('ALL');
+  const [showResolved, setShowResolved] = useState<boolean>(false);
 
   const loadAlerts = () => {
     alertsApi.list().then(setItems);
@@ -5269,27 +5270,57 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
 
   useEffect(() => {
     loadAlerts();
+    const unsub1 = wsClient.on('alert.created', (newAlert: any) => {
+      setItems(prev => [newAlert, ...prev.filter(a => a.id !== newAlert.id)]);
+    });
+    const unsub2 = wsClient.on('alert.resolved', (data: any) => {
+      setItems(prev => prev.map(a => a.id === data.id ? { ...a, state: 'Resolved' } : a));
+    });
+    const unsub3 = wsClient.on('alert.updated', (data: any) => {
+      setItems(prev => prev.map(a => a.id === data.id ? { ...a, state: data.state || a.state } : a));
+    });
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+    };
   }, []);
 
-  const handleAckAll = () => {
-    setItems(prev => prev.map(a => ({ ...a, state: 'Acknowledged' })));
-    notify('Все входящие оповещения отмечены как подтвержденные');
+  const handleResolveAll = async () => {
+    await alertsApi.resolveAll();
+    setItems(prev => prev.map(a => ({ ...a, state: 'Resolved' })));
+    notify('Все активные оповещения успешно закрыты');
   };
 
-  const handleAckOne = (id: string) => {
-    setItems(prev => prev.map(a => a.id === id ? { ...a, state: a.state === 'Resolved' ? 'Open' : 'Resolved' } : a));
-    notify(`Статус инцидента #${id} обновлен`);
+  const handleToggleState = async (id: string, currentState: string) => {
+    if (currentState === 'Resolved') {
+      await alertsApi.acknowledge(id);
+      setItems(prev => prev.map(a => a.id === id ? { ...a, state: 'Open' } : a));
+      notify(`Инцидент #${id} открыт снова`);
+    } else {
+      await alertsApi.resolve(id);
+      setItems(prev => prev.map(a => a.id === id ? { ...a, state: 'Resolved' } : a));
+      notify(`Инцидент #${id} закрыт (Resolved)`);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    await alertsApi.delete(id);
+    setItems(prev => prev.filter(a => a.id !== id));
+    notify(`Оповещение #${id} удалено`);
   };
 
   const filtered = items.filter(a => {
     const matchQuery = `${a.type} ${a.device} ${a.description} ${a.id}`.toLowerCase().includes(query.toLowerCase());
     const matchSev = severityFilter === 'ALL' || a.severity === severityFilter;
-    return matchQuery && matchSev;
+    const matchResolved = showResolved ? true : a.state !== 'Resolved';
+    return matchQuery && matchSev && matchResolved;
   });
 
   const criticalCount = items.filter(a => a.severity === 'Critical' && a.state !== 'Resolved').length;
   const warningCount = items.filter(a => a.severity === 'Warning' && a.state !== 'Resolved').length;
   const infoCount = items.filter(a => a.severity === 'Info' && a.state !== 'Resolved').length;
+  const totalActive = items.filter(a => a.state !== 'Resolved').length;
 
   return (
     <>
@@ -5297,7 +5328,13 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
         eyebrow="OPERATIONS"
         title="Оповещения"
         description="Централизованный журнал событий, инцидентов и аварийных ситуаций парка ПК."
-        actions={<Button icon={<Check size={15} />} onClick={handleAckAll}>Подтвердить все</Button>}
+        actions={
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <Button icon={<Check size={15} />} onClick={handleResolveAll} disabled={totalActive === 0}>
+              Закрыть все активные
+            </Button>
+          </div>
+        }
       />
 
       <div className="alert-summary-bar">
@@ -5350,9 +5387,19 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
 
       <section className="panel table-panel">
         <div className="panel-heading table-heading">
-          <div><h2>Входящие оповещения</h2><p>{filtered.length} событий в списке</p></div>
+          <div>
+            <h2>Входящие оповещения</h2>
+            <p>{filtered.length} событий в списке {showResolved ? '(включая закрытые)' : '(только активные)'}</p>
+          </div>
           <div className="table-tools">
             <div className="search"><Search size={15} /><input placeholder="Поиск по алертам..." value={query} onChange={e => setQuery(e.target.value)} /></div>
+            <button
+              className={`filter-button ${showResolved ? 'primary' : ''}`}
+              onClick={() => setShowResolved(!showResolved)}
+              style={{ fontSize: '11px' }}
+            >
+              {showResolved ? 'Скрыть закрытые' : 'Показать архив (все)'}
+            </button>
             {severityFilter !== 'ALL' && (
               <Button onClick={() => setSeverityFilter('ALL')} icon={<X size={13} />}>
                 Фильтр: {severityFilter} (Сбросить)
@@ -5374,15 +5421,28 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
                   {alert.severity === 'Critical' ? <AlertTriangle size={16} /> : <Bell size={16} />}
                 </div>
                 <div className="alert-main">
-                  <div><strong>{alert.type}</strong><StatusPill status={alert.state} /></div>
+                  <div>
+                    <strong>{alert.type}</strong>
+                    <StatusPill status={alert.state} />
+                  </div>
                   <span>{alert.description}</span>
-                  <small style={{ cursor: onDevice ? 'pointer' : 'default' }} onClick={() => onDevice && onDevice(alert.device)}>
-                    {alert.device} · {alert.id} · {alert.time}
+                  <small style={{ cursor: onDevice ? 'pointer' : 'default' }} onClick={() => onDevice && onDevice(alert.deviceId || alert.device)}>
+                    {alert.device || alert.deviceId || 'Рабочая станция'} · {alert.id} · {alert.time || alert.timestamp}
                   </small>
                 </div>
-                <button className="row-action" onClick={() => handleAckOne(alert.id)}>
-                  {alert.state === 'Resolved' ? 'Открыть снова' : 'Закрыть инцидент'}
-                </button>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <button className="row-action" onClick={() => handleToggleState(alert.id, alert.state)}>
+                    {alert.state === 'Resolved' ? 'Открыть снова' : 'Закрыть инцидент'}
+                  </button>
+                  <button
+                    className="row-action"
+                    onClick={() => handleDelete(alert.id)}
+                    title="Удалить навсегда"
+                    style={{ color: 'var(--muted)' }}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </div>
               </div>
             ))
           )}
