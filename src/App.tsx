@@ -2641,7 +2641,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <Info label="Процессор" value={spec.cpu?.model || 'Intel Core / AMD Ryzen'} />
                   <Info label="Ядра / Потоки" value={`${spec.cpu?.cores || 24}C / ${spec.cpu?.threads || 32}T @ ${spec.cpu?.baseFrequencyGhz || 2.0} GHz`} />
                   <Info label="Сокет CPU" value={spec.cpu?.socket || 'LGA1700'} mono />
-                  <Info label="Всего памяти" value={`${spec.ram?.totalGb || 32} GB (${spec.ram?.slots?.length || 2} модуля)`} />
+                  <Info label="Всего памяти" value={`${spec.ram?.totalGb || (spec.ram?.slots ? spec.ram.slots.reduce((a: number, s: any) => a + (s.sizeGb || s.capacityGb || 0), 0) : 0) || 0} GB (${spec.ram?.slots ? spec.ram.slots.length : 0} модуля)`} />
                 </div>
               </section>
 
@@ -2670,7 +2670,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
               {/* RAM Slots */}
               <section className="panel table-panel" style={{ gridColumn: '1 / -1' }}>
                 <div className="panel-heading">
-                  <div><h2>Слоты оперативной памяти (RAM)</h2><p>Установлено {spec.ram?.slots?.length || 2} модуля суммарным объемом {spec.ram?.totalGb || 32} GB</p></div>
+                  <div><h2>Слоты оперативной памяти (RAM)</h2><p>Установлено {spec.ram?.slots ? spec.ram.slots.length : 0} модуля суммарным объемом {spec.ram?.totalGb || (spec.ram?.slots ? spec.ram.slots.reduce((a: number, s: any) => a + (s.sizeGb || s.capacityGb || 0), 0) : 0) || 0} GB</p></div>
                 </div>
                 <div className="table-wrap">
                   <table>
@@ -3364,7 +3364,9 @@ function DeviceMonitoringTab({
             </div>
             <div className="device-bento-spec-block">
               <span className="device-bento-spec-primary">Свободно: <span style={{ color: 'var(--green)', fontWeight: 500 }}>{ramFreeGb} ГБ</span></span>
-              <span className="device-bento-spec-secondary">{ramType} @ {ramFreq} МГц ({spec?.ram?.slots?.length || 2} слота)</span>
+              <span className="device-bento-spec-secondary">
+                {ramType} @ {ramFreq} МГц ({spec?.ram?.slots ? `${spec.ram.slots.length} ${spec.ram.slots.length === 1 ? 'модуль' : spec.ram.slots.length >= 2 && spec.ram.slots.length <= 4 ? 'модуля' : 'модулей'}` : '1 модуль'})
+              </span>
             </div>
           </div>
         </div>

@@ -508,11 +508,94 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     }
 }
 
+`$script:lastRamCount = -1
+`$script:lastRamGb = -1
+
+function Get-LiveHardwareSpec() {
+    `$ramMods = @()
+    `$totBytes = 0
+    `$totGb = 16
+    try {
+        `$mods = Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue
+        if (`$mods) {
+            `$idx = 0
+            foreach (`$m in `$mods) {
+                `$cGb = [math]::Round(`$m.Capacity / 1GB, 0)
+                `$totBytes += `$m.Capacity
+                `$ramMods += @{
+                    slot = if (`$m.DeviceLocator) { `$m.DeviceLocator } else { "DIMM_`$idx" }
+                    capacityGb = [int]`$cGb
+                    sizeGb = [int]`$cGb
+                    type = "DDR4"
+                    speedMhz = if (`$m.Speed) { [int]`$m.Speed } else { 3200 }
+                    frequencyMhz = if (`$m.Speed) { [int]`$m.Speed } else { 3200 }
+                    manufacturer = if (`$m.Manufacturer) { `$m.Manufacturer.Trim() } else { "Kingston" }
+                    serialNumber = if (`$m.SerialNumber) { `$m.SerialNumber.Trim() } else { "RAM-`$idx" }
+                    partNumber = if (`$m.PartNumber) { `$m.PartNumber.Trim() } else { "RAM-MODULE" }
+                }
+                `$idx++
+            }
+            if (`$totBytes -gt 0) { `$totGb = [int][math]::Round(`$totBytes / 1GB, 0) }
+        }
+    } catch {}
+    if (`$ramMods.Count -eq 0) {
+        `$osObj = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+        if (`$osObj -and `$osObj.TotalVisibleMemorySize) {
+            `$totGb = [int][math]::Round(`$osObj.TotalVisibleMemorySize / (1024 * 1024), 0)
+        }
+        `$ramMods += @{
+            slot = "DIMM_0"
+            capacityGb = `$totGb
+            sizeGb = `$totGb
+            type = "DDR4"
+            speedMhz = 3200
+            frequencyMhz = 3200
+            manufacturer = "Kingston"
+            serialNumber = "SN-RAM-01"
+            partNumber = "KF432C16BB1/16"
+        }
+    }
+    return @{ totalGb = `$totGb; slots = `$ramMods }
+}
+
+function Invoke-Inventory() {
+    try {
+        `$hw = Get-LiveHardwareSpec
+        `$invPayload = @{
+            deviceId = `$DeviceId
+            hardwareSpec = @{
+                ram = `$hw
+            }
+        }
+        `$json = `$invPayload | ConvertTo-Json -Depth 5 -Compress
+        `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
+        `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/inventory")
+        `$req.Method = 'POST'
+        `$req.ContentType = 'application/json; charset=utf-8'
+        `$req.Timeout = 8000
+        `$stream = `$req.GetRequestStream()
+        `$stream.Write(`$bytes, 0, `$bytes.Length)
+        `$stream.Close()
+        `$resp = `$req.GetResponse()
+        `$resp.Close()
+    } catch {}
+}
+
 function Invoke-Heartbeat(`$isStartup = `$false) {
     try {
         `$cpu = 5
         `$procObj = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
         if (`$procObj -and `$procObj.LoadPercentage) { `$cpu = [int]`$procObj.LoadPercentage }
+
+        `$ramInfo = Get-LiveHardwareSpec
+        `$totalRamGb = `$ramInfo.totalGb
+        `$ramSlots = `$ramInfo.slots
+
+        if (`$isStartup -or (`$script:lastRamCount -ge 0 -and `$script:lastRamCount -ne `$ramSlots.Count) -or (`$script:lastRamGb -ge 0 -and `$script:lastRamGb -ne `$totalRamGb)) {
+            Invoke-Inventory
+        }
+        `$script:lastRamCount = `$ramSlots.Count
+        `$script:lastRamGb = `$totalRamGb
 
         `$ram = 30
         `$os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -632,10 +715,15 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             status = 'online'
             isStartup = `$isStartup
             agentVersion = `$AgentVersion
+            totalRamGb = `$totalRamGb
+            ramSlots = `$ramSlots
+            ramModulesCount = `$ramSlots.Count
             metrics = @{
                 cpu = `$cpu
                 ram = `$ram
                 disk = `$disk
+                totalRamGb = `$totalRamGb
+                ramSlotsCount = `$ramSlots.Count
                 uptime = `$uptime
                 uptimeSeconds = `$uptimeSec
                 bootTime = `$bootTimeIso

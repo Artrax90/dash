@@ -818,6 +818,88 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 except Exception as e:
                     print(f"[Heartbeat] Error updating hardware network specs: {e}")
 
+            # Live RAM / Hardware updates sent via heartbeat payload
+            reported_hw = payload.get("hardwareSpec")
+            reported_ram_slots = payload.get("ramSlots")
+            reported_ram_total = payload.get("totalRamGb")
+
+            if reported_hw or reported_ram_slots is not None or reported_ram_total is not None:
+                try:
+                    hw_res = await db.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == device.id))
+                    hw_model = hw_res.scalar_one_or_none()
+                    if not hw_model and reported_hw:
+                        hw_model = HardwareSpecModel(device_id=device.id, raw_spec=reported_hw)
+                        db.add(hw_model)
+                    elif hw_model and hw_model.raw_spec and isinstance(hw_model.raw_spec, dict):
+                        raw_spec = dict(hw_model.raw_spec)
+                        spec_modified = False
+                        if reported_hw and isinstance(reported_hw, dict):
+                            raw_spec = reported_hw
+                            spec_modified = True
+                        else:
+                            if "ram" not in raw_spec or not isinstance(raw_spec["ram"], dict):
+                                raw_spec["ram"] = {}
+                            if reported_ram_total is not None:
+                                raw_spec["ram"]["totalGb"] = int(reported_ram_total)
+                                spec_modified = True
+                            if reported_ram_slots is not None and isinstance(reported_ram_slots, list):
+                                raw_spec["ram"]["slots"] = reported_ram_slots
+                                spec_modified = True
+                        if spec_modified:
+                            hw_model.raw_spec = raw_spec
+                            hw_model.updated_at = datetime.utcnow()
+
+                            # Check against baseline and trigger hardware mismatch alerts
+                            bl_res = await db.execute(select(HardwareBaselineModel).where(HardwareBaselineModel.device_id == device.id))
+                            baseline = bl_res.scalar_one_or_none()
+                            if baseline and baseline.spec:
+                                from backend.app.services.hardware_diff_service import hardware_diff_service
+                                from backend.app.api.v1.hardware import hardware_changes_db
+                                changes = hardware_diff_service.compare_specs(baseline.spec, raw_spec, device.id)
+                                if changes:
+                                    for c in changes:
+                                        # Only record if not already recorded and unacknowledged
+                                        if not any(ex.get("component") == c["component"] and ex.get("changeType") == c["changeType"] and not ex.get("acknowledged") for ex in hardware_changes_db if ex.get("deviceId") == device.id):
+                                            hw_change = HardwareChangeModel(
+                                                id=c["id"],
+                                                device_id=device.id,
+                                                component=c["component"],
+                                                change_type=c["changeType"],
+                                                severity=c["severity"],
+                                                previous_value=c["previousValue"],
+                                                current_value=c["currentValue"],
+                                                diff_status=c["diffStatus"]
+                                            )
+                                            db.add(hw_change)
+                                            hardware_changes_db.insert(0, c)
+
+                                            # Create persistent Alert
+                                            alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
+                                            alert_desc = f"Обнаружено расхождение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
+                                            new_alert = AlertModel(
+                                                id=alert_id,
+                                                device_id=device.id,
+                                                alert_type="HARDWARE_MISMATCH",
+                                                category="Hardware",
+                                                severity=c["severity"],
+                                                state="Open",
+                                                description=alert_desc
+                                            )
+                                            db.add(new_alert)
+                                            await ws_manager.broadcast_event("alert.created", {
+                                                "id": alert_id,
+                                                "device": device.name,
+                                                "deviceId": device.id,
+                                                "type": "HARDWARE_MISMATCH",
+                                                "category": "Hardware",
+                                                "severity": c["severity"],
+                                                "state": "Open",
+                                                "description": alert_desc,
+                                                "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+                                            })
+                except Exception as hw_err:
+                    print(f"[Heartbeat] Error updating live hardware RAM specs: {hw_err}")
+
             # Priority 1: Specific device override
             if device.heartbeat_interval and device.heartbeat_interval > 0:
                 effective_interval = device.heartbeat_interval

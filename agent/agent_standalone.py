@@ -810,6 +810,9 @@ def main():
     except Exception:
         pass
 
+    last_ram_stick_count = -1
+    last_ram_total_gb = -1
+
     while True:
         try:
             total_ram, ram_percent = get_memory_info()
@@ -818,11 +821,33 @@ def main():
             user = get_current_user()
             uptime_str, uptime_sec, boot_time_iso = get_uptime_info()
 
+            # Dynamic hardware RAM spec scan
+            hw = collect_hardware()
+            ram_spec = hw.get("ram", {})
+            ram_slots = ram_spec.get("slots", [])
+            total_ram_gb = ram_spec.get("totalGb", total_ram)
+
+            if is_startup or (last_ram_stick_count >= 0 and last_ram_stick_count != len(ram_slots)) or (last_ram_total_gb >= 0 and last_ram_total_gb != total_ram_gb):
+                try:
+                    http_post(f"{server_base}/agents/inventory", {
+                        "deviceId": cfg["device_id"],
+                        "hardwareSpec": hw
+                    })
+                    print(f"[*] Hardware inventory updated: {total_ram_gb} GB ({len(ram_slots)} modules)")
+                except Exception as inv_e:
+                    print(f"[!] Hardware inventory report error: {inv_e}")
+
+            last_ram_stick_count = len(ram_slots)
+            last_ram_total_gb = total_ram_gb
+
             resp = http_post(f"{server_base}/agents/heartbeat", {
                 "deviceId": cfg["device_id"],
                 "cpuPercent": cpu_percent,
                 "ramPercent": ram_percent,
                 "diskPercent": disk_percent,
+                "totalRamGb": total_ram_gb,
+                "ramSlots": ram_slots,
+                "ramModulesCount": len(ram_slots),
                 "currentUser": user,
                 "uptime": uptime_str,
                 "uptimeSeconds": uptime_sec,
@@ -833,7 +858,7 @@ def main():
                 "isStartup": is_startup,
                 "processes": get_top_processes()
             })
-            print(f"[Heartbeat] CPU: {cpu_percent}% | RAM: {ram_percent}% | User: {user} | v{AGENT_VERSION}")
+            print(f"[Heartbeat] CPU: {cpu_percent}% | RAM: {ram_percent}% ({total_ram_gb} GB, {len(ram_slots)} slots) | User: {user} | v{AGENT_VERSION}")
             is_startup = False
 
             if resp and isinstance(resp, dict):

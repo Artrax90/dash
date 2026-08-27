@@ -502,6 +502,22 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
                 else:
                     norm_nets.append(n)
             raw_hw["network"] = norm_nets
+        if "ram" in raw_hw and isinstance(raw_hw["ram"], dict):
+            ram_obj = dict(raw_hw["ram"])
+            if "slots" in ram_obj and isinstance(ram_obj["slots"], list):
+                norm_slots = []
+                for s in ram_obj["slots"]:
+                    if isinstance(s, dict):
+                        s_item = dict(s)
+                        if "capacityGb" in s_item and not s_item.get("sizeGb"):
+                            s_item["sizeGb"] = s_item["capacityGb"]
+                        if "speedMhz" in s_item and not s_item.get("frequencyMhz"):
+                            s_item["frequencyMhz"] = s_item["speedMhz"]
+                        norm_slots.append(s_item)
+                    else:
+                        norm_slots.append(s)
+                ram_obj["slots"] = norm_slots
+            raw_hw["ram"] = ram_obj
         data["hardware"] = raw_hw
     else:
         # Fallback to standard spec if not yet sent
@@ -510,16 +526,15 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
             "bios": {"vendor": "American Megatrends", "version": "v2.10", "releaseDate": "2025-11-14"},
             "cpu": {"model": "AMD Ryzen 7 / Intel Core i7", "cores": 8, "threads": 16, "baseFrequencyGhz": 3.4},
             "ram": {
-                "totalGb": 32,
+                "totalGb": 16,
                 "slots": [
-                    {"slot": "DIMM_1", "sizeGb": 16, "type": "DDR5", "frequencyMhz": 5600, "manufacturer": "Kingston", "partNumber": "KF556C40BB-16"},
-                    {"slot": "DIMM_2", "sizeGb": 16, "type": "DDR5", "frequencyMhz": 5600, "manufacturer": "Kingston", "partNumber": "KF556C40BB-16"}
+                    {"slot": "DIMM_1", "sizeGb": 16, "type": "DDR4", "frequencyMhz": 3200, "manufacturer": "Kingston", "partNumber": "KF432C16BB1/16"}
                 ]
             },
             "storage": [
-                {"id": "disk0", "model": "Samsung SSD 980 PRO 1TB", "serialNumber": f"S5GX{device.id}NVME", "type": "NVMe SSD", "capacityGb": 1000, "healthPercent": 100, "temperatureC": 36}
+                {"id": "disk0", "model": "Samsung SSD 980 PRO 500GB", "serialNumber": f"S5GX{device.id}NVME", "type": "NVMe SSD", "capacityGb": 500, "healthPercent": 100, "temperatureC": 36}
             ],
-            "gpus": [{"model": "NVIDIA GeForce RTX 4070", "vramGb": 12, "driverVersion": "552.22"}],
+            "gpus": [{"model": "NVIDIA GeForce RTX 3060", "vramGb": 12, "driverVersion": "552.22"}],
             "network": [{"name": "Ethernet", "mac": device.mac_address, "ip": device.ip_address, "speed": "1 Gbps", "status": "Up"}]
         }
 
