@@ -414,6 +414,7 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
 
     result = await db.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == device_id))
     spec_model = result.scalar_one_or_none()
+    prev_spec = dict(spec_model.raw_spec) if (spec_model and spec_model.raw_spec and isinstance(spec_model.raw_spec, dict)) else None
 
     if not spec_model:
         spec_model = HardwareSpecModel(device_id=device_id, raw_spec=raw_spec)
@@ -429,67 +430,65 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
         spec_model.raw_spec = raw_spec
         spec_model.updated_at = datetime.utcnow()
 
-    # Check / Auto-initialize approved Baseline
-    bl_res = await db.execute(select(HardwareBaselineModel).where(HardwareBaselineModel.device_id == device_id))
-    baseline = bl_res.scalar_one_or_none()
-
-    if not baseline:
-        # First inventory report sets the initial baseline
-        baseline = HardwareBaselineModel(
-            id=f"BL-{device_id}",
-            device_id=device_id,
-            approved_by="Initial Enrollment Baseline",
-            spec=raw_spec
-        )
-        db.add(baseline)
-        print(f"[Hardware Baseline] Auto-initialized baseline for {device_id}")
-    else:
-        # Compare current spec with approved baseline
+    # Compare transitions between previous hardware snapshot and incoming snapshot
+    if prev_spec:
         from backend.app.services.hardware_diff_service import hardware_diff_service
-        from backend.app.services.alert_engine import alert_engine
-        from backend.app.api.v1.alerts import alerts_db
         from backend.app.api.v1.hardware import hardware_changes_db
 
-        changes = hardware_diff_service.compare_specs(baseline.spec, raw_spec, device_id)
+        changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, device_id)
         if changes:
             dev_res = await db.execute(select(Device).where(Device.id == device_id))
             dev = dev_res.scalar_one_or_none()
             dev_name = dev.name if dev else device_id
 
             for c in changes:
-                # Check DB if a change for this exact component and value was already recorded
-                existing_same_val_res = await db.execute(
-                    select(HardwareChangeModel).where(
-                        HardwareChangeModel.device_id == device_id,
-                        HardwareChangeModel.component == c["component"],
-                        HardwareChangeModel.current_value == c["currentValue"]
-                    )
+                hw_change = HardwareChangeModel(
+                    id=c["id"],
+                    device_id=device_id,
+                    component=c["component"],
+                    change_type=c["changeType"],
+                    severity=c["severity"],
+                    previous_value=c["previousValue"],
+                    current_value=c["currentValue"],
+                    diff_status=c["diffStatus"]
                 )
-                if existing_same_val_res.scalars().first():
-                    continue
+                db.add(hw_change)
+                hardware_changes_db.insert(0, c)
 
-                # Check DB for existing unacknowledged change or open alert
-                existing_change_res = await db.execute(
-                    select(HardwareChangeModel).where(
-                        HardwareChangeModel.device_id == device_id,
-                        HardwareChangeModel.component == c["component"],
-                        HardwareChangeModel.change_type == c["changeType"],
-                        HardwareChangeModel.acknowledged == False
-                    )
+                # Create persistent Alert
+                alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
+                alert_desc = c.get("description") or f"Обнаружено изменение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
+                new_alert = AlertModel(
+                    id=alert_id,
+                    device_id=device_id,
+                    alert_type="HARDWARE_MISMATCH",
+                    category="Hardware",
+                    severity=c["severity"],
+                    state="Open",
+                    description=alert_desc
                 )
-                if existing_change_res.scalar_one_or_none():
-                    continue
-
-                existing_alert_res = await db.execute(
-                    select(AlertModel).where(
-                        AlertModel.device_id == device_id,
-                        AlertModel.alert_type == "HARDWARE_MISMATCH",
-                        AlertModel.state.in_(["Open", "Acknowledged"])
-                    )
-                )
-                existing_alerts = existing_alert_res.scalars().all()
-                if any(c["component"] in (a.description or "") for a in existing_alerts):
-                    continue
+                db.add(new_alert)
+                
+                await ws_manager.broadcast_event("alert.created", {
+                    "id": alert_id,
+                    "device": dev_name,
+                    "deviceName": dev_name,
+                    "deviceId": device_id,
+                    "type": "HARDWARE_MISMATCH",
+                    "category": "Hardware",
+                    "severity": c["severity"],
+                    "state": "Open",
+                    "description": alert_desc,
+                    "createdAt": datetime.utcnow().isoformat() + "Z",
+                    "time": datetime.utcnow().isoformat() + "Z",
+                    "timestamp": datetime.utcnow().isoformat() + "Z"
+                })
+                await ws_manager.broadcast_event("hardware.change", {
+                    "deviceId": device_id,
+                    "component": c["component"],
+                    "changeType": c["changeType"],
+                    "currentValue": c["currentValue"]
+                })
 
                 # Save hardware change in database
                 hw_change = HardwareChangeModel(
@@ -886,6 +885,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         hw_model = HardwareSpecModel(device_id=device.id, raw_spec=reported_hw)
                         db.add(hw_model)
                     elif hw_model and hw_model.raw_spec and isinstance(hw_model.raw_spec, dict):
+                        prev_spec = dict(hw_model.raw_spec)
                         raw_spec = dict(hw_model.raw_spec)
                         spec_modified = False
                         if reported_hw and isinstance(reported_hw, dict):
@@ -904,88 +904,59 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                             hw_model.raw_spec = raw_spec
                             hw_model.updated_at = datetime.utcnow()
 
-                            # Check against baseline and trigger hardware mismatch alerts
-                            bl_res = await db.execute(select(HardwareBaselineModel).where(HardwareBaselineModel.device_id == device.id))
-                            baseline = bl_res.scalar_one_or_none()
-                            if baseline and baseline.spec:
-                                from backend.app.services.hardware_diff_service import hardware_diff_service
-                                from backend.app.api.v1.hardware import hardware_changes_db
-                                changes = hardware_diff_service.compare_specs(baseline.spec, raw_spec, device.id)
-                                if changes:
-                                    for c in changes:
-                                        # Check DB if a change for this exact component and value was already recorded
-                                        existing_same_val_res = await db.execute(
-                                            select(HardwareChangeModel).where(
-                                                HardwareChangeModel.device_id == device.id,
-                                                HardwareChangeModel.component == c["component"],
-                                                HardwareChangeModel.current_value == c["currentValue"]
-                                            )
-                                        )
-                                        if existing_same_val_res.scalars().first():
-                                            continue
+                            # Detect hardware transitions between previous state and incoming state
+                            from backend.app.services.hardware_diff_service import hardware_diff_service
+                            from backend.app.api.v1.hardware import hardware_changes_db
+                            changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, device.id)
+                            if changes:
+                                for c in changes:
+                                    hw_change = HardwareChangeModel(
+                                        id=c["id"],
+                                        device_id=device.id,
+                                        component=c["component"],
+                                        change_type=c["changeType"],
+                                        severity=c["severity"],
+                                        previous_value=c["previousValue"],
+                                        current_value=c["currentValue"],
+                                        diff_status=c["diffStatus"]
+                                    )
+                                    db.add(hw_change)
+                                    hardware_changes_db.insert(0, c)
 
-                                        # Check DB for existing unacknowledged change or open alert
-                                        existing_change_res = await db.execute(
-                                            select(HardwareChangeModel).where(
-                                                HardwareChangeModel.device_id == device.id,
-                                                HardwareChangeModel.component == c["component"],
-                                                HardwareChangeModel.change_type == c["changeType"],
-                                                HardwareChangeModel.acknowledged == False
-                                            )
-                                        )
-                                        if existing_change_res.scalar_one_or_none():
-                                            continue
-
-                                        existing_alert_res = await db.execute(
-                                            select(AlertModel).where(
-                                                AlertModel.device_id == device.id,
-                                                AlertModel.alert_type == "HARDWARE_MISMATCH",
-                                                AlertModel.state.in_(["Open", "Acknowledged"])
-                                            )
-                                        )
-                                        existing_alerts = existing_alert_res.scalars().all()
-                                        if any(c["component"] in (a.description or "") for a in existing_alerts):
-                                            continue
-
-                                        hw_change = HardwareChangeModel(
-                                            id=c["id"],
-                                            device_id=device.id,
-                                            component=c["component"],
-                                            change_type=c["changeType"],
-                                            severity=c["severity"],
-                                            previous_value=c["previousValue"],
-                                            current_value=c["currentValue"],
-                                            diff_status=c["diffStatus"]
-                                        )
-                                        db.add(hw_change)
-                                        hardware_changes_db.insert(0, c)
-
-                                        # Create persistent Alert
-                                        alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
-                                        alert_desc = f"Обнаружено расхождение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
-                                        new_alert = AlertModel(
-                                            id=alert_id,
-                                            device_id=device.id,
-                                            alert_type="HARDWARE_MISMATCH",
-                                            category="Hardware",
-                                            severity=c["severity"],
-                                            state="Open",
-                                            description=alert_desc
-                                        )
-                                        db.add(new_alert)
-                                        dev_name = device.name or device.hostname or device.id
-                                        await ws_manager.broadcast_event("alert.created", {
-                                            "id": alert_id,
-                                            "device": dev_name,
-                                            "deviceName": dev_name,
-                                            "deviceId": device.id,
-                                            "type": "HARDWARE_MISMATCH",
-                                            "category": "Hardware",
-                                            "severity": c["severity"],
-                                            "state": "Open",
-                                            "description": alert_desc,
-                                            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
-                                        })
+                                    # Create persistent Alert
+                                    alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
+                                    alert_desc = c.get("description") or f"Обнаружено изменение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
+                                    new_alert = AlertModel(
+                                        id=alert_id,
+                                        device_id=device.id,
+                                        alert_type="HARDWARE_MISMATCH",
+                                        category="Hardware",
+                                        severity=c["severity"],
+                                        state="Open",
+                                        description=alert_desc
+                                    )
+                                    db.add(new_alert)
+                                    dev_name = device.name or device.hostname or device.id
+                                    await ws_manager.broadcast_event("alert.created", {
+                                        "id": alert_id,
+                                        "device": dev_name,
+                                        "deviceName": dev_name,
+                                        "deviceId": device.id,
+                                        "type": "HARDWARE_MISMATCH",
+                                        "category": "Hardware",
+                                        "severity": c["severity"],
+                                        "state": "Open",
+                                        "description": alert_desc,
+                                        "createdAt": datetime.utcnow().isoformat() + "Z",
+                                        "time": datetime.utcnow().isoformat() + "Z",
+                                        "timestamp": datetime.utcnow().isoformat() + "Z"
+                                    })
+                                    await ws_manager.broadcast_event("hardware.change", {
+                                        "deviceId": device.id,
+                                        "component": c["component"],
+                                        "changeType": c["changeType"],
+                                        "currentValue": c["currentValue"]
+                                    })
                 except Exception as hw_err:
                     print(f"[Heartbeat] Error updating live hardware RAM specs: {hw_err}")
 

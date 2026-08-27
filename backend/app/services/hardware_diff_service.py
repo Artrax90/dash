@@ -3,19 +3,21 @@ from datetime import datetime
 
 class HardwareDiffService:
     @staticmethod
-    def compare_specs(baseline_spec: Dict[str, Any], current_spec: Dict[str, Any], device_id: str) -> List[Dict[str, Any]]:
+    def compare_specs(prev_spec: Dict[str, Any], current_spec: Dict[str, Any], device_id: str) -> List[Dict[str, Any]]:
         """
-        Compare current hardware snapshot with approved baseline and generate diff items safely.
-        Avoids false positives when partial hardware snapshots are sent.
+        Compare current hardware snapshot with previous snapshot (or baseline) and generate diff items.
+        Triggers an alert on every hardware transition (e.g. RAM removed, RAM restored/added, Disk removed, Disk added).
         """
-        if not baseline_spec or not current_spec:
+        if not prev_spec or not current_spec:
             return []
 
         changes = []
+        now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+        ts_suffix = int(datetime.utcnow().timestamp() * 1000) % 1000000
         
         # 1. Compare RAM (Total capacity, slot count, and individual modules)
-        if "ram" in baseline_spec and "ram" in current_spec:
-            base_ram = baseline_spec.get("ram", {}) or {}
+        if "ram" in prev_spec and "ram" in current_spec:
+            base_ram = prev_spec.get("ram", {}) or {}
             curr_ram = current_spec.get("ram", {}) or {}
             base_ram_total = int(base_ram.get("totalGb") or 0)
             curr_ram_total = int(curr_ram.get("totalGb") or 0)
@@ -28,33 +30,35 @@ class HardwareDiffService:
             if base_ram_total > 0 and curr_ram_total > 0:
                 if curr_ram_total < base_ram_total or (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count < base_slot_count):
                     changes.append({
-                        "id": f"HWC-{device_id}-RAM-REM",
+                        "id": f"HWC-{device_id}-RAM-REM-{ts_suffix}",
                         "deviceId": device_id,
-                        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                        "timestamp": now_str,
                         "component": "RAM",
                         "changeType": "REMOVED",
                         "severity": "Critical",
                         "previousValue": f"{base_ram_total} GB ({base_slot_count} модуля)" if base_slot_count > 0 else f"{base_ram_total} GB",
                         "currentValue": f"{curr_ram_total} GB ({curr_slot_count} модуля)" if curr_slot_count > 0 else f"{curr_ram_total} GB",
+                        "description": f"Извлечена оперативная память: {base_ram_total} GB ({base_slot_count} мод.) -> {curr_ram_total} GB ({curr_slot_count} мод.)",
                         "acknowledged": False,
                         "diffStatus": "MISMATCH",
                     })
                 elif curr_ram_total > base_ram_total or (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count > base_slot_count):
                     changes.append({
-                        "id": f"HWC-{device_id}-RAM-ADD",
+                        "id": f"HWC-{device_id}-RAM-ADD-{ts_suffix}",
                         "deviceId": device_id,
-                        "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                        "timestamp": now_str,
                         "component": "RAM",
                         "changeType": "ADDED",
                         "severity": "Info",
                         "previousValue": f"{base_ram_total} GB ({base_slot_count} модуля)" if base_slot_count > 0 else f"{base_ram_total} GB",
                         "currentValue": f"{curr_ram_total} GB ({curr_slot_count} модуля)" if curr_slot_count > 0 else f"{curr_ram_total} GB",
+                        "description": f"Установлена/возвращена оперативная память: {base_ram_total} GB ({base_slot_count} мод.) -> {curr_ram_total} GB ({curr_slot_count} мод.)",
                         "acknowledged": False,
                         "diffStatus": "MISMATCH",
                     })
 
-        # 2. Compare Disks (by serial numbers) - only if storage list is populated in BOTH baseline & current
-        base_storage = baseline_spec.get("storage", []) or []
+        # 2. Compare Disks (by serial numbers) - only if storage list is populated in BOTH prev & current
+        base_storage = prev_spec.get("storage", []) or []
         curr_storage = current_spec.get("storage", []) or []
 
         if isinstance(base_storage, list) and isinstance(curr_storage, list) and len(base_storage) > 0 and len(curr_storage) > 0:
@@ -65,14 +69,15 @@ class HardwareDiffService:
                 for sn, d in base_disks.items():
                     if sn not in curr_disks:
                         changes.append({
-                            "id": f"HWC-{device_id}-DISK-REM-{sn[:8]}",
+                            "id": f"HWC-{device_id}-DISK-REM-{sn[:8]}-{ts_suffix}",
                             "deviceId": device_id,
-                            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                            "timestamp": now_str,
                             "component": "Storage",
                             "changeType": "REMOVED",
                             "severity": "Critical",
                             "previousValue": f"{d.get('model', 'Накопитель')} (S/N: {sn})",
                             "currentValue": "Отсутствует / Извлечен",
+                            "description": f"Извлечен накопитель: {d.get('model', 'Накопитель')} (S/N: {sn})",
                             "acknowledged": False,
                             "diffStatus": "MISMATCH",
                         })
@@ -80,20 +85,21 @@ class HardwareDiffService:
                 for sn, d in curr_disks.items():
                     if sn not in base_disks:
                         changes.append({
-                            "id": f"HWC-{device_id}-DISK-ADD-{sn[:8]}",
+                            "id": f"HWC-{device_id}-DISK-ADD-{sn[:8]}-{ts_suffix}",
                             "deviceId": device_id,
-                            "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                            "timestamp": now_str,
                             "component": "Storage",
                             "changeType": "ADDED",
                             "severity": "Warning",
                             "previousValue": "Отсутствует",
                             "currentValue": f"{d.get('model', 'Накопитель')} (S/N: {sn})",
+                            "description": f"Подключен новый накопитель: {d.get('model', 'Накопитель')} (S/N: {sn})",
                             "acknowledged": False,
                             "diffStatus": "MISMATCH",
                         })
 
-        # 3. Compare GPU - only if GPUs list is populated in BOTH baseline & current
-        base_gpus_raw = baseline_spec.get("gpus", []) or []
+        # 3. Compare GPU - only if GPUs list is populated in BOTH prev & current
+        base_gpus_raw = prev_spec.get("gpus", []) or []
         curr_gpus_raw = current_spec.get("gpus", []) or []
 
         if isinstance(base_gpus_raw, list) and isinstance(curr_gpus_raw, list) and len(base_gpus_raw) > 0 and len(curr_gpus_raw) > 0:
@@ -102,14 +108,15 @@ class HardwareDiffService:
             
             if base_gpus and curr_gpus and base_gpus != curr_gpus:
                 changes.append({
-                    "id": f"HWC-{device_id}-GPU",
+                    "id": f"HWC-{device_id}-GPU-{ts_suffix}",
                     "deviceId": device_id,
-                    "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S"),
+                    "timestamp": now_str,
                     "component": "GPU",
                     "changeType": "MODIFIED",
                     "severity": "Critical",
                     "previousValue": ", ".join(base_gpus) or "None",
                     "currentValue": ", ".join(curr_gpus) or "None",
+                    "description": f"Замена видеокарты: {', '.join(base_gpus)} -> {', '.join(curr_gpus)}",
                     "acknowledged": False,
                     "diffStatus": "MISMATCH",
                 })
