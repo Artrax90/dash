@@ -68,7 +68,7 @@ def load_users() -> List[Dict[str, Any]]:
     return []
 
 def save_users(users: List[Dict[str, Any]]):
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(settings.DATA_DIR, exist_ok=True)
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
 

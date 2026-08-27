@@ -82,7 +82,7 @@ def load_roles() -> List[Dict[str, Any]]:
     return default
 
 def save_roles(roles: List[Dict[str, Any]]):
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(settings.DATA_DIR, exist_ok=True)
     with open(ROLES_FILE, "w", encoding="utf-8") as f:
         json.dump(roles, f, ensure_ascii=False, indent=2)
 

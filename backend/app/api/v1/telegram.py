@@ -79,7 +79,7 @@ def load_config() -> Dict[str, Any]:
     return default
 
 def save_config(cfg: Dict[str, Any]):
-    os.makedirs(DATA_DIR, exist_ok=True)
+    os.makedirs(settings.DATA_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
 
@@ -89,7 +89,7 @@ def load_devices() -> List[Dict[str, Any]]:
     possible_paths = [
         os.path.join(os.getcwd(), "workstation_manager.db"),
         os.path.join(os.getcwd(), "data", "workstation_manager.db"),
-        os.path.join(DATA_DIR, "fleet.db")
+        os.path.join(settings.DATA_DIR, "fleet.db")
     ]
     for db_path in possible_paths:
         if os.path.exists(db_path):
