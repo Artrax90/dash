@@ -572,17 +572,68 @@ function Get-LiveHardwareSpec() {
             partNumber = "KF432C16BB1/16"
         }
     }
-    return @{ totalGb = `$totGb; slots = `$ramMods }
+
+    # Live Physical Disks
+    `$liveDisks = @()
+    try {
+        `$pDisks = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue
+        `$dIdx = 0
+        if (`$pDisks) {
+            foreach (`$d in `$pDisks) {
+                `$dSizeGb = [int][math]::Round(`$d.Size / 1GB, 0)
+                `$liveDisks += @{
+                    id = "disk-" + `$dIdx
+                    name = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIdx" }
+                    model = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIdx" }
+                    serialNumber = if (`$d.SerialNumber) { `$d.SerialNumber.Trim() } else { "DISK-SN-`$dIdx" }
+                    capacityGb = `$dSizeGb
+                    type = if (`$d.Model -match "SSD|NVMe") { "NVMe SSD" } else { "HDD" }
+                }
+                `$dIdx++
+            }
+        }
+    } catch {}
+
+    # Live GPUs
+    `$liveGpus = @()
+    try {
+        `$vids = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+        `$gIdx = 0
+        if (`$vids) {
+            foreach (`$v in `$vids) {
+                if (`$v.Name -and `$v.Name -notmatch "Basic Display|Remote Desktop") {
+                    `$vram = 4
+                    if (`$v.AdapterRAM -and `$v.AdapterRAM -gt 0) {
+                        `$vram = [int][math]::Round(`$v.AdapterRAM / 1GB, 0)
+                    }
+                    `$liveGpus += @{
+                        id = "gpu-" + `$gIdx
+                        name = `$v.Name.Trim()
+                        model = `$v.Name.Trim()
+                        vramGb = if (`$vram -gt 0) { `$vram } else { 4 }
+                    }
+                    `$gIdx++
+                }
+            }
+        }
+    } catch {}
+
+    return @{
+        ram = @{ totalGb = `$totGb; slots = `$ramMods }
+        storage = `$liveDisks
+        gpus = `$liveGpus
+    }
 }
+
+`$script:lastDiskCount = -1
+`$script:lastGpuCount = -1
 
 function Invoke-Inventory() {
     try {
         `$hw = Get-LiveHardwareSpec
         `$invPayload = @{
             deviceId = `$DeviceId
-            hardwareSpec = @{
-                ram = `$hw
-            }
+            hardwareSpec = `$hw
         }
         `$json = `$invPayload | ConvertTo-Json -Depth 5 -Compress
         `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
@@ -604,15 +655,20 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
         `$procObj = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
         if (`$procObj -and `$procObj.LoadPercentage) { `$cpu = [int]`$procObj.LoadPercentage }
 
-        `$ramInfo = Get-LiveHardwareSpec
+        `$hwLive = Get-LiveHardwareSpec
+        `$ramInfo = `$hwLive.ram
         `$totalRamGb = `$ramInfo.totalGb
         `$ramSlots = `$ramInfo.slots
+        `$diskCount = if (`$hwLive.storage) { `$hwLive.storage.Count } else { 0 }
+        `$gpuCount = if (`$hwLive.gpus) { `$hwLive.gpus.Count } else { 0 }
 
-        if (`$isStartup -or (`$script:lastRamCount -ge 0 -and `$script:lastRamCount -ne `$ramSlots.Count) -or (`$script:lastRamGb -ge 0 -and `$script:lastRamGb -ne `$totalRamGb)) {
+        if (`$isStartup -or (`$script:lastRamCount -ge 0 -and `$script:lastRamCount -ne `$ramSlots.Count) -or (`$script:lastRamGb -ge 0 -and `$script:lastRamGb -ne `$totalRamGb) -or (`$script:lastDiskCount -ge 0 -and `$script:lastDiskCount -ne `$diskCount) -or (`$script:lastGpuCount -ge 0 -and `$script:lastGpuCount -ne `$gpuCount)) {
             Invoke-Inventory
         }
         `$script:lastRamCount = `$ramSlots.Count
         `$script:lastRamGb = `$totalRamGb
+        `$script:lastDiskCount = `$diskCount
+        `$script:lastGpuCount = `$gpuCount
 
         `$ram = 30
         `$os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue | Select-Object -First 1

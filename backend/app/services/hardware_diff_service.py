@@ -124,6 +124,48 @@ class HardwareDiffService:
                     "diffStatus": "MISMATCH",
                 })
 
+        # 4. Compare CPU (Processor replacement)
+        base_cpu = prev_spec.get("cpu", {}) or {}
+        curr_cpu = current_spec.get("cpu", {}) or {}
+        base_cpu_model = (base_cpu.get("model") or "").strip()
+        curr_cpu_model = (curr_cpu.get("model") or "").strip()
+
+        if base_cpu_model and curr_cpu_model and base_cpu_model != curr_cpu_model:
+            changes.append({
+                "id": f"HWC-{device_id}-CPU-{ts_suffix}",
+                "deviceId": device_id,
+                "timestamp": now_str,
+                "component": "CPU",
+                "changeType": "MODIFIED",
+                "severity": "Critical",
+                "previousValue": base_cpu_model,
+                "currentValue": curr_cpu_model,
+                "description": f"Замена процессора: {base_cpu_model} -> {curr_cpu_model}",
+                "acknowledged": False,
+                "diffStatus": "MISMATCH",
+            })
+
+        # 5. Compare Motherboard (System board replacement)
+        base_mb = prev_spec.get("motherboard", {}) or {}
+        curr_mb = current_spec.get("motherboard", {}) or {}
+        base_mb_model = (base_mb.get("model") or "").strip()
+        curr_mb_model = (curr_mb.get("model") or "").strip()
+
+        if base_mb_model and curr_mb_model and base_mb_model != curr_mb_model and base_mb_model not in ["Motherboard", "Default string", "To be filled by O.E.M."]:
+            changes.append({
+                "id": f"HWC-{device_id}-MB-{ts_suffix}",
+                "deviceId": device_id,
+                "timestamp": now_str,
+                "component": "Motherboard",
+                "changeType": "MODIFIED",
+                "severity": "Critical",
+                "previousValue": f"{base_mb.get('manufacturer', '')} {base_mb_model}".strip(),
+                "currentValue": f"{curr_mb.get('manufacturer', '')} {curr_mb_model}".strip(),
+                "description": f"Замена материнской платы: {base_mb_model} -> {curr_mb_model}",
+                "acknowledged": False,
+                "diffStatus": "MISMATCH",
+            })
+
         return changes
 
 hardware_diff_service = HardwareDiffService()
