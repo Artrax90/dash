@@ -326,7 +326,7 @@ try {
     foreach ($p in $pciList) {
         if (-not $p.Name -or $p.Name.Trim() -eq "") { continue }
         $pName = $p.Name.Trim()
-        if ($pName -match "мост|Bridge|Root Port|Root Complex|DMA|Direct memory|Таймер|Timer|Interrupt|Чипсет|Chipset|System board|Системн|Host CPU|eSPI|SPI flash|Management Engine|SMBus|Serial IO|Shared SRAM|SRAM") {
+        if ($pName -match "мост|Bridge|Root Port|Root Complex|DMA|Direct memory|Таймер|Timer|Interrupt|Чипсет|Chipset|System board|Системн|Host CPU|eSPI|SPI flash|Management Engine|SMBus|Serial IO|Shared SRAM|SRAM|IOMMU|Renoir|Cezanne|Rembrandt|Phoenix|Raphael|Alder Lake|Raptor Lake|Meteor Lake|AMD-Vi|Intel VT-d|Memory Controller|Encryption Controller|Security Processor|PSP|CCP|Co-processor") {
             continue
         }
         $pciDevices += @{
@@ -374,7 +374,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.3.1"
+    agentVersion = "2.3.2"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -432,7 +432,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.3.1'
+`$AgentVersion = '2.3.2'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -443,9 +443,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.3.1") {
+function Update-AgentService([string]`$targetVer = "2.3.2") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.3.1"
+        `$targetVer = "2.3.2"
     }
     try {
         # 1. Report update in progress
@@ -548,7 +548,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.3.1"
+        Update-AgentService "2.3.2"
         return
     }
 
@@ -716,7 +716,7 @@ function Get-LiveHardwareSpec() {
             foreach (`$p in `$pciEntities) {
                 if (-not `$p.Name -or `$p.Name.Trim() -eq "") { continue }
                 `$devName = `$p.Name.Trim()
-                if (`$devName -match "мост|Bridge|Root Port|Root Complex|DMA|Direct memory|Таймер|Timer|Interrupt|Чипсет|Chipset|System board|Системн|Host CPU|eSPI|SPI flash|Management Engine|SMBus|Serial IO|Shared SRAM|SRAM") {
+                if (`$devName -match "мост|Bridge|Root Port|Root Complex|DMA|Direct memory|Таймер|Timer|Interrupt|Чипсет|Chipset|System board|Системн|Host CPU|eSPI|SPI flash|Management Engine|SMBus|Serial IO|Shared SRAM|SRAM|IOMMU|Renoir|Cezanne|Rembrandt|Phoenix|Raphael|Alder Lake|Raptor Lake|Meteor Lake|AMD-Vi|Intel VT-d|Memory Controller|Encryption Controller|Security Processor|PSP|CCP|Co-processor") {
                     continue
                 }
                 `$livePci += @{

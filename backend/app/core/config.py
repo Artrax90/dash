@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     WOL_PORT: int = int(os.getenv("WOL_PORT", "9"))
 
     # Agent Management
-    LATEST_AGENT_VERSION: str = os.getenv("LATEST_AGENT_VERSION", "2.3.1")
+    LATEST_AGENT_VERSION: str = os.getenv("LATEST_AGENT_VERSION", "2.3.2")
     
     # CORS
     CORS_ORIGINS: List[str] = ["*"]

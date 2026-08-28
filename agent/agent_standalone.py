@@ -58,7 +58,7 @@ def save_config(cfg):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
-AGENT_VERSION = "2.3.1"
+AGENT_VERSION = "2.3.2"
 
 def http_post(url, data):
     req = urllib.request.Request(
@@ -553,7 +553,15 @@ def collect_hardware():
             pci_list = []
             for idx, p in enumerate(pci_items):
                 pname = (p.get("Name") or "").strip()
-                if not pname or any(ign in pname.lower() for ign in ["мост", "bridge", "root port", "root complex", "dma", "direct memory", "таймер", "timer", "interrupt", "чипсет", "chipset", "host cpu", "system board", "системн", "espi", "spi flash", "management engine", "smbus", "serial io", "sram"]):
+                if not pname or any(ign in pname.lower() for ign in [
+                    "мост", "bridge", "root port", "root complex", "dma", "direct memory",
+                    "таймер", "timer", "interrupt", "чипсет", "chipset", "host cpu",
+                    "system board", "системн", "espi", "spi flash", "management engine",
+                    "smbus", "serial io", "sram", "iommu", "renoir", "cezanne", "rembrandt",
+                    "phoenix", "raphael", "alder lake", "raptor lake", "meteor lake",
+                    "amd-vi", "intel vt-d", "memory controller", "encryption controller",
+                    "security processor", "psp", "ccp", "co-processor", "non-essential instrumentation"
+                ]):
                     continue
                 pci_list.append({
                     "id": f"pci-{idx}",
@@ -745,7 +753,13 @@ def collect_hardware():
                     if len(parts) >= 4:
                         full_name = f"{parts[2]} {parts[3]}".strip()
                         pclass = parts[1].strip()
-                        if any(ign in full_name.lower() or ign in pclass.lower() for ign in ["host bridge", "isa bridge", "pci bridge", "system peripheral", "signal processing", "smbus", "dma controller", "timer"]):
+                        if any(ign in full_name.lower() or ign in pclass.lower() for ign in [
+                            "host bridge", "isa bridge", "pci bridge", "system peripheral", "signal processing",
+                            "smbus", "dma controller", "timer", "iommu", "renoir", "cezanne", "rembrandt",
+                            "phoenix", "raphael", "alder lake", "raptor lake", "meteor lake", "amd-vi",
+                            "intel vt-d", "memory controller", "encryption controller", "security processor",
+                            "psp", "ccp", "co-processor", "non-essential instrumentation"
+                        ]):
                             continue
                         pci_list.append({
                             "id": f"pci-{idx}",
@@ -764,7 +778,7 @@ def collect_hardware():
 
     return spec
 
-def execute_agent_update(server_base: str, cfg: dict, update_url: str = "", target_version: str = "2.3.1"):
+def execute_agent_update(server_base: str, cfg: dict, update_url: str = "", target_version: str = "2.3.2"):
     print(f"[*] Initiating remote agent update to v{target_version}...")
     device_id = cfg.get("device_id", "")
     prev_ver = AGENT_VERSION

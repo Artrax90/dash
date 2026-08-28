@@ -683,10 +683,10 @@ export const agentsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return {
-      currentVersion: '2.3.1',
+      currentVersion: '2.3.2',
       releaseDate: '2026-08-28',
       minSupportedVersion: '1.0.0',
-      changelog: 'Релиз v2.3.1: исключение системных контроллеров и чипсетных мостов материнской платы из PCI-мониторинга, защита от дублирования и спама оповещений об изменении оборудования',
+      changelog: 'Релиз v2.3.2: полное исключение IOMMU, чипсетных контроллеров и системной логики AMD/Intel из PCI-мониторинга, защита от спама алертов при инвентаризации',
       totalAgents: 0,
       upToDateCount: 0,
       outdatedCount: 0,
@@ -707,7 +707,7 @@ export const agentsApi = {
       status: 'queued',
       deviceId,
       message: `Команда обновления отправлена на ${deviceId}`,
-      targetVersion: '2.3.1'
+      targetVersion: '2.3.2'
     };
   },
   updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {

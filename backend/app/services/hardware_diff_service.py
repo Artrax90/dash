@@ -236,7 +236,11 @@ class HardwareDiffService:
                 "мост", "bridge", "root port", "root complex", "dma", "direct memory",
                 "таймер", "timer", "interrupt", "чипсет", "chipset", "host cpu",
                 "system board", "системн", "espi", "spi flash", "management engine",
-                "smbus", "serial io", "sram", "system peripheral", "signal processing"
+                "smbus", "serial io", "sram", "system peripheral", "signal processing",
+                "iommu", "renoir", "cezanne", "rembrandt", "phoenix", "raphael",
+                "alder lake", "raptor lake", "meteor lake", "arrow lake", "amd-vi",
+                "intel vt-d", "memory controller", "encryption controller", "security processor",
+                "psp", "ccp", "co-processor", "non-essential instrumentation", "pci-to-pci"
             ])
 
         base_pci_clean = [p for p in base_pci if not is_ignored_pci(p)] if isinstance(base_pci, list) else []
