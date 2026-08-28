@@ -227,14 +227,29 @@ class HardwareDiffService:
         base_pci = prev_spec.get("pciDevices") or prev_spec.get("pci_devices") or prev_spec.get("pci") or []
         curr_pci = current_spec.get("pciDevices") or current_spec.get("pci_devices") or current_spec.get("pci") or []
 
-        if isinstance(base_pci, list) and isinstance(curr_pci, list) and (len(base_pci) > 0 or len(curr_pci) > 0):
+        def is_ignored_pci(p):
+            if not p:
+                return True
+            name = str(p.get("name") or "").lower() if isinstance(p, dict) else str(p).lower()
+            pclass = str(p.get("class") or "").lower() if isinstance(p, dict) else ""
+            return any(ign in name or ign in pclass for ign in [
+                "мост", "bridge", "root port", "root complex", "dma", "direct memory",
+                "таймер", "timer", "interrupt", "чипсет", "chipset", "host cpu",
+                "system board", "системн", "espi", "spi flash", "management engine",
+                "smbus", "serial io", "sram", "system peripheral", "signal processing"
+            ])
+
+        base_pci_clean = [p for p in base_pci if not is_ignored_pci(p)] if isinstance(base_pci, list) else []
+        curr_pci_clean = [p for p in curr_pci if not is_ignored_pci(p)] if isinstance(curr_pci, list) else []
+
+        if base_pci_clean or curr_pci_clean:
             def pci_key(item):
                 if isinstance(item, dict):
-                    return (item.get("pnpDeviceId") or item.get("deviceId") or item.get("slot") or item.get("name") or "").strip().upper()
+                    return (item.get("pnpDeviceId") or item.get("deviceId") or item.get("name") or "").strip().upper()
                 return str(item).strip().upper()
 
-            base_pci_dict = {pci_key(p): p for p in base_pci if pci_key(p)}
-            curr_pci_dict = {pci_key(p): p for p in curr_pci if pci_key(p)}
+            base_pci_dict = {pci_key(p): p for p in base_pci_clean if pci_key(p)}
+            curr_pci_dict = {pci_key(p): p for p in curr_pci_clean if pci_key(p)}
 
             for k, p in base_pci_dict.items():
                 if k not in curr_pci_dict:

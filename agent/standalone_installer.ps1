@@ -310,15 +310,23 @@ try {
 # PCI / PCIe Expansion Devices
 $pciDevices = @()
 try {
-    $pciList = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -and $_.PNPDeviceID -like "PCI\*" })
+    $pciList = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { 
+        $_.PNPDeviceID -and 
+        $_.PNPDeviceID -like "PCI\*" -and 
+        $_.PNPClass -ne "System" -and 
+        $_.PNPClass -ne "Volume" -and 
+        $_.PNPClass -ne "SoftwareDevice"
+    })
     if ($pciList.Count -eq 0) {
-        $pciList = @(Get-WmiObject Win32_PnPEntity -Filter "PNPDeviceID LIKE 'PCI%'" -ErrorAction SilentlyContinue)
+        $pciList = @(Get-WmiObject Win32_PnPEntity -Filter "PNPDeviceID LIKE 'PCI%'" -ErrorAction SilentlyContinue | Where-Object {
+            $_.PNPClass -ne "System" -and $_.PNPClass -ne "Volume"
+        })
     }
     $pIdx = 0
     foreach ($p in $pciList) {
         if (-not $p.Name -or $p.Name.Trim() -eq "") { continue }
         $pName = $p.Name.Trim()
-        if ($pName -match "PCI Express Root|PCI standard host CPU bridge|PCI standard ISA bridge|PCI-to-PCI Bridge|Direct memory access controller|High precision event timer") {
+        if ($pName -match "мост|Bridge|Root Port|Root Complex|DMA|Direct memory|Таймер|Timer|Interrupt|Чипсет|Chipset|System board|Системн|Host CPU|eSPI|SPI flash|Management Engine|SMBus|Serial IO|Shared SRAM|SRAM") {
             continue
         }
         $pciDevices += @{
@@ -366,7 +374,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.3.0"
+    agentVersion = "2.3.1"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -424,7 +432,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.3.0'
+`$AgentVersion = '2.3.1'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -435,9 +443,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.3.0") {
+function Update-AgentService([string]`$targetVer = "2.3.1") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.3.0"
+        `$targetVer = "2.3.1"
     }
     try {
         # 1. Report update in progress
@@ -540,7 +548,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.3.0"
+        Update-AgentService "2.3.1"
         return
     }
 
@@ -691,16 +699,24 @@ function Get-LiveHardwareSpec() {
     # Live PCI / PCIe Expansion Devices
     `$livePci = @()
     try {
-        `$pciEntities = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { `$_.PNPDeviceID -and `$_.PNPDeviceID -like "PCI\*" })
+        `$pciEntities = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { 
+            `$_.PNPDeviceID -and 
+            `$_.PNPDeviceID -like "PCI\*" -and 
+            `$_.PNPClass -ne "System" -and 
+            `$_.PNPClass -ne "Volume" -and 
+            `$_.PNPClass -ne "SoftwareDevice"
+        })
         if (`$pciEntities.Count -eq 0) {
-            `$pciEntities = @(Get-WmiObject Win32_PnPEntity -Filter "PNPDeviceID LIKE 'PCI%'" -ErrorAction SilentlyContinue)
+            `$pciEntities = @(Get-WmiObject Win32_PnPEntity -Filter "PNPDeviceID LIKE 'PCI%'" -ErrorAction SilentlyContinue | Where-Object {
+                `$_.PNPClass -ne "System" -and `$_.PNPClass -ne "Volume"
+            })
         }
         `$pciIdx = 0
         if (`$pciEntities) {
             foreach (`$p in `$pciEntities) {
                 if (-not `$p.Name -or `$p.Name.Trim() -eq "") { continue }
                 `$devName = `$p.Name.Trim()
-                if (`$devName -match "PCI Express Root|PCI standard host CPU bridge|PCI standard ISA bridge|PCI-to-PCI Bridge|Direct memory access controller|High precision event timer") {
+                if (`$devName -match "мост|Bridge|Root Port|Root Complex|DMA|Direct memory|Таймер|Timer|Interrupt|Чипсет|Chipset|System board|Системн|Host CPU|eSPI|SPI flash|Management Engine|SMBus|Serial IO|Shared SRAM|SRAM") {
                     continue
                 }
                 `$livePci += @{

@@ -489,6 +489,28 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                 db.add(hw_change)
                 hardware_changes_db.insert(0, c)
 
+                # Deduplication guard: Check if an active open alert for this device and component already exists
+                existing_alert = await db.execute(
+                    select(AlertModel).where(
+                        (AlertModel.device_id == real_device_id) &
+                        (AlertModel.alert_type == "HARDWARE_MISMATCH") &
+                        (AlertModel.state == "Open") &
+                        (AlertModel.description.like(f"%{c['component']}%"))
+                    )
+                )
+                if existing_alert.scalars().first():
+                    # Already open alert exists, do not duplicate
+                    continue
+
+                if any(
+                    a.get("deviceId") == real_device_id and
+                    a.get("type") == "HARDWARE_MISMATCH" and
+                    a.get("state") == "Open" and
+                    c["component"] in a.get("description", "")
+                    for a in alerts_db
+                ):
+                    continue
+
                 # Create persistent Alert
                 alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
                 alert_desc = c.get("description") or f"Обнаружено изменение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
@@ -972,7 +994,9 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                     hw_res = await db.execute(
                         select(HardwareSpecModel).where(
                             (HardwareSpecModel.device_id == device.id) |
-                            (HardwareSpecModel.device_id == device.id.upper())
+                            (HardwareSpecModel.device_id == device.id.upper()) |
+                            (func.lower(HardwareSpecModel.device_id) == str(device.id).lower()) |
+                            (func.lower(HardwareSpecModel.device_id) == str(device_id).lower())
                         )
                     )
                     hw_model = hw_res.scalar_one_or_none()
@@ -992,16 +1016,6 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                             init_spec["network"] = reported_network
                         hw_model = HardwareSpecModel(device_id=device.id, raw_spec=init_spec)
                         db.add(hw_model)
-
-                        # Check if baseline exists to compare against
-                        bl_res = await db.execute(select(HardwareBaselineModel).where(
-                            (HardwareBaselineModel.device_id == device.id) |
-                            (HardwareBaselineModel.device_id == device_id)
-                        ))
-                        bl_model = bl_res.scalar_one_or_none()
-                        prev_spec = copy.deepcopy(bl_model.spec) if (bl_model and bl_model.spec and isinstance(bl_model.spec, dict)) else None
-                        raw_spec = init_spec
-                        spec_modified = (prev_spec is not None)
                     else:
                         prev_spec = copy.deepcopy(hw_model.raw_spec) if (hw_model.raw_spec and isinstance(hw_model.raw_spec, dict)) else {}
                         raw_spec = copy.deepcopy(prev_spec)
@@ -1040,6 +1054,31 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                             changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, device.id)
                             if changes:
                                 for c in changes:
+                                    # Deduplication guard: Check if an active open alert for this device and component already exists
+                                    existing_alert = await db.execute(
+                                        select(AlertModel).where(
+                                            (AlertModel.device_id == device.id) &
+                                            (AlertModel.alert_type == "HARDWARE_MISMATCH") &
+                                            (AlertModel.state == "Open") &
+                                            (AlertModel.description.like(f"%{c['component']}%"))
+                                        )
+                                    )
+                                    if existing_alert.scalars().first():
+                                        # Already open alert exists, do not duplicate/spam
+                                        continue
+
+                                    from backend.app.api.v1.alerts import alerts_db
+                                    from backend.app.services.alert_engine import alert_engine
+
+                                    if any(
+                                        a.get("deviceId") == device.id and
+                                        a.get("type") == "HARDWARE_MISMATCH" and
+                                        a.get("state") == "Open" and
+                                        c["component"] in a.get("description", "")
+                                        for a in alerts_db
+                                    ):
+                                        continue
+
                                     if str(c["severity"]).lower() == "critical":
                                         device.health_status = HealthStatus.CRITICAL
                                     elif str(c["severity"]).lower() == "warning":
