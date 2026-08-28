@@ -1061,6 +1061,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                             from backend.app.api.v1.hardware import hardware_changes_db
                             changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, device.id)
                             if changes:
+                                for c in changes:
                                     alert_desc = c.get("description") or f"Обнаружено изменение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
 
                                     # Deduplication guard: Check if an active open alert for this device and description already exists
