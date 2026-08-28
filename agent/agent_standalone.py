@@ -58,7 +58,7 @@ def save_config(cfg):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
-AGENT_VERSION = "2.1.0"
+AGENT_VERSION = "2.2.0"
 
 def http_post(url, data):
     req = urllib.request.Request(

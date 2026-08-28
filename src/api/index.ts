@@ -677,10 +677,10 @@ export const agentsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return {
-      currentVersion: '2.1.0',
-      releaseDate: '2026-08-27',
+      currentVersion: '2.2.0',
+      releaseDate: '2026-08-28',
       minSupportedVersion: '1.0.0',
-      changelog: 'Релиз v2.1.0: непрерывный мониторинг планок памяти RAM, обнаружение извлечения/замены ОЗУ, горячий Hot-Reload',
+      changelog: 'Релиз v2.2.0: точное распознавание всех модулей RAM (DIMM_1/DIMM_2), отслеживание извлечения и возврата ОЗУ, мониторинг дисков/GPU и прямое OTA-обновление',
       totalAgents: 0,
       upToDateCount: 0,
       outdatedCount: 0,
@@ -701,7 +701,7 @@ export const agentsApi = {
       status: 'queued',
       deviceId,
       message: `Команда обновления отправлена на ${deviceId}`,
-      targetVersion: '2.1.0'
+      targetVersion: '2.2.0'
     };
   },
   updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {
