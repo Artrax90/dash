@@ -58,7 +58,7 @@ def save_config(cfg):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
-AGENT_VERSION = "2.2.0"
+AGENT_VERSION = "2.3.0"
 
 def http_post(url, data):
     req = urllib.request.Request(
@@ -763,7 +763,7 @@ def collect_hardware():
 
     return spec
 
-def execute_agent_update(server_base: str, cfg: dict, update_url: str = "", target_version: str = "1.5.0"):
+def execute_agent_update(server_base: str, cfg: dict, update_url: str = "", target_version: str = "2.3.0"):
     print(f"[*] Initiating remote agent update to v{target_version}...")
     device_id = cfg.get("device_id", "")
     prev_ver = AGENT_VERSION

@@ -113,7 +113,7 @@ def load_devices() -> List[Dict[str, Any]]:
                         "group": grps[0] if grps else "Office",
                         "groups": grps,
                         "powerStatus": r["power_status"] or "On",
-                        "agentVersion": r["agent_version"] or "2.2.0",
+                        "agentVersion": r["agent_version"] or "2.3.0",
                         "lastSeen": r["last_seen"]
                     })
                 if devs:
@@ -254,7 +254,7 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
         for d in user_devices:
             status_icon = "🟢" if d.get("powerStatus") == "On" else "🔴"
             grp = d.get("group", "Общие")
-            lines.append(f"{status_icon} <b>{d.get('name')}</b> ({d.get('ip')}) · <i>{grp}</i> · v{d.get('agentVersion', '2.2.0')}")
+            lines.append(f"{status_icon} <b>{d.get('name')}</b> ({d.get('ip')}) · <i>{grp}</i> · v{d.get('agentVersion', '2.3.0')}")
         return "\n".join(lines)
 
     if cmd in ["/wake", "/shutdown", "/reboot", "/poweroff"]:
