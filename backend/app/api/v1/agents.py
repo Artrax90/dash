@@ -17,6 +17,8 @@ from backend.app.ws.manager import ws_manager
 from backend.app.core.config import settings
 
 import json
+import collections
+import socket
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -534,9 +536,60 @@ async def update_agent_settings(payload: Dict[str, Any]):
                 agent_settings["groupHeartbeatIntervals"][grp] = int(sec)
     return agent_settings
 
-import collections
-import time
-import socket
+@router.post("/update/{device_id}")
+async def trigger_agent_update(device_id: str, payload: Dict[str, Any] = None, db: AsyncSession = Depends(get_db)):
+    """
+    Queue an UPDATE_AGENT command for a specific device, delivered on next heartbeat.
+    The agent will download the latest script from the server and hot-reload.
+    """
+    if payload is None:
+        payload = {}
+    target_version = payload.get("targetVersion", settings.LATEST_AGENT_VERSION)
+    initiator = payload.get("user") or payload.get("initiator", "admin")
+
+    # Find device to get its real ID for command queue
+    result = await db.execute(
+        select(Device).where(
+            (Device.id == device_id) | (Device.hostname == device_id)
+        )
+    )
+    device = result.scalar_one_or_none()
+    real_id = device.id if device else device_id
+
+    cmd = queue_device_command(real_id, "UPDATE_AGENT", force=True, reason=f"OTA update initiated by {initiator}")
+    return {
+        "status": "queued",
+        "message": f"Команда обновления агента поставлена в очередь для {real_id}",
+        "deviceId": real_id,
+        "targetVersion": target_version,
+        "commandId": cmd.get("id")
+    }
+
+@router.post("/update-bulk")
+async def trigger_bulk_agent_update(payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
+    """
+    Queue UPDATE_AGENT command for multiple devices at once.
+    """
+    device_ids = payload.get("deviceIds", [])
+    update_all = payload.get("updateAllOutdated", False)
+    initiator = payload.get("user") or payload.get("initiator", "admin")
+
+    if update_all and not device_ids:
+        result = await db.execute(select(Device))
+        device_ids = [d.id for d in result.scalars().all()]
+
+    queued = []
+    for did in device_ids:
+        cmd = queue_device_command(did, "UPDATE_AGENT", force=True, reason=f"Bulk OTA update by {initiator}")
+        queued.append(did)
+
+    return {
+        "status": "queued",
+        "count": len(queued),
+        "message": f"Массовое обновление отправлено на {len(queued)} устройств",
+        "deviceIds": queued
+    }
+
 
 # Pending command queue for workstations (e.g. REBOOT, SHUTDOWN, SLEEP, LOGOFF)
 pending_device_commands = collections.defaultdict(list)
