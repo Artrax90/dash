@@ -19,6 +19,7 @@ from backend.app.core.config import settings
 import json
 import collections
 import socket
+import copy
 
 router = APIRouter(prefix="/agents", tags=["agents"])
 
@@ -414,22 +415,51 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
     if not device_id:
         raise HTTPException(status_code=400, detail="Missing deviceId")
 
-    result = await db.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == device_id))
+    dev_res = await db.execute(
+        select(Device).where(
+            (Device.id == device_id) | (Device.id == device_id.upper()) | (Device.id == device_id.lower()) |
+            (Device.hostname == device_id) | (Device.hostname == payload.get("hostname", ""))
+        )
+    )
+    dev = dev_res.scalar_one_or_none()
+    real_device_id = dev.id if dev else device_id
+    dev_name = dev.name or dev.hostname or real_device_id if dev else real_device_id
+
+    result = await db.execute(
+        select(HardwareSpecModel).where(
+            (HardwareSpecModel.device_id == real_device_id) | 
+            (HardwareSpecModel.device_id == device_id) |
+            (HardwareSpecModel.device_id == real_device_id.upper())
+        )
+    )
     spec_model = result.scalar_one_or_none()
-    prev_spec = dict(spec_model.raw_spec) if (spec_model and spec_model.raw_spec and isinstance(spec_model.raw_spec, dict)) else None
+    prev_spec = copy.deepcopy(spec_model.raw_spec) if (spec_model and spec_model.raw_spec and isinstance(spec_model.raw_spec, dict)) else None
+
+    # If no previous live spec, fallback to baseline spec if exists
+    if not prev_spec:
+        bl_res = await db.execute(
+            select(HardwareBaselineModel).where(
+                (HardwareBaselineModel.device_id == real_device_id) |
+                (HardwareBaselineModel.device_id == device_id)
+            )
+        )
+        bl_model = bl_res.scalar_one_or_none()
+        if bl_model and bl_model.spec and isinstance(bl_model.spec, dict):
+            prev_spec = copy.deepcopy(bl_model.spec)
 
     if not spec_model:
-        spec_model = HardwareSpecModel(device_id=device_id, raw_spec=raw_spec)
+        spec_model = HardwareSpecModel(device_id=real_device_id, raw_spec=raw_spec)
         db.add(spec_model)
     else:
         # Safely merge incoming partial spec with existing hardware spec
         if isinstance(spec_model.raw_spec, dict) and isinstance(raw_spec, dict):
-            merged = dict(spec_model.raw_spec)
+            merged = copy.deepcopy(spec_model.raw_spec)
             for k, v in raw_spec.items():
                 if v:
                     merged[k] = v
             raw_spec = merged
         spec_model.raw_spec = raw_spec
+        spec_model.device_id = real_device_id
         spec_model.updated_at = datetime.utcnow()
 
     # Compare transitions between previous hardware snapshot and incoming snapshot
@@ -437,16 +467,18 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
         from backend.app.services.hardware_diff_service import hardware_diff_service
         from backend.app.api.v1.hardware import hardware_changes_db
 
-        changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, device_id)
+        changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, real_device_id)
         if changes:
-            dev_res = await db.execute(select(Device).where(Device.id == device_id))
-            dev = dev_res.scalar_one_or_none()
-            dev_name = dev.name if dev else device_id
 
             for c in changes:
+                if dev:
+                    if str(c["severity"]).lower() == "critical":
+                        dev.health_status = HealthStatus.CRITICAL
+                    elif str(c["severity"]).lower() == "warning":
+                        dev.health_status = HealthStatus.WARNING
                 hw_change = HardwareChangeModel(
                     id=c["id"],
-                    device_id=device_id,
+                    device_id=real_device_id,
                     component=c["component"],
                     change_type=c["changeType"],
                     severity=c["severity"],
@@ -462,7 +494,7 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                 alert_desc = c.get("description") or f"Обнаружено изменение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
                 new_alert = AlertModel(
                     id=alert_id,
-                    device_id=device_id,
+                    device_id=real_device_id,
                     alert_type="HARDWARE_MISMATCH",
                     category="Hardware",
                     severity=c["severity"],
@@ -475,7 +507,7 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     "id": alert_id,
                     "device": dev_name,
                     "deviceName": dev_name,
-                    "deviceId": device_id,
+                    "deviceId": real_device_id,
                     "type": "HARDWARE_MISMATCH",
                     "category": "Hardware",
                     "severity": c["severity"],
@@ -915,17 +947,22 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
             if reported_hw or reported_ram_slots is not None or reported_ram_total is not None:
                 try:
-                    hw_res = await db.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == device.id))
+                    hw_res = await db.execute(
+                        select(HardwareSpecModel).where(
+                            (HardwareSpecModel.device_id == device.id) |
+                            (HardwareSpecModel.device_id == device.id.upper())
+                        )
+                    )
                     hw_model = hw_res.scalar_one_or_none()
                     if not hw_model and reported_hw:
                         hw_model = HardwareSpecModel(device_id=device.id, raw_spec=reported_hw)
                         db.add(hw_model)
                     elif hw_model and hw_model.raw_spec and isinstance(hw_model.raw_spec, dict):
-                        prev_spec = dict(hw_model.raw_spec)
-                        raw_spec = dict(hw_model.raw_spec)
+                        prev_spec = copy.deepcopy(hw_model.raw_spec)
+                        raw_spec = copy.deepcopy(hw_model.raw_spec)
                         spec_modified = False
                         if reported_hw and isinstance(reported_hw, dict):
-                            raw_spec = reported_hw
+                            raw_spec = copy.deepcopy(reported_hw)
                             spec_modified = True
                         else:
                             if "ram" not in raw_spec or not isinstance(raw_spec["ram"], dict):
@@ -946,6 +983,10 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                             changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, device.id)
                             if changes:
                                 for c in changes:
+                                    if str(c["severity"]).lower() == "critical":
+                                        device.health_status = HealthStatus.CRITICAL
+                                    elif str(c["severity"]).lower() == "warning":
+                                        device.health_status = HealthStatus.WARNING
                                     hw_change = HardwareChangeModel(
                                         id=c["id"],
                                         device_id=device.id,

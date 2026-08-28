@@ -67,6 +67,24 @@ class HardwareDiffService:
                     "acknowledged": False,
                     "diffStatus": "MISMATCH",
                 })
+            # Detect RAM module replacement (same count & capacity, different serials)
+            elif base_slot_count > 0 and base_slot_count == curr_slot_count and base_ram_total == curr_ram_total:
+                base_sns = {s.get("serialNumber") for s in base_slots if isinstance(s, dict) and s.get("serialNumber") and not str(s.get("serialNumber")).startswith("RAM-")}
+                curr_sns = {s.get("serialNumber") for s in curr_slots if isinstance(s, dict) and s.get("serialNumber") and not str(s.get("serialNumber")).startswith("RAM-")}
+                if base_sns and curr_sns and base_sns != curr_sns:
+                    changes.append({
+                        "id": f"HWC-{device_id}-RAM-MOD-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "RAM",
+                        "changeType": "REPLACED",
+                        "severity": "Warning",
+                        "previousValue": f"{base_ram_total} GB (S/N: {', '.join(base_sns)})",
+                        "currentValue": f"{curr_ram_total} GB (S/N: {', '.join(curr_sns)})",
+                        "description": f"Заменен модуль оперативной памяти: {', '.join(base_sns)} -> {', '.join(curr_sns)}",
+                        "acknowledged": False,
+                        "diffStatus": "MISMATCH",
+                    })
 
         # 2. Compare Disks (by serial numbers) - only if storage list is populated in BOTH prev & current
         base_storage = prev_spec.get("storage", []) or []

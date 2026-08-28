@@ -674,8 +674,16 @@ function App() {
     window.addEventListener('popstate', handlePopState);
     window.addEventListener('hashchange', handlePopState);
 
-    const unsubAlert = wsClient.on('alert.created', () => {
+    const unsubAlert = wsClient.on('alert.created', (newAlert: any) => {
       setActiveAlertsCount(prev => prev + 1);
+      if (newAlert && newAlert.description) {
+        setToast(`🚨 ${newAlert.device || newAlert.deviceName || 'ПК'}: ${newAlert.description}`);
+      }
+    });
+    const unsubHw = wsClient.on('hardware.change', (hw: any) => {
+      if (hw && hw.component) {
+        setToast(`⚠️ ${hw.deviceId}: Изменение оборудования (${hw.component}) -> ${hw.currentValue || hw.changeType}`);
+      }
     });
     const unsubResolved = wsClient.on('alert.resolved', () => {
       alertsApi.list().then(list => setActiveAlertsCount(list.filter(a => a.state !== 'Resolved').length)).catch(() => {});
@@ -685,6 +693,7 @@ function App() {
       window.removeEventListener('popstate', handlePopState);
       window.removeEventListener('hashchange', handlePopState);
       unsubAlert();
+      unsubHw();
       unsubResolved();
     };
   }, []);
@@ -1221,10 +1230,17 @@ function Dashboard({
       dashboardApi.stats().then(setStats).catch(() => {});
     });
 
+    const unsubHw = wsClient.on('hardware.change', () => {
+      hardwareApi.getChanges().then(hw => setHardwareChanges(hw || [])).catch(() => {});
+      alertsApi.list().then(setAlerts).catch(() => {});
+      dashboardApi.stats().then(setStats).catch(() => {});
+    });
+
     return () => {
       clearInterval(interval);
       unsubUpdated();
       unsubAlert();
+      unsubHw();
     };
   }, []);
 

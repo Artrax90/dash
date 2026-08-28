@@ -28,10 +28,13 @@ export class WebSocketClient {
     try {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = window.location.hostname || 'localhost';
-      const port = window.location.port === '5173'
-        ? (import.meta.env.VITE_API_PORT || '2301')
-        : (window.location.port || '2301');
-      const wsUrl = `${protocol}//${host}:${port}/ws`;
+      let wsUrl: string;
+      if (window.location.port === '5173') {
+        const port = import.meta.env.VITE_API_PORT || '2301';
+        wsUrl = `${protocol}//${host}:${port}/ws`;
+      } else {
+        wsUrl = `${protocol}//${window.location.host}/ws`;
+      }
 
       this.ws = new WebSocket(wsUrl);
 
