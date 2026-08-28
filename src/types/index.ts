@@ -70,6 +70,7 @@ export interface HardwareSpec {
   gpus: GpuItem[];
   network: NetworkAdapter[];
   sound?: { name: string; manufacturer: string; }[];
+  pciDevices?: { id: string; name: string; deviceId?: string; pnpDeviceId?: string; manufacturer?: string; status?: string; slot?: string; class?: string }[];
 }
 
 export interface HardwareBaseline {
@@ -85,7 +86,7 @@ export interface HardwareChange {
   id: string;
   deviceId: string;
   timestamp: string;
-  component: 'RAM' | 'Storage' | 'GPU' | 'Motherboard' | 'CPU' | 'Network';
+  component: 'RAM' | 'Storage' | 'GPU' | 'Motherboard' | 'CPU' | 'Network' | 'PCI Device';
   changeType: 'REMOVED' | 'ADDED' | 'MODIFIED';
   severity: 'Critical' | 'Warning' | 'Info';
   previousValue: string;

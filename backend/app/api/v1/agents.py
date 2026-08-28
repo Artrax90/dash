@@ -958,12 +958,16 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 except Exception as e:
                     print(f"[Heartbeat] Error updating hardware network specs: {e}")
 
-            # Live RAM / Hardware updates sent via heartbeat payload
-            reported_hw = payload.get("hardwareSpec")
-            reported_ram_slots = payload.get("ramSlots")
-            reported_ram_total = payload.get("totalRamGb")
+            # Live RAM, PCI, GPU, Storage, Network updates sent via heartbeat payload
+            reported_hw = payload.get("hardwareSpec") or payload.get("hardware") or {}
+            reported_ram_slots = payload.get("ramSlots") or (reported_hw.get("ram", {}).get("slots") if isinstance(reported_hw, dict) else None)
+            reported_ram_total = payload.get("totalRamGb") or (reported_hw.get("ram", {}).get("totalGb") if isinstance(reported_hw, dict) else None)
+            reported_pci = payload.get("pciDevices") or payload.get("pci_devices") or payload.get("pci") or (reported_hw.get("pciDevices") or reported_hw.get("pci_devices") or reported_hw.get("pci") if isinstance(reported_hw, dict) else None)
+            reported_gpus = payload.get("gpus") or payload.get("gpu") or (reported_hw.get("gpus") if isinstance(reported_hw, dict) else None)
+            reported_storage = payload.get("storage") or payload.get("disks") or (reported_hw.get("storage") if isinstance(reported_hw, dict) else None)
+            reported_network = payload.get("network") or payload.get("networkAdapters") or (reported_hw.get("network") if isinstance(reported_hw, dict) else None)
 
-            if reported_hw or reported_ram_slots is not None or reported_ram_total is not None:
+            if reported_hw or reported_ram_slots is not None or reported_ram_total is not None or reported_pci is not None or reported_gpus is not None or reported_storage is not None or reported_network is not None:
                 try:
                     hw_res = await db.execute(
                         select(HardwareSpecModel).where(
@@ -972,25 +976,60 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         )
                     )
                     hw_model = hw_res.scalar_one_or_none()
-                    if not hw_model and reported_hw:
-                        hw_model = HardwareSpecModel(device_id=device.id, raw_spec=reported_hw)
+                    if not hw_model:
+                        init_spec = copy.deepcopy(reported_hw) if isinstance(reported_hw, dict) else {}
+                        if reported_ram_total is not None:
+                            init_spec.setdefault("ram", {})["totalGb"] = int(reported_ram_total)
+                        if reported_ram_slots is not None:
+                            init_spec.setdefault("ram", {})["slots"] = reported_ram_slots
+                        if reported_pci is not None:
+                            init_spec["pciDevices"] = reported_pci
+                        if reported_gpus is not None:
+                            init_spec["gpus"] = reported_gpus
+                        if reported_storage is not None:
+                            init_spec["storage"] = reported_storage
+                        if reported_network is not None:
+                            init_spec["network"] = reported_network
+                        hw_model = HardwareSpecModel(device_id=device.id, raw_spec=init_spec)
                         db.add(hw_model)
-                    elif hw_model and hw_model.raw_spec and isinstance(hw_model.raw_spec, dict):
-                        prev_spec = copy.deepcopy(hw_model.raw_spec)
-                        raw_spec = copy.deepcopy(hw_model.raw_spec)
+
+                        # Check if baseline exists to compare against
+                        bl_res = await db.execute(select(HardwareBaselineModel).where(
+                            (HardwareBaselineModel.device_id == device.id) |
+                            (HardwareBaselineModel.device_id == device_id)
+                        ))
+                        bl_model = bl_res.scalar_one_or_none()
+                        prev_spec = copy.deepcopy(bl_model.spec) if (bl_model and bl_model.spec and isinstance(bl_model.spec, dict)) else None
+                        raw_spec = init_spec
+                        spec_modified = (prev_spec is not None)
+                    else:
+                        prev_spec = copy.deepcopy(hw_model.raw_spec) if (hw_model.raw_spec and isinstance(hw_model.raw_spec, dict)) else {}
+                        raw_spec = copy.deepcopy(prev_spec)
                         spec_modified = False
-                        if reported_hw and isinstance(reported_hw, dict):
-                            raw_spec = copy.deepcopy(reported_hw)
+                        if reported_hw and isinstance(reported_hw, dict) and len(reported_hw) > 0:
+                            for k, v in reported_hw.items():
+                                if v is not None:
+                                    raw_spec[k] = copy.deepcopy(v)
                             spec_modified = True
-                        else:
-                            if "ram" not in raw_spec or not isinstance(raw_spec["ram"], dict):
-                                raw_spec["ram"] = {}
-                            if reported_ram_total is not None:
-                                raw_spec["ram"]["totalGb"] = int(reported_ram_total)
-                                spec_modified = True
-                            if reported_ram_slots is not None and isinstance(reported_ram_slots, list):
-                                raw_spec["ram"]["slots"] = reported_ram_slots
-                                spec_modified = True
+                        if reported_ram_total is not None:
+                            raw_spec.setdefault("ram", {})["totalGb"] = int(reported_ram_total)
+                            spec_modified = True
+                        if reported_ram_slots is not None and isinstance(reported_ram_slots, list):
+                            raw_spec.setdefault("ram", {})["slots"] = reported_ram_slots
+                            spec_modified = True
+                        if reported_pci is not None:
+                            raw_spec["pciDevices"] = reported_pci
+                            spec_modified = True
+                        if reported_gpus is not None:
+                            raw_spec["gpus"] = reported_gpus
+                            spec_modified = True
+                        if reported_storage is not None:
+                            raw_spec["storage"] = reported_storage
+                            spec_modified = True
+                        if reported_network is not None:
+                            raw_spec["network"] = reported_network
+                            spec_modified = True
+
                         if spec_modified:
                             hw_model.raw_spec = raw_spec
                             hw_model.updated_at = datetime.utcnow()

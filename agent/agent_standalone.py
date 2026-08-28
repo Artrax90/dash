@@ -547,6 +547,24 @@ def collect_hardware():
             sound_items = normalize_list(sound_raw)
             spec["sound"] = [{"name": s.get("Name"), "manufacturer": s.get("Manufacturer") or "Realtek/NVIDIA"} for s in sound_items if s.get("Name")]
 
+            # 9. PCI / PCIe Expansion Devices
+            pci_raw = run_ps_json("Get-CimInstance Win32_PnPEntity | Where-Object { $_.PNPDeviceID -and $_.PNPDeviceID -like 'PCI*' } | Select-Object Name, DeviceID, PNPDeviceID, Manufacturer, Status | ConvertTo-Json")
+            pci_items = normalize_list(pci_raw)
+            pci_list = []
+            for idx, p in enumerate(pci_items):
+                pname = (p.get("Name") or "").strip()
+                if not pname or any(ign in pname for ign in ["PCI Express Root", "host CPU bridge", "ISA bridge", "PCI-to-PCI Bridge", "Direct memory access", "timer"]):
+                    continue
+                pci_list.append({
+                    "id": f"pci-{idx}",
+                    "name": pname,
+                    "deviceId": p.get("DeviceID") or f"PCI-{idx}",
+                    "pnpDeviceId": p.get("PNPDeviceID") or "",
+                    "manufacturer": p.get("Manufacturer") or "",
+                    "status": p.get("Status") or "OK"
+                })
+            spec["pciDevices"] = pci_list
+
         except Exception as e:
             print(f"[!] Warning collecting real hardware: {e}")
 
@@ -717,6 +735,28 @@ def collect_hardware():
                 "speed": "1 Gbps",
                 "status": "Up"
             }]
+
+            # 6. PCI / PCIe Expansion Devices via lspci
+            pci_list = []
+            try:
+                lspci_out = subprocess.check_output("lspci -mm 2>/dev/null || true", shell=True, text=True, timeout=3)
+                for idx, line in enumerate(lspci_out.strip().splitlines()):
+                    parts = [p.strip('"') for p in line.split('" "')]
+                    if len(parts) >= 4:
+                        full_name = f"{parts[2]} {parts[3]}".strip()
+                        if any(ign in full_name.lower() for ign in ["host bridge", "isa bridge", "pci bridge"]):
+                            continue
+                        pci_list.append({
+                            "id": f"pci-{idx}",
+                            "name": full_name,
+                            "slot": parts[0].replace('"', ''),
+                            "class": parts[1],
+                            "manufacturer": parts[2],
+                            "status": "OK"
+                        })
+            except Exception:
+                pass
+            spec["pciDevices"] = pci_list
 
         except Exception as e:
             print(f"[!] Warning collecting Linux hardware: {e}")
@@ -932,6 +972,11 @@ def main():
 
     last_ram_stick_count = -1
     last_ram_total_gb = -1
+    last_pci_count = -1
+    last_pci_sig = ""
+    last_disk_count = -1
+    last_gpu_count = -1
+    last_net_count = -1
 
     while True:
         try:
@@ -941,24 +986,41 @@ def main():
             user = get_current_user()
             uptime_str, uptime_sec, boot_time_iso = get_uptime_info()
 
-            # Dynamic hardware RAM spec scan
+            # Dynamic hardware scan
             hw = collect_hardware()
             ram_spec = hw.get("ram", {})
             ram_slots = ram_spec.get("slots", [])
             total_ram_gb = ram_spec.get("totalGb", total_ram)
+            pci_devs = hw.get("pciDevices", [])
+            pci_sig = ";".join(str(p.get("pnpDeviceId") or p.get("slot") or p.get("name")) for p in pci_devs)
+            disk_count = len(hw.get("storage", []))
+            gpu_count = len(hw.get("gpus", []))
+            net_count = len(hw.get("network", []))
 
-            if is_startup or (last_ram_stick_count >= 0 and last_ram_stick_count != len(ram_slots)) or (last_ram_total_gb >= 0 and last_ram_total_gb != total_ram_gb):
+            if is_startup or \
+               (last_ram_stick_count >= 0 and last_ram_stick_count != len(ram_slots)) or \
+               (last_ram_total_gb >= 0 and last_ram_total_gb != total_ram_gb) or \
+               (last_pci_count >= 0 and last_pci_count != len(pci_devs)) or \
+               (last_pci_sig != "" and last_pci_sig != pci_sig) or \
+               (last_disk_count >= 0 and last_disk_count != disk_count) or \
+               (last_gpu_count >= 0 and last_gpu_count != gpu_count) or \
+               (last_net_count >= 0 and last_net_count != net_count):
                 try:
                     http_post(f"{server_base}/agents/inventory", {
                         "deviceId": cfg["device_id"],
                         "hardwareSpec": hw
                     })
-                    print(f"[*] Hardware inventory updated: {total_ram_gb} GB ({len(ram_slots)} modules)")
+                    print(f"[*] Hardware inventory updated: {total_ram_gb} GB RAM, {len(pci_devs)} PCI, {disk_count} Disks, {gpu_count} GPUs")
                 except Exception as inv_e:
                     print(f"[!] Hardware inventory report error: {inv_e}")
 
             last_ram_stick_count = len(ram_slots)
             last_ram_total_gb = total_ram_gb
+            last_pci_count = len(pci_devs)
+            last_pci_sig = pci_sig
+            last_disk_count = disk_count
+            last_gpu_count = gpu_count
+            last_net_count = net_count
 
             os_type, os_ver = get_os_info()
 
@@ -970,6 +1032,11 @@ def main():
                 "totalRamGb": total_ram_gb,
                 "ramSlots": ram_slots,
                 "ramModulesCount": len(ram_slots),
+                "hardwareSpec": hw,
+                "pciDevices": pci_devs,
+                "gpus": hw.get("gpus", []),
+                "storage": hw.get("storage", []),
+                "network": hw.get("network", []),
                 "currentUser": user,
                 "uptime": uptime_str,
                 "uptimeSeconds": uptime_sec,
@@ -980,7 +1047,7 @@ def main():
                 "isStartup": is_startup,
                 "processes": get_top_processes()
             })
-            print(f"[Heartbeat] CPU: {cpu_percent}% | RAM: {ram_percent}% ({total_ram_gb} GB, {len(ram_slots)} slots) | User: {user} | v{AGENT_VERSION}")
+            print(f"[Heartbeat] CPU: {cpu_percent}% | RAM: {ram_percent}% ({total_ram_gb} GB, {len(ram_slots)} slots) | PCI: {len(pci_devs)} | User: {user} | v{AGENT_VERSION}")
             is_startup = False
 
             if resp and isinstance(resp, dict):

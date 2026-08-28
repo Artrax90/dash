@@ -307,9 +307,36 @@ try {
     }
 } catch {}
 
+# PCI / PCIe Expansion Devices
+$pciDevices = @()
+try {
+    $pciList = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -and $_.PNPDeviceID -like "PCI\*" })
+    if ($pciList.Count -eq 0) {
+        $pciList = @(Get-WmiObject Win32_PnPEntity -Filter "PNPDeviceID LIKE 'PCI%'" -ErrorAction SilentlyContinue)
+    }
+    $pIdx = 0
+    foreach ($p in $pciList) {
+        if (-not $p.Name -or $p.Name.Trim() -eq "") { continue }
+        $pName = $p.Name.Trim()
+        if ($pName -match "PCI Express Root|PCI standard host CPU bridge|PCI standard ISA bridge|PCI-to-PCI Bridge|Direct memory access controller|High precision event timer") {
+            continue
+        }
+        $pciDevices += @{
+            id = "pci-" + $pIdx
+            name = $pName
+            deviceId = if ($p.DeviceID) { $p.DeviceID.Trim() } else { "PCI-$pIdx" }
+            pnpDeviceId = if ($p.PNPDeviceID) { $p.PNPDeviceID.Trim() } else { "" }
+            manufacturer = if ($p.Manufacturer) { $p.Manufacturer.Trim() } else { "" }
+            status = if ($p.Status) { $p.Status } else { "OK" }
+        }
+        $pIdx++
+    }
+} catch {}
+
 $diskCount = $disks.Count
 $gpuCount = $gpus.Count
-Write-Host ("      [OK] Обнаружено: CPU " + $cpuModel + " (" + $cpuCores + " ядер), RAM " + $totalRamGb + " GB, Дисков " + $diskCount + ", GPU " + $gpuCount) -ForegroundColor Green
+$pciCount = $pciDevices.Count
+Write-Host ("      [OK] Обнаружено: CPU " + $cpuModel + " (" + $cpuCores + " ядер), RAM " + $totalRamGb + " GB, Дисков " + $diskCount + ", GPU " + $gpuCount + ", PCI " + $pciCount) -ForegroundColor Green
 
 
 
@@ -361,6 +388,7 @@ $hardwarePayload = @{
         storage = $disks
         gpus = $gpus
         network = $netAdapters
+        pciDevices = $pciDevices
     }
 }
 $invRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/inventory" $hardwarePayload
@@ -637,80 +665,154 @@ function Get-LiveHardwareSpec() {
     } catch {}
 
     # Live GPUs
-    `$liveGpus = @()
+    $liveGpus = @()
     try {
-        `$vids = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
-        `$gIdx = 0
-        if (`$vids) {
-            foreach (`$v in `$vids) {
-                if (`$v.Name -and `$v.Name -notmatch "Basic Display|Remote Desktop") {
-                    `$vram = 4
-                    if (`$v.AdapterRAM -and `$v.AdapterRAM -gt 0) {
-                        `$vram = [int][math]::Round(`$v.AdapterRAM / 1GB, 0)
+        $vids = Get-CimInstance Win32_VideoController -ErrorAction SilentlyContinue
+        $gIdx = 0
+        if ($vids) {
+            foreach ($v in $vids) {
+                if ($v.Name -and $v.Name -notmatch "Basic Display|Remote Desktop") {
+                    $vram = 4
+                    if ($v.AdapterRAM -and $v.AdapterRAM -gt 0) {
+                        $vram = [int][math]::Round($v.AdapterRAM / 1GB, 0)
                     }
-                    `$liveGpus += @{
-                        id = "gpu-" + `$gIdx
-                        name = `$v.Name.Trim()
-                        model = `$v.Name.Trim()
-                        vramGb = if (`$vram -gt 0) { `$vram } else { 4 }
+                    $liveGpus += @{
+                        id = "gpu-" + $gIdx
+                        name = $v.Name.Trim()
+                        model = $v.Name.Trim()
+                        vramGb = if ($vram -gt 0) { $vram } else { 4 }
                     }
-                    `$gIdx++
+                    $gIdx++
                 }
             }
         }
     } catch {}
 
+    # Live PCI / PCIe Expansion Devices
+    $livePci = @()
+    try {
+        $pciEntities = @(Get-CimInstance Win32_PnPEntity -ErrorAction SilentlyContinue | Where-Object { $_.PNPDeviceID -and $_.PNPDeviceID -like "PCI\*" })
+        if ($pciEntities.Count -eq 0) {
+            $pciEntities = @(Get-WmiObject Win32_PnPEntity -Filter "PNPDeviceID LIKE 'PCI%'" -ErrorAction SilentlyContinue)
+        }
+        $pciIdx = 0
+        if ($pciEntities) {
+            foreach ($p in $pciEntities) {
+                if (-not $p.Name -or $p.Name.Trim() -eq "") { continue }
+                $devName = $p.Name.Trim()
+                if ($devName -match "PCI Express Root|PCI standard host CPU bridge|PCI standard ISA bridge|PCI-to-PCI Bridge|Direct memory access controller|High precision event timer") {
+                    continue
+                }
+                $livePci += @{
+                    id = "pci-" + $pciIdx
+                    name = $devName
+                    deviceId = if ($p.DeviceID) { $p.DeviceID.Trim() } else { "PCI-$pciIdx" }
+                    pnpDeviceId = if ($p.PNPDeviceID) { $p.PNPDeviceID.Trim() } else { "" }
+                    manufacturer = if ($p.Manufacturer) { $p.Manufacturer.Trim() } else { "" }
+                    status = if ($p.Status) { $p.Status } else { "OK" }
+                }
+                $pciIdx++
+            }
+        }
+    } catch {}
+
+    # Live Network Adapters
+    $liveNics = @()
+    try {
+        $allNics = Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.MacAddress }
+        $nicIdx = 0
+        foreach ($nic in $allNics) {
+            $nicMac = $nic.MacAddress.Replace('-', ':').ToUpper()
+            $nicIp = "0.0.0.0"
+            $ipObj = Get-NetIPAddress -InterfaceIndex $nic.InterfaceIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($ipObj) { $nicIp = $ipObj.IPAddress }
+            $linkSpeed = if ($nic.LinkSpeed) { $nic.LinkSpeed } else { "1 Gbps" }
+            $speedNum = 1000
+            try { $speedNum = [int]($nic.LinkSpeed.Replace(' Gbps','000').Replace(' Mbps','')) } catch {}
+            $liveNics += @{
+                name = $nic.Name
+                interfaceType = if ($nic.InterfaceDescription -match "Wi-Fi|Wireless") { "Wi-Fi" } else { "Ethernet" }
+                mac = $nicMac
+                macAddress = $nicMac
+                ip = $nicIp
+                ipAddress = $nicIp
+                speed = $linkSpeed
+                speedMbps = $speedNum
+                status = "Up"
+            }
+            $nicIdx++
+        }
+    } catch {}
+
     return @{
-        ram = @{ totalGb = `$totGb; slots = `$ramMods }
-        storage = `$liveDisks
-        gpus = `$liveGpus
+        ram = @{ totalGb = $totGb; slots = $ramMods }
+        storage = $liveDisks
+        gpus = $liveGpus
+        pciDevices = $livePci
+        network = $liveNics
     }
 }
 
-`$script:lastDiskCount = -1
-`$script:lastGpuCount = -1
+$script:lastDiskCount = -1
+$script:lastGpuCount = -1
+$script:lastPciCount = -1
+$script:lastPciSig = ""
+$script:lastNetCount = -1
 
 function Invoke-Inventory() {
     try {
-        `$hw = Get-LiveHardwareSpec
-        `$invPayload = @{
-            deviceId = `$DeviceId
-            hardwareSpec = `$hw
+        $hw = Get-LiveHardwareSpec
+        $invPayload = @{
+            deviceId = $DeviceId
+            hardwareSpec = $hw
         }
-        `$json = `$invPayload | ConvertTo-Json -Depth 5 -Compress
-        `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
-        `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/inventory")
-        `$req.Method = 'POST'
-        `$req.ContentType = 'application/json; charset=utf-8'
-        `$req.Timeout = 8000
-        `$stream = `$req.GetRequestStream()
-        `$stream.Write(`$bytes, 0, `$bytes.Length)
-        `$stream.Close()
-        `$resp = `$req.GetResponse()
-        `$resp.Close()
+        $json = $invPayload | ConvertTo-Json -Depth 5 -Compress
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+        $req = [System.Net.WebRequest]::Create("$ServerUrl/api/v1/agents/inventory")
+        $req.Method = 'POST'
+        $req.ContentType = 'application/json; charset=utf-8'
+        $req.Timeout = 8000
+        $stream = $req.GetRequestStream()
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Close()
+        $resp = $req.GetResponse()
+        $resp.Close()
     } catch {}
 }
 
-function Invoke-Heartbeat(`$isStartup = `$false) {
+function Invoke-Heartbeat($isStartup = $false) {
     try {
-        `$cpu = 5
-        `$procObj = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (`$procObj -and `$procObj.LoadPercentage) { `$cpu = [int]`$procObj.LoadPercentage }
+        $cpu = 5
+        $procObj = Get-CimInstance Win32_Processor -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($procObj -and $procObj.LoadPercentage) { $cpu = [int]$procObj.LoadPercentage }
 
-        `$hwLive = Get-LiveHardwareSpec
-        `$ramInfo = `$hwLive.ram
-        `$totalRamGb = `$ramInfo.totalGb
-        `$ramSlots = `$ramInfo.slots
-        `$diskCount = if (`$hwLive.storage) { `$hwLive.storage.Count } else { 0 }
-        `$gpuCount = if (`$hwLive.gpus) { `$hwLive.gpus.Count } else { 0 }
+        $hwLive = Get-LiveHardwareSpec
+        $ramInfo = $hwLive.ram
+        $totalRamGb = $ramInfo.totalGb
+        $ramSlots = $ramInfo.slots
+        $diskCount = if ($hwLive.storage) { $hwLive.storage.Count } else { 0 }
+        $gpuCount = if ($hwLive.gpus) { $hwLive.gpus.Count } else { 0 }
+        $pciCount = if ($hwLive.pciDevices) { $hwLive.pciDevices.Count } else { 0 }
+        $pciSig = if ($hwLive.pciDevices) { ($hwLive.pciDevices | ForEach-Object { $_.pnpDeviceId }) -join ";" } else { "" }
+        $netCount = if ($hwLive.network) { $hwLive.network.Count } else { 0 }
 
-        if (`$isStartup -or (`$script:lastRamCount -ge 0 -and `$script:lastRamCount -ne `$ramSlots.Count) -or (`$script:lastRamGb -ge 0 -and `$script:lastRamGb -ne `$totalRamGb) -or (`$script:lastDiskCount -ge 0 -and `$script:lastDiskCount -ne `$diskCount) -or (`$script:lastGpuCount -ge 0 -and `$script:lastGpuCount -ne `$gpuCount)) {
+        if ($isStartup -or `
+           ($script:lastRamCount -ge 0 -and $script:lastRamCount -ne $ramSlots.Count) -or `
+           ($script:lastRamGb -ge 0 -and $script:lastRamGb -ne $totalRamGb) -or `
+           ($script:lastDiskCount -ge 0 -and $script:lastDiskCount -ne $diskCount) -or `
+           ($script:lastGpuCount -ge 0 -and $script:lastGpuCount -ne $gpuCount) -or `
+           ($script:lastPciCount -ge 0 -and $script:lastPciCount -ne $pciCount) -or `
+           ($script:lastPciSig -ne "" -and $script:lastPciSig -ne $pciSig) -or `
+           ($script:lastNetCount -ge 0 -and $script:lastNetCount -ne $netCount)) {
             Invoke-Inventory
         }
-        `$script:lastRamCount = `$ramSlots.Count
-        `$script:lastRamGb = `$totalRamGb
-        `$script:lastDiskCount = `$diskCount
-        `$script:lastGpuCount = `$gpuCount
+        $script:lastRamCount = $ramSlots.Count
+        $script:lastRamGb = $totalRamGb
+        $script:lastDiskCount = $diskCount
+        $script:lastGpuCount = $gpuCount
+        $script:lastPciCount = $pciCount
+        $script:lastPciSig = $pciSig
+        $script:lastNetCount = $netCount
 
         `$ram = 30
         `$os = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -833,6 +935,11 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             totalRamGb = `$totalRamGb
             ramSlots = `$ramSlots
             ramModulesCount = `$ramSlots.Count
+            hardwareSpec = `$hwLive
+            pciDevices = `$hwLive.pciDevices
+            gpus = `$hwLive.gpus
+            storage = `$hwLive.storage
+            network = `$hwLive.network
             metrics = @{
                 cpu = `$cpu
                 ram = `$ram

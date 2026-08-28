@@ -127,28 +127,59 @@ class HardwareDiffService:
                             "diffStatus": "MISMATCH",
                         })
 
-        # 3. Compare GPU - only if GPUs list is populated in BOTH prev & current
+        # 3. Compare GPU (Additions, Removals, Replacements)
         base_gpus_raw = prev_spec.get("gpus", []) or []
         curr_gpus_raw = current_spec.get("gpus", []) or []
 
-        if isinstance(base_gpus_raw, list) and isinstance(curr_gpus_raw, list) and len(base_gpus_raw) > 0 and len(curr_gpus_raw) > 0:
-            base_gpus = sorted([g.get("model") for g in base_gpus_raw if isinstance(g, dict) and g.get("model") and "Basic" not in g.get("model")])
-            curr_gpus = sorted([g.get("model") for g in curr_gpus_raw if isinstance(g, dict) and g.get("model") and "Basic" not in g.get("model")])
+        if isinstance(base_gpus_raw, list) and isinstance(curr_gpus_raw, list) and (len(base_gpus_raw) > 0 or len(curr_gpus_raw) > 0):
+            base_gpus = sorted([g.get("model").strip() for g in base_gpus_raw if isinstance(g, dict) and g.get("model") and "Basic" not in g.get("model")])
+            curr_gpus = sorted([g.get("model").strip() for g in curr_gpus_raw if isinstance(g, dict) and g.get("model") and "Basic" not in g.get("model")])
             
-            if base_gpus and curr_gpus and base_gpus != curr_gpus:
-                changes.append({
-                    "id": f"HWC-{device_id}-GPU-{ts_suffix}",
-                    "deviceId": device_id,
-                    "timestamp": now_str,
-                    "component": "GPU",
-                    "changeType": "MODIFIED",
-                    "severity": "Critical",
-                    "previousValue": ", ".join(base_gpus) or "None",
-                    "currentValue": ", ".join(curr_gpus) or "None",
-                    "description": f"Замена видеокарты: {', '.join(base_gpus)} -> {', '.join(curr_gpus)}",
-                    "acknowledged": False,
-                    "diffStatus": "MISMATCH",
-                })
+            if base_gpus != curr_gpus:
+                if len(curr_gpus) > len(base_gpus):
+                    added = [g for g in curr_gpus if g not in base_gpus] or curr_gpus
+                    changes.append({
+                        "id": f"HWC-{device_id}-GPU-ADD-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "GPU",
+                        "changeType": "ADDED",
+                        "severity": "Warning",
+                        "previousValue": ", ".join(base_gpus) or "Отсутствует",
+                        "currentValue": ", ".join(curr_gpus),
+                        "description": f"Установлена дополнительная видеокарта: {', '.join(added)}",
+                        "acknowledged": False,
+                        "diffStatus": "MISMATCH",
+                    })
+                elif len(curr_gpus) < len(base_gpus):
+                    removed = [g for g in base_gpus if g not in curr_gpus] or base_gpus
+                    changes.append({
+                        "id": f"HWC-{device_id}-GPU-REM-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "GPU",
+                        "changeType": "REMOVED",
+                        "severity": "Critical",
+                        "previousValue": ", ".join(base_gpus),
+                        "currentValue": ", ".join(curr_gpus) or "Отсутствует",
+                        "description": f"Извлечена видеокарта: {', '.join(removed)}",
+                        "acknowledged": False,
+                        "diffStatus": "MISMATCH",
+                    })
+                else:
+                    changes.append({
+                        "id": f"HWC-{device_id}-GPU-MOD-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "GPU",
+                        "changeType": "MODIFIED",
+                        "severity": "Critical",
+                        "previousValue": ", ".join(base_gpus) or "None",
+                        "currentValue": ", ".join(curr_gpus) or "None",
+                        "description": f"Замена видеокарты: {', '.join(base_gpus)} -> {', '.join(curr_gpus)}",
+                        "acknowledged": False,
+                        "diffStatus": "MISMATCH",
+                    })
 
         # 4. Compare CPU (Processor replacement)
         base_cpu = prev_spec.get("cpu", {}) or {}
@@ -191,6 +222,100 @@ class HardwareDiffService:
                 "acknowledged": False,
                 "diffStatus": "MISMATCH",
             })
+
+        # 6. Compare PCI / PCIe Expansion Devices (Network cards, capture cards, sound cards, NVMe controllers, adapters)
+        base_pci = prev_spec.get("pciDevices") or prev_spec.get("pci_devices") or prev_spec.get("pci") or []
+        curr_pci = current_spec.get("pciDevices") or current_spec.get("pci_devices") or current_spec.get("pci") or []
+
+        if isinstance(base_pci, list) and isinstance(curr_pci, list) and (len(base_pci) > 0 or len(curr_pci) > 0):
+            def pci_key(item):
+                if isinstance(item, dict):
+                    return (item.get("pnpDeviceId") or item.get("deviceId") or item.get("slot") or item.get("name") or "").strip().upper()
+                return str(item).strip().upper()
+
+            base_pci_dict = {pci_key(p): p for p in base_pci if pci_key(p)}
+            curr_pci_dict = {pci_key(p): p for p in curr_pci if pci_key(p)}
+
+            for k, p in base_pci_dict.items():
+                if k not in curr_pci_dict:
+                    name = p.get("name") if isinstance(p, dict) else str(p)
+                    changes.append({
+                        "id": f"HWC-{device_id}-PCI-REM-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "PCI Device",
+                        "changeType": "REMOVED",
+                        "severity": "Critical",
+                        "previousValue": name,
+                        "currentValue": "Отсутствует / Извлечено",
+                        "description": f"Извлечено PCI-устройство: {name}",
+                        "acknowledged": False,
+                        "diffStatus": "MISMATCH",
+                    })
+
+            for k, p in curr_pci_dict.items():
+                if k not in base_pci_dict:
+                    name = p.get("name") if isinstance(p, dict) else str(p)
+                    changes.append({
+                        "id": f"HWC-{device_id}-PCI-ADD-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "PCI Device",
+                        "changeType": "ADDED",
+                        "severity": "Warning",
+                        "previousValue": "Отсутствует",
+                        "currentValue": name,
+                        "description": f"Подключено новое PCI-устройство: {name}",
+                        "acknowledged": False,
+                        "diffStatus": "MISMATCH",
+                    })
+
+        # 7. Compare Network Adapters (Physical network cards, Wi-Fi, 10G cards)
+        base_net = prev_spec.get("network") or []
+        curr_net = current_spec.get("network") or []
+
+        if isinstance(base_net, list) and isinstance(curr_net, list) and (len(base_net) > 0 or len(curr_net) > 0):
+            def net_key(n):
+                if isinstance(n, dict):
+                    return (n.get("mac") or n.get("macAddress") or n.get("name") or "").strip().upper()
+                return str(n).strip().upper()
+
+            base_net_dict = {net_key(n): n for n in base_net if net_key(n) and "LOOPBACK" not in str(n).upper()}
+            curr_net_dict = {net_key(n): n for n in curr_net if net_key(n) and "LOOPBACK" not in str(n).upper()}
+
+            for k, n in base_net_dict.items():
+                if k not in curr_net_dict:
+                    name = n.get("name") if isinstance(n, dict) else str(n)
+                    changes.append({
+                        "id": f"HWC-{device_id}-NET-REM-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "Network",
+                        "changeType": "REMOVED",
+                        "severity": "Critical",
+                        "previousValue": f"{name} ({k})",
+                        "currentValue": "Отсутствует / Отключено",
+                        "description": f"Отключен сетевой адаптер: {name} ({k})",
+                        "acknowledged": False,
+                        "diffStatus": "MISMATCH",
+                    })
+
+            for k, n in curr_net_dict.items():
+                if k not in base_net_dict:
+                    name = n.get("name") if isinstance(n, dict) else str(n)
+                    changes.append({
+                        "id": f"HWC-{device_id}-NET-ADD-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "Network",
+                        "changeType": "ADDED",
+                        "severity": "Warning",
+                        "previousValue": "Отсутствует",
+                        "currentValue": f"{name} ({k})",
+                        "description": f"Подключен новый сетевой адаптер: {name} ({k})",
+                        "acknowledged": False,
+                        "diffStatus": "MISMATCH",
+                    })
 
         return changes
 

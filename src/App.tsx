@@ -5626,7 +5626,7 @@ function HardwarePage({
   const [activeTab, setActiveTab] = useState<'fleet' | 'history'>('fleet');
   const [query, setQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'MISMATCH' | 'MATCH' | 'NO_BASELINE'>('ALL');
-  const [componentFilter, setComponentFilter] = useState<'ALL' | 'RAM' | 'Storage' | 'GPU' | 'CPU'>('ALL');
+  const [componentFilter, setComponentFilter] = useState<'ALL' | 'RAM' | 'Storage' | 'GPU' | 'CPU' | 'Network' | 'PCI Device' | 'Motherboard'>('ALL');
 
   // Modals
   const [diffDevice, setDiffDevice] = useState<Device | null>(null);
@@ -6013,8 +6013,11 @@ function HardwarePage({
                 <option value="ALL">Все компоненты</option>
                 <option value="RAM">Оперативная память (RAM)</option>
                 <option value="Storage">Накопители (Диски / SSD)</option>
+                <option value="PCI Device">PCI / PCIe устройства</option>
                 <option value="GPU">Видеокарты (GPU)</option>
+                <option value="Network">Сетевые адаптеры</option>
                 <option value="CPU">Процессоры (CPU)</option>
+                <option value="Motherboard">Материнские платы</option>
               </select>
             </div>
           </div>
@@ -6129,11 +6132,12 @@ function HardwarePage({
               const liveSlots = diffLiveSpec?.ram?.slots || [];
               const liveStorage = diffLiveSpec?.storage || [];
               const liveGpus = diffLiveSpec?.gpus || [];
+              const livePci = diffLiveSpec?.pciDevices || [];
 
               return (
                 <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '18px' }}>
                   {/* Current Live Spec */}
-                  <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)' }}>
+                  <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)', maxHeight: '420px', overflowY: 'auto' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', paddingBottom: '8px', borderBottom: '1px solid var(--line)' }}>
                       <strong style={{ fontSize: '13px', color: 'var(--blue)' }}>Текущее железо (Live)</strong>
                       <span className="status-dot online" title="Подключено" />
@@ -6168,16 +6172,29 @@ function HardwarePage({
                     </div>
 
                     {/* GPU */}
-                    <div>
+                    <div style={{ marginBottom: '12px' }}>
                       <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ВИДЕОКАРТА</div>
                       <div style={{ fontSize: '12px', marginTop: '2px' }}>
                         {liveGpus[0]?.model || 'Интегрированная графика'}
                       </div>
                     </div>
+
+                    {/* PCI Expansion Devices */}
+                    {livePci.length > 0 && (
+                      <div>
+                        <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>PCI / PCIE УСТРОЙСТВА ({livePci.length})</div>
+                        {livePci.map((p, i) => (
+                          <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--blue)', marginTop: '4px' }}>
+                            {p.name}
+                            <div style={{ color: 'var(--muted)', fontSize: '10px' }}>{p.pnpDeviceId || p.deviceId || 'PCI'}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
               {/* Baseline Spec */}
-              <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)' }}>
+              <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)', maxHeight: '420px', overflowY: 'auto' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', paddingBottom: '8px', borderBottom: '1px solid var(--line)' }}>
                   <strong style={{ fontSize: '13px', color: 'var(--green)' }}>Утверждённый эталон</strong>
                   {diffDevice.baseline ? (
@@ -6218,12 +6235,25 @@ function HardwarePage({
                     </div>
 
                     {/* Baseline GPU */}
-                    <div>
+                    <div style={{ marginBottom: '12px' }}>
                       <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ЭТАЛОН GPU</div>
                       <div style={{ fontSize: '12px', marginTop: '2px' }}>
                         {diffDevice.baseline.spec?.gpus?.[0]?.model || 'Интегрированная графика'}
                       </div>
                     </div>
+
+                    {/* Baseline PCI */}
+                    {(diffDevice.baseline.spec?.pciDevices?.length || 0) > 0 && (
+                      <div>
+                        <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ЭТАЛОН PCI УСТРОЙСТВ ({diffDevice.baseline.spec?.pciDevices?.length})</div>
+                        {diffDevice.baseline.spec?.pciDevices?.map((p, i) => (
+                          <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--green)', marginTop: '4px' }}>
+                            {p.name}
+                            <div style={{ color: 'var(--muted)', fontSize: '10px' }}>{p.pnpDeviceId || p.deviceId || 'PCI'}</div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </>
                 ) : (
                   <div style={{ textAlign: 'center', padding: '30px 10px', color: 'var(--muted)' }}>
