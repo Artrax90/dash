@@ -81,6 +81,31 @@ async def set_baseline(device_id: str, payload: Dict[str, Any], request: Request
     await db.commit()
     await ws_manager.broadcast_event("baseline.updated", {"deviceId": device_id, "approvedBy": approved_by})
 
+    # Log to Audit Trail
+    try:
+        from backend.app.api.v1.audit import record_audit
+        from backend.app.models.device import Device
+        dev_res = await db.execute(select(Device).where(Device.id == device_id))
+        dev_obj = dev_res.scalar_one_or_none()
+        dev_name = dev_obj.name if dev_obj else device_id
+
+        ram_info = spec.get("ram", {}) if isinstance(spec, dict) else {}
+        ram_gb = ram_info.get("totalGb") or (sum(int(s.get("sizeGb") or s.get("capacityGb") or 0) for s in ram_info.get("slots", [])) if ram_info.get("slots") else 0)
+        slots_cnt = len(ram_info.get("slots", [])) if isinstance(ram_info.get("slots"), list) else 0
+        storage_cnt = len(spec.get("storage", [])) if (isinstance(spec, dict) and isinstance(spec.get("storage"), list)) else 0
+        spec_summary = f"ОЗУ: {ram_gb} GB ({slots_cnt} мод.), Дисков: {storage_cnt} шт."
+
+        record_audit(
+            user=approved_by,
+            action="BASELINE_APPROVED",
+            target=device_id,
+            result="SUCCESS",
+            details=f"Утверждён новый аппаратный эталон: {spec_summary}",
+            device_name=dev_name
+        )
+    except Exception as e:
+        print(f"[Audit Hardware Baseline Error] {e}")
+
     return {
         "status": "success",
         "deviceId": device_id,

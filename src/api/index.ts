@@ -341,6 +341,12 @@ export const hardwareApi = {
     }
     return wait(deviceId ? hardwareChanges.filter((c) => c.deviceId === deviceId) : hardwareChanges);
   },
+  acceptBaseline: async (deviceId: string, spec: HardwareSpec, approvedBy?: string): Promise<HardwareBaseline> => {
+    return devicesApi.setBaseline(deviceId, spec, approvedBy);
+  },
+  setBaseline: async (deviceId: string, spec: HardwareSpec, approvedBy?: string): Promise<HardwareBaseline> => {
+    return devicesApi.setBaseline(deviceId, spec, approvedBy);
+  },
 };
 
 export const dashboardApi = {

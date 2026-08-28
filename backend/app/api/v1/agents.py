@@ -540,6 +540,24 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     "changeType": c["changeType"],
                     "currentValue": c["currentValue"]
                 })
+
+                # Record in Audit Log
+                try:
+                    from backend.app.api.v1.audit import record_audit
+                    ch_type = c.get("changeType", "MODIFIED")
+                    audit_action = f"HARDWARE_{ch_type}"
+                    audit_res = "CRITICAL" if str(c.get("severity", "")).lower() == "critical" else ("WARNING" if str(c.get("severity", "")).lower() == "warning" else "SUCCESS")
+                    record_audit(
+                        user="System (Agent)",
+                        action=audit_action,
+                        target=real_device_id,
+                        result=audit_res,
+                        details=alert_desc,
+                        device_name=dev_name
+                    )
+                except Exception as e:
+                    print(f"[Audit Hardware Change Error] {e}")
+
                 print(f"[Hardware Alert] Generated discrepancy alert for {device_id}: {alert_desc}")
 
     await db.commit()
@@ -1052,6 +1070,24 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         "changeType": c["changeType"],
                                         "currentValue": c["currentValue"]
                                     })
+
+                                    # Record in Audit Log
+                                    try:
+                                        from backend.app.api.v1.audit import record_audit
+                                        ch_type = c.get("changeType", "MODIFIED")
+                                        audit_action = f"HARDWARE_{ch_type}"
+                                        audit_res = "CRITICAL" if str(c.get("severity", "")).lower() == "critical" else ("WARNING" if str(c.get("severity", "")).lower() == "warning" else "SUCCESS")
+                                        record_audit(
+                                            user="System (Agent)",
+                                            action=audit_action,
+                                            target=device.id,
+                                            result=audit_res,
+                                            details=alert_desc,
+                                            device_name=dev_name
+                                        )
+                                    except Exception as e:
+                                        print(f"[Audit Hardware Change Heartbeat Error] {e}")
+
                                     print(f"[Hardware Alert] Generated discrepancy alert via Heartbeat for {device.id}: {alert_desc}")
                 except Exception as hw_err:
                     print(f"[Heartbeat] Error updating live hardware RAM specs: {hw_err}")

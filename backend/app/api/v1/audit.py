@@ -51,6 +51,21 @@ def record_audit(user: str, action: str, target: str, result: str = "SUCCESS", d
     }
     logs.insert(0, entry)
     save_audit_logs(logs)
+
+    # Broadcast to live UI via WebSocket
+    try:
+        import asyncio
+        from backend.app.ws.manager import ws_manager
+        loop = None
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            pass
+        if loop and loop.is_running():
+            asyncio.create_task(ws_manager.broadcast_event("audit.created", entry))
+    except Exception:
+        pass
+
     return entry
 
 @router.get("")

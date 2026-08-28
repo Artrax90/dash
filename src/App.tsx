@@ -2454,11 +2454,20 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
   };
 
   const handleAcceptBaseline = async () => {
-    if (!spec) return;
-    await hardwareApi.acceptBaseline(deviceId, spec);
-    setChanges([]);
-    notify('Текущая конфигурация утверждена как эталон (0 расхождений)');
-    loadDeviceData();
+    const specToApprove = spec || device?.hardware || device?.hardwareSpec;
+    if (!specToApprove) {
+      notify('У данного устройства нет доступного аппаратного снимка для эталона');
+      return;
+    }
+    try {
+      const newBl = await devicesApi.setBaseline(deviceId, specToApprove);
+      if (newBl) setBaseline(newBl);
+      setChanges([]);
+      notify('✅ Текущая конфигурация утверждена как эталон (0 расхождений)!');
+      loadDeviceData();
+    } catch {
+      notify('Ошибка при утверждении эталона');
+    }
   };
 
   const handleTriggerAgentUpdate = async () => {
@@ -5685,13 +5694,10 @@ function HardwarePage({
   });
 
   const handleApproveSingle = async (device: Device) => {
-    if (!device.hardwareSpec) {
-      notify('У данного устройства нет доступного аппаратного снимка для эталона');
-      return;
-    }
+    const specToApprove = device.hardwareSpec || device.hardware;
     setApproving(true);
     try {
-      await devicesApi.setBaseline(device.id, device.hardwareSpec);
+      await devicesApi.setBaseline(device.id, specToApprove as any);
       notify(`✅ Текущая конфигурация ПК ${device.name || device.id} утверждена как эталон!`);
       setApproveDevice(null);
       setDiffDevice(null);
@@ -5708,10 +5714,9 @@ function HardwarePage({
     try {
       let count = 0;
       for (const d of devices) {
-        if (d.hardwareSpec) {
-          await devicesApi.setBaseline(d.id, d.hardwareSpec);
-          count++;
-        }
+        const specToApprove = d.hardwareSpec || d.hardware;
+        await devicesApi.setBaseline(d.id, specToApprove as any);
+        count++;
       }
       notify(`✅ Утверждены эталоны для ${count} рабочих станций!`);
       setBulkApproveModal(false);
@@ -5877,13 +5882,15 @@ function HardwarePage({
                   filteredDevices.map(device => {
                     const isMismatch = mismatchDevs.some(m => m.id === device.id);
                     const hasBaseline = !!device.baseline;
-                    const liveRam = device.hardwareSpec?.ram;
-                    const liveRamGb = liveRam?.totalGb || (liveRam?.slots ? liveRam.slots.reduce((s, x) => s + (x.sizeGb || 0), 0) : 0);
+                    const liveSpec = device.hardwareSpec || device.hardware;
+                    const liveRam = liveSpec?.ram;
+                    const liveRamGb = liveRam?.totalGb || (liveRam?.slots ? liveRam.slots.reduce((s, x) => s + (x.sizeGb || x.capacityGb || 0), 0) : 0);
                     const liveSlotsCount = liveRam?.slots?.length || 0;
-                    const liveStorageCount = device.hardwareSpec?.storage?.length || 0;
+                    const liveStorageCount = liveSpec?.storage?.length || 0;
+                    const liveGpuCount = liveSpec?.gpus?.length || 0;
 
                     const blRam = device.baseline?.spec?.ram;
-                    const blRamGb = blRam?.totalGb || (blRam?.slots ? blRam.slots.reduce((s, x) => s + (x.sizeGb || 0), 0) : 0);
+                    const blRamGb = blRam?.totalGb || (blRam?.slots ? blRam.slots.reduce((s, x) => s + (x.sizeGb || x.capacityGb || 0), 0) : 0);
                     const blSlotsCount = blRam?.slots?.length || 0;
                     const blStorageCount = device.baseline?.spec?.storage?.length || 0;
 
@@ -5916,7 +5923,7 @@ function HardwarePage({
                             </div>
                             <div style={{ color: 'var(--muted)', fontSize: '11px', marginTop: '2px' }}>
                               <HardDrive size={11} style={{ display: 'inline', marginRight: '4px', verticalAlign: '-1px' }} />
-                              Диски: {liveStorageCount > 0 ? `${liveStorageCount} шт.` : '—'} · GPU: {device.hardwareSpec?.gpus?.length || 0}
+                              Диски: {liveStorageCount > 0 ? `${liveStorageCount} шт.` : '—'} · GPU: {liveGpuCount}
                             </div>
                           </div>
                         </td>
@@ -6116,50 +6123,58 @@ function HardwarePage({
               </button>
             </div>
 
-            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '18px' }}>
-              {/* Current Live Spec */}
-              <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', paddingBottom: '8px', borderBottom: '1px solid var(--line)' }}>
-                  <strong style={{ fontSize: '13px', color: 'var(--blue)' }}>Текущее железо (Live)</strong>
-                  <span className="status-dot online" title="Подключено" />
-                </div>
-                
-                {/* RAM */}
-                <div style={{ marginBottom: '12px' }}>
-                  <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ОПЕРАТИВНАЯ ПАМЯТЬ</div>
-                  <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>
-                    {diffDevice.hardwareSpec?.ram?.totalGb || 0} GB ({diffDevice.hardwareSpec?.ram?.slots?.length || 0} модулей)
-                  </div>
-                  {diffDevice.hardwareSpec?.ram?.slots?.map((s, i) => (
-                    <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--blue)', marginTop: '4px' }}>
-                      {s.slot}: {s.sizeGb || s.capacityGb || 8} GB {s.type || 'DDR4'} {s.frequencyMhz ? `${s.frequencyMhz} MHz` : ''}
-                      <div style={{ color: 'var(--muted)', fontSize: '10px' }}>S/N: {s.serialNumber || '—'}</div>
-                    </div>
-                  ))}
-                </div>
+            {(() => {
+              const diffLiveSpec = diffDevice.hardwareSpec || diffDevice.hardware;
+              const liveRamGb = diffLiveSpec?.ram?.totalGb || (diffLiveSpec?.ram?.slots ? diffLiveSpec.ram.slots.reduce((s, x) => s + (x.sizeGb || x.capacityGb || 0), 0) : 0);
+              const liveSlots = diffLiveSpec?.ram?.slots || [];
+              const liveStorage = diffLiveSpec?.storage || [];
+              const liveGpus = diffLiveSpec?.gpus || [];
 
-                {/* Storage */}
-                <div style={{ marginBottom: '12px' }}>
-                  <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>НАКОПИТЕЛИ</div>
-                  <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>
-                    {diffDevice.hardwareSpec?.storage?.length || 0} дисков
-                  </div>
-                  {diffDevice.hardwareSpec?.storage?.map((d, i) => (
-                    <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--blue)', marginTop: '4px' }}>
-                      {d.model} ({d.capacityGb} GB)
-                      <div style={{ color: 'var(--muted)', fontSize: '10px' }}>S/N: {d.serialNumber || '—'}</div>
+              return (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '18px' }}>
+                  {/* Current Live Spec */}
+                  <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)' }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', paddingBottom: '8px', borderBottom: '1px solid var(--line)' }}>
+                      <strong style={{ fontSize: '13px', color: 'var(--blue)' }}>Текущее железо (Live)</strong>
+                      <span className="status-dot online" title="Подключено" />
                     </div>
-                  ))}
-                </div>
+                    
+                    {/* RAM */}
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ОПЕРАТИВНАЯ ПАМЯТЬ</div>
+                      <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>
+                        {liveRamGb} GB ({liveSlots.length} модулей)
+                      </div>
+                      {liveSlots.map((s, i) => (
+                        <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--blue)', marginTop: '4px' }}>
+                          {s.slot}: {s.sizeGb || s.capacityGb || 8} GB {s.type || 'DDR4'} {s.frequencyMhz ? `${s.frequencyMhz} MHz` : ''}
+                          <div style={{ color: 'var(--muted)', fontSize: '10px' }}>S/N: {s.serialNumber || '—'}</div>
+                        </div>
+                      ))}
+                    </div>
 
-                {/* GPU */}
-                <div>
-                  <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ВИДЕОКАРТА</div>
-                  <div style={{ fontSize: '12px', marginTop: '2px' }}>
-                    {diffDevice.hardwareSpec?.gpus?.[0]?.model || 'Интегрированная графика'}
+                    {/* Storage */}
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>НАКОПИТЕЛИ</div>
+                      <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>
+                        {liveStorage.length} дисков
+                      </div>
+                      {liveStorage.map((d, i) => (
+                        <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--blue)', marginTop: '4px' }}>
+                          {d.model} ({d.capacityGb} GB)
+                          <div style={{ color: 'var(--muted)', fontSize: '10px' }}>S/N: {d.serialNumber || '—'}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* GPU */}
+                    <div>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ВИДЕОКАРТА</div>
+                      <div style={{ fontSize: '12px', marginTop: '2px' }}>
+                        {liveGpus[0]?.model || 'Интегрированная графика'}
+                      </div>
+                    </div>
                   </div>
-                </div>
-              </div>
 
               {/* Baseline Spec */}
               <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)' }}>
@@ -6219,6 +6234,8 @@ function HardwarePage({
                 )}
               </div>
             </div>
+            );
+          })()}
 
             <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
               <Button onClick={() => setDiffDevice(null)}>Закрыть</Button>
@@ -9819,11 +9836,10 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
 }
 
 // ----------------------------------------------------
-// 14. AUDIT LOG
+// 14. AUDIT LOG & COMPLIANCE TRAIL
 // ----------------------------------------------------
 function formatAuditTimestamp(raw?: string): string {
   if (!raw) return '—';
-  // Check if ISO format (e.g. 2026-08-23T20:46:37Z or 2026-08-23T20:46:37+00:00)
   if (raw.includes('T') || raw.endsWith('Z')) {
     const d = new Date(raw);
     if (!isNaN(d.getTime())) {
@@ -9831,7 +9847,6 @@ function formatAuditTimestamp(raw?: string): string {
       return `${pad(d.getDate())}.${pad(d.getMonth() + 1)}.${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
     }
   }
-  // Check if legacy "DD.MM.YYYY HH:MM:SS" which was stored as UTC
   const match = raw.match(/^(\d{2})\.(\d{2})\.(\d{4})\s+(\d{2}):(\d{2}):(\d{2})$/);
   if (match) {
     const [_, day, month, year, hour, min, sec] = match;
@@ -9844,14 +9859,83 @@ function formatAuditTimestamp(raw?: string): string {
   return raw;
 }
 
+function renderAuditActionBadge(action: string) {
+  const act = action.toUpperCase();
+  if (act === 'HARDWARE_REMOVED') {
+    return (
+      <span className="badge mismatch" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 600 }}>
+        <Cpu size={12} /> Извлечение железа
+      </span>
+    );
+  }
+  if (act === 'HARDWARE_ADDED') {
+    return (
+      <span className="badge match" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 600 }}>
+        <Cpu size={12} /> Добавление железа
+      </span>
+    );
+  }
+  if (act === 'HARDWARE_REPLACED') {
+    return (
+      <span className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 600, background: 'rgba(245, 158, 11, 0.15)', color: 'var(--yellow)', border: '1px solid rgba(245, 158, 11, 0.3)' }}>
+        <Cpu size={12} /> Замена модуля
+      </span>
+    );
+  }
+  if (act.startsWith('HARDWARE_')) {
+    return (
+      <span className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 600, background: 'rgba(59, 130, 246, 0.15)', color: 'var(--blue)' }}>
+        <Cpu size={12} /> {act.replace('HARDWARE_', 'Железо: ')}
+      </span>
+    );
+  }
+  if (act === 'BASELINE_APPROVED') {
+    return (
+      <span className="badge match" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 600 }}>
+        <ShieldCheck size={12} /> Эталон утверждён
+      </span>
+    );
+  }
+  if (act.startsWith('ALERT_')) {
+    return (
+      <span className="badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 600, background: 'rgba(168, 85, 247, 0.15)', color: 'var(--purple)' }}>
+        <Bell size={12} /> {act.replace('ALERT_', '')}
+      </span>
+    );
+  }
+  if (act === 'WAKE') {
+    return (
+      <span className="badge match" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 600 }}>
+        <Zap size={12} /> WAKE (WoL)
+      </span>
+    );
+  }
+  if (act === 'SHUTDOWN' || act === 'REBOOT') {
+    return (
+      <span className="badge mismatch" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', fontWeight: 600 }}>
+        <Power size={12} /> {act}
+      </span>
+    );
+  }
+
+  return <span className="action-code">{action}</span>;
+}
+
 function AuditLog({ compact = false, deviceId }: { compact?: boolean; deviceId?: string }) {
   const { t } = useLanguage();
   const [items, setItems] = useState<AuditEntry[]>([]);
   const [deviceMap, setDeviceMap] = useState<Record<string, string>>({});
   const [query, setQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState<'ALL' | 'HARDWARE' | 'POWER' | 'ALERTS' | 'SECURITY'>('ALL');
+  const [loading, setLoading] = useState(false);
 
-  useEffect(() => {
-    auditApi.list().then(setItems);
+  const loadData = useCallback(() => {
+    setLoading(true);
+    auditApi.list().then((logs) => {
+      setItems(logs || []);
+      setLoading(false);
+    }).catch(() => setLoading(false));
+
     devicesApi.list().then(devs => {
       if (Array.isArray(devs)) {
         const map: Record<string, string> = {};
@@ -9864,6 +9948,20 @@ function AuditLog({ compact = false, deviceId }: { compact?: boolean; deviceId?:
     }).catch(() => {});
   }, []);
 
+  useEffect(() => {
+    loadData();
+    const unsub1 = wsClient.on('audit.created', () => loadData());
+    const unsub2 = wsClient.on('hardware.change', () => loadData());
+    const unsub3 = wsClient.on('baseline.updated', () => loadData());
+    const unsub4 = wsClient.on('alert.resolved', () => loadData());
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+      unsub4();
+    };
+  }, [loadData]);
+
   const getTargetDisplayName = (rawTarget: string) => {
     if (!rawTarget) return 'Fleet';
     const upper = rawTarget.toUpperCase();
@@ -9873,26 +9971,148 @@ function AuditLog({ compact = false, deviceId }: { compact?: boolean; deviceId?:
     return rawTarget;
   };
 
+  // Hardware and categories count
+  const hardwareCount = items.filter(i => i.action.startsWith('HARDWARE_') || i.action.startsWith('BASELINE_')).length;
+  const powerCount = items.filter(i => ['WAKE', 'SHUTDOWN', 'REBOOT', 'FORCE_SHUTDOWN'].includes(i.action.toUpperCase())).length;
+  const alertCount = items.filter(i => i.action.startsWith('ALERT_') || i.action.startsWith('ALERTS_')).length;
+  const criticalCount = items.filter(i => i.result === 'CRITICAL' || i.result === 'FAILED').length;
+
   const filtered = (deviceId ? items.filter(item => item.target === deviceId || item.target === getTargetDisplayName(deviceId)) : items)
     .filter(e => {
+      const act = e.action.toUpperCase();
+      let matchCat = true;
+      if (categoryFilter === 'HARDWARE') {
+        matchCat = act.startsWith('HARDWARE_') || act.startsWith('BASELINE_');
+      } else if (categoryFilter === 'POWER') {
+        matchCat = ['WAKE', 'SHUTDOWN', 'REBOOT', 'FORCE_SHUTDOWN'].includes(act);
+      } else if (categoryFilter === 'ALERTS') {
+        matchCat = act.startsWith('ALERT_') || act.startsWith('ALERTS_');
+      } else if (categoryFilter === 'SECURITY') {
+        matchCat = act.startsWith('USER_') || act.startsWith('ROLE_') || act.startsWith('TOKEN_');
+      }
+
       const targetName = getTargetDisplayName(e.target);
-      return `${e.action} ${e.user} ${e.target} ${targetName} ${e.details}`.toLowerCase().includes(query.toLowerCase());
+      const matchQuery = `${e.action} ${e.user} ${e.target} ${targetName} ${e.details}`.toLowerCase().includes(query.toLowerCase());
+      return matchCat && matchQuery;
     });
 
   return (
     <>
       <PageHeader
-        eyebrow="COMPLIANCE"
+        eyebrow="COMPLIANCE & AUDIT TRAIL"
         title={compact ? 'История активности' : 'Журнал аудита'}
-        description={compact ? 'Команды и изменения конфигурации данного ПК.' : 'Неизменяемый реестр всех системных действий и аппаратных событий.'}
-        actions={!compact ? <Button icon={<ArrowDownToLine size={15} />} onClick={() => exportAuditToCsv(items)}>{t('common.export')}</Button> : undefined}
+        description={compact ? 'Команды и аппаратные события данной рабочей станции.' : 'Неизменяемый реестр всех системных действий, изменений конфигураций железа и решений операторов.'}
+        actions={
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <Button icon={<RefreshCw size={14} />} onClick={() => loadData()}>
+              {t('common.refresh')}
+            </Button>
+            {!compact && (
+              <Button primary icon={<ArrowDownToLine size={14} />} onClick={() => exportAuditToCsv(filtered)}>
+                {t('common.export')} (CSV)
+              </Button>
+            )}
+          </div>
+        }
       />
-      <div className="audit-filters">
-        <div className="search wide">
-          <Search size={15} />
-          <input placeholder="Поиск по действиям, пользователям или целям..." value={query} onChange={e => setQuery(e.target.value)} />
+
+      {/* KPI Bento summary when on full page */}
+      {!compact && (
+        <div className="bento-grid" style={{ marginBottom: '22px' }}>
+          <div className="bento-card col-3" onClick={() => setCategoryFilter('ALL')} style={{ cursor: 'pointer' }}>
+            <div className="bento-header">
+              <span className="bento-card-title">Все события аудита</span>
+              <div className="bento-icon cyan"><Terminal size={18} /></div>
+            </div>
+            <div className="bento-value">{loading ? '—' : items.length} <small>записей</small></div>
+            <div className="bento-footer">
+              <span>Полный хронологический лог</span>
+              <ArrowRight size={14} style={{ color: 'var(--muted)' }} />
+            </div>
+          </div>
+
+          <div className="bento-card col-3" onClick={() => setCategoryFilter('HARDWARE')} style={{ cursor: 'pointer' }}>
+            <div className="bento-header">
+              <span className="bento-card-title">События оборудования</span>
+              <div className="bento-icon purple"><Cpu size={18} /></div>
+            </div>
+            <div className="bento-value">{loading ? '—' : hardwareCount} <small>событий железа</small></div>
+            <div className="bento-footer">
+              <span>ОЗУ, диски, GPU, эталоны</span>
+              <ArrowRight size={14} style={{ color: 'var(--muted)' }} />
+            </div>
+          </div>
+
+          <div className="bento-card col-3" onClick={() => setCategoryFilter('POWER')} style={{ cursor: 'pointer' }}>
+            <div className="bento-header">
+              <span className="bento-card-title">Команды питания</span>
+              <div className="bento-icon green"><Zap size={18} /></div>
+            </div>
+            <div className="bento-value">{loading ? '—' : powerCount} <small>команд</small></div>
+            <div className="bento-footer">
+              <span>WoL, выключение, перезагрузка</span>
+              <ArrowRight size={14} style={{ color: 'var(--muted)' }} />
+            </div>
+          </div>
+
+          <div className="bento-card col-3" onClick={() => setCategoryFilter('ALERTS')} style={{ cursor: 'pointer' }}>
+            <div className="bento-header">
+              <span className="bento-card-title">Инциденты и Решения</span>
+              <div className="bento-icon red"><Bell size={18} /></div>
+            </div>
+            <div className="bento-value" style={{ color: criticalCount > 0 ? '#ef4444' : 'inherit' }}>
+              {loading ? '—' : alertCount} <small>решений</small>
+            </div>
+            <div className="bento-footer">
+              <span style={{ color: criticalCount > 0 ? 'var(--red)' : 'var(--muted)' }}>
+                {criticalCount > 0 ? `${criticalCount} критических инцидентов` : 'Все инциденты закрыты'}
+              </span>
+              <Check size={14} style={{ color: 'var(--green)' }} />
+            </div>
+          </div>
         </div>
+      )}
+
+      {/* Filter and Search Bar */}
+      <div className="audit-filters" style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', marginBottom: '14px' }}>
+        <div className="search wide" style={{ flex: 1, minWidth: '240px' }}>
+          <Search size={15} />
+          <input placeholder="Поиск по действиям, пользователям, оборудованию или ПК..." value={query} onChange={e => setQuery(e.target.value)} />
+        </div>
+        {!compact && (
+          <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+            <button
+              className={`badge ${categoryFilter === 'ALL' ? 'match' : ''}`}
+              style={{ cursor: 'pointer', padding: '6px 12px', fontSize: '12px' }}
+              onClick={() => setCategoryFilter('ALL')}
+            >
+              Все ({items.length})
+            </button>
+            <button
+              className={`badge ${categoryFilter === 'HARDWARE' ? 'match' : ''}`}
+              style={{ cursor: 'pointer', padding: '6px 12px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              onClick={() => setCategoryFilter('HARDWARE')}
+            >
+              <Cpu size={12} /> Железо и эталоны ({hardwareCount})
+            </button>
+            <button
+              className={`badge ${categoryFilter === 'POWER' ? 'match' : ''}`}
+              style={{ cursor: 'pointer', padding: '6px 12px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              onClick={() => setCategoryFilter('POWER')}
+            >
+              <Zap size={12} /> Питание ({powerCount})
+            </button>
+            <button
+              className={`badge ${categoryFilter === 'ALERTS' ? 'match' : ''}`}
+              style={{ cursor: 'pointer', padding: '6px 12px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+              onClick={() => setCategoryFilter('ALERTS')}
+            >
+              <Bell size={12} /> Оповещения ({alertCount})
+            </button>
+          </div>
+        )}
       </div>
+
       <section className="panel table-panel">
         <div className="audit-list">
           <div className="audit-head">
@@ -9907,15 +10127,15 @@ function AuditLog({ compact = false, deviceId }: { compact?: boolean; deviceId?:
             <div className="empty-state" style={{ minHeight: '180px' }}>
               <Terminal size={24} />
               <span>Журнал аудита пуст</span>
-              <small style={{ color: 'var(--muted)', marginTop: '4px' }}>Все последующие действия и команды будут автоматически зафиксированы</small>
+              <small style={{ color: 'var(--muted)', marginTop: '4px' }}>Все последующие действия и события оборудования будут автоматически зафиксированы</small>
             </div>
           ) : (
             filtered.map(entry => (
               <div className="audit-row" key={entry.id}>
-                <span className="muted-text">{formatAuditTimestamp(entry.timestamp)}</span>
+                <span className="muted-text" style={{ whiteSpace: 'nowrap' }}>{formatAuditTimestamp(entry.timestamp)}</span>
                 <strong>{entry.user}</strong>
-                <span className="action-code">{entry.action}</span>
-                <span>{getTargetDisplayName(entry.target)}</span>
+                <div>{renderAuditActionBadge(entry.action)}</div>
+                <span style={{ fontWeight: 600 }}>{getTargetDisplayName(entry.target)}</span>
                 <StatusPill status={entry.result} />
                 <span className="muted-text audit-detail">{entry.details}</span>
               </div>

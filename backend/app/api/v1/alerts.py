@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from typing import Dict, Any, List, Optional
 import json
 import os
@@ -90,8 +90,15 @@ async def list_alerts(db: AsyncSession = Depends(get_db)):
     return combined_alerts
 
 @router.post("/{alert_id}/resolve")
-async def resolve_alert(alert_id: str, db: AsyncSession = Depends(get_db)):
+async def resolve_alert(alert_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     resolved_obj = None
+    operator = request.headers.get("X-User-Name") or "Оператор"
+    try:
+        import urllib.parse
+        if "%" in operator:
+            operator = urllib.parse.unquote(operator)
+    except Exception:
+        pass
     
     # 1. Try resolving in DB
     res = await db.execute(select(AlertModel).where(AlertModel.id == alert_id))
@@ -116,6 +123,19 @@ async def resolve_alert(alert_id: str, db: AsyncSession = Depends(get_db)):
             "state": "Resolved"
         }
 
+        # Audit log
+        try:
+            from backend.app.api.v1.audit import record_audit
+            record_audit(
+                user=operator,
+                action="ALERT_RESOLVED",
+                target=model.device_id or alert_id,
+                result="SUCCESS",
+                details=f"Закрыт инцидент #{alert_id} ({model.alert_type}): {model.description}"
+            )
+        except Exception as e:
+            print(f"[Audit Alert Resolve Error] {e}")
+
     # 2. Try resolving in JSON store
     for a in alerts_db:
         if a["id"] == alert_id:
@@ -133,8 +153,15 @@ async def resolve_alert(alert_id: str, db: AsyncSession = Depends(get_db)):
     return {"status": "not_found"}
 
 @router.post("/{alert_id}/acknowledge")
-async def acknowledge_alert(alert_id: str, db: AsyncSession = Depends(get_db)):
+async def acknowledge_alert(alert_id: str, request: Request, db: AsyncSession = Depends(get_db)):
     ack_obj = None
+    operator = request.headers.get("X-User-Name") or "Оператор"
+    try:
+        import urllib.parse
+        if "%" in operator:
+            operator = urllib.parse.unquote(operator)
+    except Exception:
+        pass
     
     # 1. Try acknowledging in DB
     res = await db.execute(select(AlertModel).where(AlertModel.id == alert_id))
@@ -153,6 +180,19 @@ async def acknowledge_alert(alert_id: str, db: AsyncSession = Depends(get_db)):
         await db.commit()
         ack_obj = {"id": model.id, "deviceId": model.device_id, "state": "Acknowledged"}
 
+        # Audit log
+        try:
+            from backend.app.api.v1.audit import record_audit
+            record_audit(
+                user=operator,
+                action="ALERT_ACKNOWLEDGED",
+                target=model.device_id or alert_id,
+                result="SUCCESS",
+                details=f"Квитировано оповещение #{alert_id} ({model.alert_type}): {model.description}"
+            )
+        except Exception as e:
+            print(f"[Audit Alert Ack Error] {e}")
+
     # 2. JSON store
     for a in alerts_db:
         if a["id"] == alert_id:
@@ -170,7 +210,15 @@ async def acknowledge_alert(alert_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/resolve-all")
 @router.post("/ack-all")
-async def resolve_all_alerts(db: AsyncSession = Depends(get_db)):
+async def resolve_all_alerts(request: Request, db: AsyncSession = Depends(get_db)):
+    operator = request.headers.get("X-User-Name") or "Оператор"
+    try:
+        import urllib.parse
+        if "%" in operator:
+            operator = urllib.parse.unquote(operator)
+    except Exception:
+        pass
+
     # 1. Resolve all in DB
     res = await db.execute(select(AlertModel).where(AlertModel.state != "Resolved"))
     models = res.scalars().all()
@@ -188,6 +236,19 @@ async def resolve_all_alerts(db: AsyncSession = Depends(get_db)):
     for a in alerts_db:
         a["state"] = "Resolved"
     save_alerts_to_file(alerts_db)
+
+    # Audit log
+    try:
+        from backend.app.api.v1.audit import record_audit
+        record_audit(
+            user=operator,
+            action="ALERTS_RESOLVE_ALL",
+            target="Fleet",
+            result="SUCCESS",
+            details=f"Все инциденты ({len(models)} шт.) переведены в статус Resolved"
+        )
+    except Exception as e:
+        print(f"[Audit Alerts Resolve All Error] {e}")
 
     await ws_manager.broadcast_event("alert.resolved_all", {"status": "all_resolved"})
     return {"status": "all_resolved", "count": len(models)}

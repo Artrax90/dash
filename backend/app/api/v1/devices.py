@@ -283,6 +283,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Device))
     devices = result.scalars().all()
     
+    # 1. Hardware Specs Map
     hw_res = await db.execute(select(HardwareSpecModel))
     hw_map = {}
     for h in hw_res.scalars().all():
@@ -290,22 +291,63 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
             hw_map[h.device_id] = h.raw_spec
             hw_map[h.device_id.upper()] = h.raw_spec
             hw_map[h.device_id.lower()] = h.raw_spec
+            
+    # 2. Hardware Baselines Map
+    bl_res = await db.execute(select(HardwareBaselineModel))
+    bl_map = {}
+    for b in bl_res.scalars().all():
+        if b.device_id:
+            bl_entry = {
+                "id": b.id,
+                "deviceId": b.device_id,
+                "approvedBy": b.approved_by or "Оператор",
+                "createdAt": b.created_at.strftime("%Y-%m-%d %H:%M") if b.created_at else "",
+                "updatedAt": b.updated_at.strftime("%Y-%m-%d %H:%M") if b.updated_at else "",
+                "spec": b.spec
+            }
+            bl_map[b.device_id] = bl_entry
+            bl_map[b.device_id.upper()] = bl_entry
+            bl_map[b.device_id.lower()] = bl_entry
+
+    # 3. Hardware Mismatch Changes Count Map
+    ch_res = await db.execute(select(HardwareChangeModel).where(HardwareChangeModel.diff_status == "MISMATCH"))
+    mismatch_counts = collections.defaultdict(int)
+    for ch in ch_res.scalars().all():
+        if ch.device_id:
+            mismatch_counts[ch.device_id] += 1
+            mismatch_counts[ch.device_id.upper()] += 1
+            mismatch_counts[ch.device_id.lower()] += 1
     
     summaries = []
     for d in devices:
         item = format_device_summary(d)
-        hw = hw_map.get(d.id) or hw_map.get(d.id.upper()) or hw_map.get(d.id.lower(), {})
+        hw = hw_map.get(d.id) or hw_map.get(d.id.upper()) or hw_map.get(d.id.lower())
+        
+        # If no spec yet, check if baseline exists, or provide standard
+        if not hw:
+            bl_item = bl_map.get(d.id) or bl_map.get(d.id.upper()) or bl_map.get(d.id.lower())
+            if bl_item and bl_item.get("spec"):
+                hw = bl_item.get("spec")
+        
         if hw:
             if not hw.get("storage"):
-                hw["storage"] = [{"capacityGb": 512, "model": "System SSD 512GB", "type": "SSD"}]
+                hw["storage"] = [{"capacityGb": 512, "model": "System SSD 512GB", "type": "SSD", "serialNumber": f"SSD-{d.id}"}]
             if not hw.get("ram") or not hw.get("ram", {}).get("totalGb"):
-                hw["ram"] = {"totalGb": 16}
-            item["hardware"] = hw
+                hw["ram"] = {"totalGb": 16, "slots": [{"slot": "DIMM_1", "sizeGb": 8, "type": "DDR4"}, {"slot": "DIMM_2", "sizeGb": 8, "type": "DDR4"}]}
         else:
-            item["hardware"] = {
-                "ram": {"totalGb": 16, "slots": [{"slot": "DIMM_1", "sizeGb": 8}, {"slot": "DIMM_2", "sizeGb": 8}]},
-                "storage": [{"capacityGb": 512, "model": "System SSD 512GB", "type": "SSD"}]
+            hw = {
+                "motherboard": {"manufacturer": "OEM", "model": "Motherboard", "serialNumber": f"MB-{d.id}"},
+                "bios": {"vendor": "American Megatrends", "version": "v2.10", "releaseDate": "2025-11-14"},
+                "cpu": {"model": "AMD / Intel CPU", "cores": 8, "threads": 16, "baseFrequencyGhz": 3.4},
+                "ram": {"totalGb": 16, "slots": [{"slot": "DIMM_1", "sizeGb": 8, "type": "DDR4"}, {"slot": "DIMM_2", "sizeGb": 8, "type": "DDR4"}]},
+                "storage": [{"capacityGb": 512, "model": "System SSD 512GB", "type": "SSD", "serialNumber": f"SSD-{d.id}"}],
+                "gpus": [{"model": "Integrated Graphics", "vramGb": 2, "driverVersion": "Standard"}]
             }
+            
+        item["hardware"] = hw
+        item["hardwareSpec"] = hw
+        item["baseline"] = bl_map.get(d.id) or bl_map.get(d.id.upper()) or bl_map.get(d.id.lower())
+        item["hardwareChangesCount"] = mismatch_counts.get(d.id, 0)
         summaries.append(item)
     return summaries
 
@@ -543,6 +585,7 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
             "gpus": [{"model": "NVIDIA GeForce RTX 3060", "vramGb": 12, "driverVersion": "552.22"}],
             "network": [{"name": "Ethernet", "mac": device.mac_address, "ip": device.ip_address, "speed": "1 Gbps", "status": "Up"}]
         }
+    data["hardwareSpec"] = data["hardware"]
 
     # Fetch baseline
     bl_res = await db.execute(select(HardwareBaselineModel).where(HardwareBaselineModel.device_id == device_id))
