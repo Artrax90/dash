@@ -72,14 +72,22 @@ async def list_alerts(db: AsyncSession = Depends(get_db)):
             "description": m.description
         })
     
-    if db_alerts:
-        return db_alerts
-        
-    # Fallback to JSON store with device resolution
+    seen_ids = set()
+    combined_alerts = []
+    for a in db_alerts:
+        if a["id"] not in seen_ids:
+            seen_ids.add(a["id"])
+            combined_alerts.append(a)
+            
     for a in alerts_db:
-        if not a.get("device") or a.get("device") == a.get("deviceId"):
-            a["device"] = dev_map.get(a.get("deviceId", ""), a.get("deviceId", "ПК"))
-    return alerts_db
+        aid = a.get("id")
+        if aid and aid not in seen_ids:
+            seen_ids.add(aid)
+            if not a.get("device") or a.get("device") == a.get("deviceId"):
+                a["device"] = dev_map.get(a.get("deviceId", ""), a.get("deviceId", "ПК"))
+            combined_alerts.append(a)
+            
+    return combined_alerts
 
 @router.post("/{alert_id}/resolve")
 async def resolve_alert(alert_id: str, db: AsyncSession = Depends(get_db)):

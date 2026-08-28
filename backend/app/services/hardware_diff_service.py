@@ -19,17 +19,24 @@ class HardwareDiffService:
         if "ram" in prev_spec and "ram" in current_spec:
             base_ram = prev_spec.get("ram", {}) or {}
             curr_ram = current_spec.get("ram", {}) or {}
-            base_ram_total = int(base_ram.get("totalGb") or 0)
-            curr_ram_total = int(curr_ram.get("totalGb") or 0)
             base_slots = base_ram.get("slots", []) or []
             curr_slots = curr_ram.get("slots", []) or []
             
+            base_ram_total = int(base_ram.get("totalGb") or 0)
+            if base_ram_total == 0 and base_slots:
+                base_ram_total = sum(int(s.get("sizeGb") or s.get("capacityGb") or 0) for s in base_slots if isinstance(s, dict))
+                
+            curr_ram_total = int(curr_ram.get("totalGb") or 0)
+            if curr_ram_total == 0 and curr_slots:
+                curr_ram_total = sum(int(s.get("sizeGb") or s.get("capacityGb") or 0) for s in curr_slots if isinstance(s, dict))
+
             base_slot_count = len(base_slots)
             curr_slot_count = len(curr_slots)
 
             # Detect RAM removed (less capacity or fewer sticks)
             if (base_ram_total > 0 and curr_ram_total > 0 and curr_ram_total < base_ram_total) or \
-               (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count < base_slot_count):
+               (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count < base_slot_count) or \
+               (base_slot_count > 0 and curr_slot_count == 0 and base_ram_total > 0):
                 changes.append({
                     "id": f"HWC-{device_id}-RAM-REM-{ts_suffix}",
                     "deviceId": device_id,
@@ -45,14 +52,15 @@ class HardwareDiffService:
                 })
             # Detect RAM added or restored (more capacity or more sticks)
             elif (base_ram_total > 0 and curr_ram_total > 0 and curr_ram_total > base_ram_total) or \
-                 (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count > base_slot_count):
+                 (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count > base_slot_count) or \
+                 (base_slot_count == 0 and curr_slot_count > 0 and curr_ram_total > 0):
                 changes.append({
                     "id": f"HWC-{device_id}-RAM-ADD-{ts_suffix}",
                     "deviceId": device_id,
                     "timestamp": now_str,
                     "component": "RAM",
                     "changeType": "ADDED",
-                    "severity": "Info",
+                    "severity": "Warning",
                     "previousValue": f"{base_ram_total} GB ({base_slot_count} мод.)" if base_slot_count > 0 else f"{base_ram_total} GB",
                     "currentValue": f"{curr_ram_total} GB ({curr_slot_count} мод.)" if curr_slot_count > 0 else f"{curr_ram_total} GB",
                     "description": f"Установлена/возвращена оперативная память: {base_ram_total} GB ({base_slot_count} мод.) -> {curr_ram_total} GB ({curr_slot_count} мод.)",

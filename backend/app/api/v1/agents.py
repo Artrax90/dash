@@ -11,7 +11,7 @@ from sqlalchemy import select, func, or_, delete
 from backend.app.db.session import get_db
 from backend.app.models.device import Device, PowerStatus, AgentStatus, HealthStatus, RdpStatus
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
-from backend.app.models.alert import AlertModel
+from backend.app.models.alert import AlertModel, AlertPolicyModel
 from backend.app.ws.manager import ws_manager
 
 from backend.app.core.config import settings
@@ -487,11 +487,20 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                 }
                 alerts_db.insert(0, alert_dict)
 
+                # Query policy if exists
+                pol_res = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == device_id))
+                pol_model = pol_res.scalar_one_or_none()
+                policy_dict = {
+                    "mode": pol_model.mode,
+                    "events_config": pol_model.events_config,
+                    "notify_channels": pol_model.notify_channels
+                } if pol_model else None
+
                 # Dispatch alert via alert engine (Telegram + Web UI) and WebSocket
                 try:
-                    await alert_engine.dispatch_alert(alert_dict)
-                except Exception:
-                    pass
+                    await alert_engine.dispatch_alert(alert_dict, policy=policy_dict)
+                except Exception as e:
+                    print(f"[Alert Dispatch Error] {e}")
                 await ws_manager.broadcast_event("alert.created", alert_dict)
                 await ws_manager.broadcast_event("hardware.change", {
                     "deviceId": device_id,
@@ -981,10 +990,20 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                     from backend.app.api.v1.alerts import alerts_db
                                     from backend.app.services.alert_engine import alert_engine
                                     alerts_db.insert(0, alert_dict)
+
+                                    # Query device alert policy if available
+                                    pol_res = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == device.id))
+                                    pol_model = pol_res.scalar_one_or_none()
+                                    policy_dict = {
+                                        "mode": pol_model.mode,
+                                        "events_config": pol_model.events_config,
+                                        "notify_channels": pol_model.notify_channels
+                                    } if pol_model else None
+
                                     try:
-                                        await alert_engine.dispatch_alert(alert_dict)
-                                    except Exception:
-                                        pass
+                                        await alert_engine.dispatch_alert(alert_dict, policy=policy_dict)
+                                    except Exception as e:
+                                        print(f"[Alert Dispatch Error] {e}")
                                     await ws_manager.broadcast_event("alert.created", alert_dict)
                                     await ws_manager.broadcast_event("hardware.change", {
                                         "deviceId": device.id,
