@@ -468,8 +468,8 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     description=alert_desc
                 )
                 db.add(new_alert)
-                
-                await ws_manager.broadcast_event("alert.created", {
+
+                alert_dict = {
                     "id": alert_id,
                     "device": dev_name,
                     "deviceName": dev_name,
@@ -482,59 +482,21 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     "createdAt": datetime.utcnow().isoformat() + "Z",
                     "time": datetime.utcnow().isoformat() + "Z",
                     "timestamp": datetime.utcnow().isoformat() + "Z"
-                })
+                }
+                alerts_db.insert(0, alert_dict)
+
+                # Dispatch alert via alert engine (Telegram + Web UI) and WebSocket
+                try:
+                    await alert_engine.dispatch_alert(alert_dict)
+                except Exception:
+                    pass
+                await ws_manager.broadcast_event("alert.created", alert_dict)
                 await ws_manager.broadcast_event("hardware.change", {
                     "deviceId": device_id,
                     "component": c["component"],
                     "changeType": c["changeType"],
                     "currentValue": c["currentValue"]
                 })
-
-                # Save hardware change in database
-                hw_change = HardwareChangeModel(
-                    id=c["id"],
-                    device_id=device_id,
-                    component=c["component"],
-                    change_type=c["changeType"],
-                    severity=c["severity"],
-                    previous_value=c["previousValue"],
-                    current_value=c["currentValue"],
-                    diff_status=c["diffStatus"]
-                )
-                db.add(hw_change)
-                hardware_changes_db.insert(0, c)
-
-                # Generate and persist Alert
-                alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
-                alert_desc = f"Обнаружено расхождение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
-                new_alert = AlertModel(
-                    id=alert_id,
-                    device_id=device_id,
-                    alert_type="HARDWARE_MISMATCH",
-                    category="Hardware",
-                    severity=c["severity"],
-                    state="Open",
-                    description=alert_desc
-                )
-                db.add(new_alert)
-
-                alert_dict = {
-                    "id": alert_id,
-                    "device": dev_name,
-                    "deviceId": device_id,
-                    "type": "HARDWARE_MISMATCH",
-                    "category": "Hardware",
-                    "severity": c["severity"],
-                    "state": "Open",
-                    "timestamp": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
-                    "description": alert_desc
-                }
-                alerts_db.insert(0, alert_dict)
-
-                # Dispatch alert via alert engine (Telegram + Web UI) and WebSocket
-                await alert_engine.dispatch_alert(alert_dict)
-                await ws_manager.broadcast_event("alert.created", alert_dict)
-                await ws_manager.broadcast_event("hardware.change", c)
                 print(f"[Hardware Alert] Generated discrepancy alert for {device_id}: {alert_desc}")
 
     await db.commit()
@@ -949,7 +911,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                     )
                                     db.add(new_alert)
                                     dev_name = device.name or device.hostname or device.id
-                                    await ws_manager.broadcast_event("alert.created", {
+                                    alert_dict = {
                                         "id": alert_id,
                                         "device": dev_name,
                                         "deviceName": dev_name,
@@ -962,13 +924,22 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         "createdAt": datetime.utcnow().isoformat() + "Z",
                                         "time": datetime.utcnow().isoformat() + "Z",
                                         "timestamp": datetime.utcnow().isoformat() + "Z"
-                                    })
+                                    }
+                                    from backend.app.api.v1.alerts import alerts_db
+                                    from backend.app.services.alert_engine import alert_engine
+                                    alerts_db.insert(0, alert_dict)
+                                    try:
+                                        await alert_engine.dispatch_alert(alert_dict)
+                                    except Exception:
+                                        pass
+                                    await ws_manager.broadcast_event("alert.created", alert_dict)
                                     await ws_manager.broadcast_event("hardware.change", {
                                         "deviceId": device.id,
                                         "component": c["component"],
                                         "changeType": c["changeType"],
                                         "currentValue": c["currentValue"]
                                     })
+                                    print(f"[Hardware Alert] Generated discrepancy alert via Heartbeat for {device.id}: {alert_desc}")
                 except Exception as hw_err:
                     print(f"[Heartbeat] Error updating live hardware RAM specs: {hw_err}")
 

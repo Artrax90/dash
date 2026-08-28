@@ -622,7 +622,76 @@ def collect_hardware():
                 })
             spec["storage"] = disks
 
-            # 4. Network
+            # 4. RAM / Memory Modules (dmidecode or /proc/meminfo)
+            slots = []
+            tot_ram_gb = 0
+            try:
+                dmi_out = subprocess.check_output("dmidecode -t memory 2>/dev/null || true", shell=True, text=True, timeout=2)
+                curr_dev = {}
+                for line in dmi_out.splitlines():
+                    line = line.strip()
+                    if line.startswith("Memory Device"):
+                        if curr_dev and curr_dev.get("sizeGb", 0) > 0:
+                            slots.append(curr_dev)
+                        curr_dev = {"type": "DDR4", "speedMhz": 3200, "frequencyMhz": 3200, "manufacturer": "OEM", "serialNumber": "", "partNumber": ""}
+                    elif "Size:" in line:
+                        val = line.split(":", 1)[1].strip()
+                        if "MB" in val:
+                            mb = int(val.replace("MB", "").strip())
+                            curr_dev["sizeGb"] = int(round(mb / 1024))
+                            curr_dev["capacityGb"] = curr_dev["sizeGb"]
+                        elif "GB" in val:
+                            gb = int(val.replace("GB", "").strip())
+                            curr_dev["sizeGb"] = gb
+                            curr_dev["capacityGb"] = gb
+                    elif "Locator:" in line and "Bank" not in line:
+                        curr_dev["slot"] = line.split(":", 1)[1].strip()
+                    elif "Type:" in line and "Detail" not in line and "Error" not in line:
+                        curr_dev["type"] = line.split(":", 1)[1].strip()
+                    elif "Speed:" in line and "Configured" not in line:
+                        sp_s = "".join([c for c in line.split(":", 1)[1] if c.isdigit()])
+                        if sp_s:
+                            curr_dev["frequencyMhz"] = int(sp_s)
+                            curr_dev["speedMhz"] = int(sp_s)
+                    elif "Manufacturer:" in line:
+                        curr_dev["manufacturer"] = line.split(":", 1)[1].strip()
+                    elif "Serial Number:" in line:
+                        curr_dev["serialNumber"] = line.split(":", 1)[1].strip()
+                    elif "Part Number:" in line:
+                        curr_dev["partNumber"] = line.split(":", 1)[1].strip()
+                if curr_dev and curr_dev.get("sizeGb", 0) > 0:
+                    slots.append(curr_dev)
+            except Exception:
+                pass
+
+            if not slots:
+                try:
+                    with open("/proc/meminfo", "r") as f:
+                        for line in f:
+                            if line.startswith("MemTotal:"):
+                                kb = int(line.split()[1])
+                                tot_ram_gb = int(round(kb / (1024 * 1024)))
+                                break
+                except Exception:
+                    tot_ram_gb = 16
+                slots.append({
+                    "slot": "DIMM_0",
+                    "sizeGb": tot_ram_gb,
+                    "capacityGb": tot_ram_gb,
+                    "type": "DDR4",
+                    "frequencyMhz": 3200,
+                    "manufacturer": "OEM",
+                    "serialNumber": "SN-RAM-01",
+                    "partNumber": "OEM-RAM"
+                })
+
+            total_calc_gb = sum(s.get("sizeGb", 0) for s in slots) or tot_ram_gb
+            spec["ram"] = {
+                "totalGb": total_calc_gb,
+                "slots": slots
+            }
+
+            # 5. Network
             spec["network"] = [{
                 "name": "Ethernet / Primary NIC",
                 "mac": mac,

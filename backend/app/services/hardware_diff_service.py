@@ -27,35 +27,38 @@ class HardwareDiffService:
             base_slot_count = len(base_slots)
             curr_slot_count = len(curr_slots)
 
-            if base_ram_total > 0 and curr_ram_total > 0:
-                if curr_ram_total < base_ram_total or (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count < base_slot_count):
-                    changes.append({
-                        "id": f"HWC-{device_id}-RAM-REM-{ts_suffix}",
-                        "deviceId": device_id,
-                        "timestamp": now_str,
-                        "component": "RAM",
-                        "changeType": "REMOVED",
-                        "severity": "Critical",
-                        "previousValue": f"{base_ram_total} GB ({base_slot_count} модуля)" if base_slot_count > 0 else f"{base_ram_total} GB",
-                        "currentValue": f"{curr_ram_total} GB ({curr_slot_count} модуля)" if curr_slot_count > 0 else f"{curr_ram_total} GB",
-                        "description": f"Извлечена оперативная память: {base_ram_total} GB ({base_slot_count} мод.) -> {curr_ram_total} GB ({curr_slot_count} мод.)",
-                        "acknowledged": False,
-                        "diffStatus": "MISMATCH",
-                    })
-                elif curr_ram_total > base_ram_total or (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count > base_slot_count):
-                    changes.append({
-                        "id": f"HWC-{device_id}-RAM-ADD-{ts_suffix}",
-                        "deviceId": device_id,
-                        "timestamp": now_str,
-                        "component": "RAM",
-                        "changeType": "ADDED",
-                        "severity": "Info",
-                        "previousValue": f"{base_ram_total} GB ({base_slot_count} модуля)" if base_slot_count > 0 else f"{base_ram_total} GB",
-                        "currentValue": f"{curr_ram_total} GB ({curr_slot_count} модуля)" if curr_slot_count > 0 else f"{curr_ram_total} GB",
-                        "description": f"Установлена/возвращена оперативная память: {base_ram_total} GB ({base_slot_count} мод.) -> {curr_ram_total} GB ({curr_slot_count} мод.)",
-                        "acknowledged": False,
-                        "diffStatus": "MISMATCH",
-                    })
+            # Detect RAM removed (less capacity or fewer sticks)
+            if (base_ram_total > 0 and curr_ram_total > 0 and curr_ram_total < base_ram_total) or \
+               (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count < base_slot_count):
+                changes.append({
+                    "id": f"HWC-{device_id}-RAM-REM-{ts_suffix}",
+                    "deviceId": device_id,
+                    "timestamp": now_str,
+                    "component": "RAM",
+                    "changeType": "REMOVED",
+                    "severity": "Critical",
+                    "previousValue": f"{base_ram_total} GB ({base_slot_count} мод.)" if base_slot_count > 0 else f"{base_ram_total} GB",
+                    "currentValue": f"{curr_ram_total} GB ({curr_slot_count} мод.)" if curr_slot_count > 0 else f"{curr_ram_total} GB",
+                    "description": f"Извлечена оперативная память: {base_ram_total} GB ({base_slot_count} мод.) -> {curr_ram_total} GB ({curr_slot_count} мод.)",
+                    "acknowledged": False,
+                    "diffStatus": "MISMATCH",
+                })
+            # Detect RAM added or restored (more capacity or more sticks)
+            elif (base_ram_total > 0 and curr_ram_total > 0 and curr_ram_total > base_ram_total) or \
+                 (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count > base_slot_count):
+                changes.append({
+                    "id": f"HWC-{device_id}-RAM-ADD-{ts_suffix}",
+                    "deviceId": device_id,
+                    "timestamp": now_str,
+                    "component": "RAM",
+                    "changeType": "ADDED",
+                    "severity": "Info",
+                    "previousValue": f"{base_ram_total} GB ({base_slot_count} мод.)" if base_slot_count > 0 else f"{base_ram_total} GB",
+                    "currentValue": f"{curr_ram_total} GB ({curr_slot_count} мод.)" if curr_slot_count > 0 else f"{curr_ram_total} GB",
+                    "description": f"Установлена/возвращена оперативная память: {base_ram_total} GB ({base_slot_count} мод.) -> {curr_ram_total} GB ({curr_slot_count} мод.)",
+                    "acknowledged": False,
+                    "diffStatus": "MISMATCH",
+                })
 
         # 2. Compare Disks (by serial numbers) - only if storage list is populated in BOTH prev & current
         base_storage = prev_spec.get("storage", []) or []
