@@ -251,7 +251,7 @@ function fallbackCopyText(text: string): boolean {
   }
 }
 
-type Page = 'Dashboard' | 'Devices' | 'Device detail' | 'Groups' | 'Schedules' | 'Monitoring' | 'Alerts' | 'Users' | 'Roles' | 'Agents' | 'Telegram' | 'Audit Log' | 'Settings';
+type Page = 'Dashboard' | 'Devices' | 'Device detail' | 'Groups' | 'Schedules' | 'Monitoring' | 'Alerts' | 'Hardware' | 'Users' | 'Roles' | 'Agents' | 'Telegram' | 'Audit Log' | 'Settings';
 
 interface RouteState {
   page: Page;
@@ -281,6 +281,9 @@ function parseUrlHash(): RouteState {
       return { page: 'Monitoring' };
     case 'alerts':
       return { page: 'Alerts' };
+    case 'hardware':
+    case 'baseline':
+      return { page: 'Hardware' };
     case 'users':
       return { page: 'Users' };
     case 'roles':
@@ -308,6 +311,7 @@ function buildUrlHash(state: RouteState): string {
     case 'Schedules': return '#/schedules';
     case 'Monitoring': return '#/monitoring';
     case 'Alerts': return '#/alerts';
+    case 'Hardware': return '#/hardware';
     case 'Users': return '#/users';
     case 'Roles': return '#/roles';
     case 'Agents': return '#/agents';
@@ -735,6 +739,7 @@ function App() {
     { label: 'Schedules', name: t('nav.schedules'), icon: Clock3 },
     { label: 'Monitoring', name: t('nav.monitoring'), icon: Activity, group: t('nav.operations') },
     { label: 'Alerts', name: t('nav.alerts'), icon: Bell },
+    { label: 'Hardware', name: t('nav.hardware') || 'Аппаратный эталон', icon: Cpu },
     { label: 'Users', name: t('nav.users'), icon: UsersIcon, group: t('nav.administration') },
     { label: 'Roles', name: t('nav.roles'), icon: ShieldCheck },
     { label: 'Agents', name: t('nav.agents'), icon: Server },
@@ -899,6 +904,7 @@ function App() {
             {page === 'Device detail' && <DeviceDetail deviceId={selectedDevice} onBack={() => navigateTo({ page: 'Devices' })} notify={notify} />}
             {page === 'Monitoring' && <Monitoring onDevice={openDevice} notify={notify} />}
             {page === 'Alerts' && <Alerts onDevice={openDevice} notify={notify} />}
+            {page === 'Hardware' && <HardwarePage onDevice={openDevice} onNavigate={handleNavigate} notify={notify} />}
             {page === 'Schedules' && <Schedules notify={notify} />}
             {page === 'Users' && <UsersPage notify={notify} />}
             {page === 'Roles' && <Roles notify={notify} />}
@@ -5588,6 +5594,662 @@ function Alerts({ onDevice, notify }: { onDevice?: (id: string) => void; notify:
           )}
         </div>
       </section>
+    </>
+  );
+}
+
+// ----------------------------------------------------
+// 9.1 HARDWARE BASELINE & INTEGRITY PAGE
+// ----------------------------------------------------
+function HardwarePage({
+  onDevice,
+  onNavigate,
+  notify
+}: {
+  onDevice?: (id: string) => void;
+  onNavigate?: (page: Page, filter?: any) => void;
+  notify: (message: string) => void;
+}) {
+  const { t } = useLanguage();
+  const [devices, setDevices] = useState<Device[]>([]);
+  const [changes, setChanges] = useState<HardwareChange[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [activeTab, setActiveTab] = useState<'fleet' | 'history'>('fleet');
+  const [query, setQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'MISMATCH' | 'MATCH' | 'NO_BASELINE'>('ALL');
+  const [componentFilter, setComponentFilter] = useState<'ALL' | 'RAM' | 'Storage' | 'GPU' | 'CPU'>('ALL');
+
+  // Modals
+  const [diffDevice, setDiffDevice] = useState<Device | null>(null);
+  const [approveDevice, setApproveDevice] = useState<Device | null>(null);
+  const [bulkApproveModal, setBulkApproveModal] = useState(false);
+  const [approving, setApproving] = useState(false);
+
+  const loadData = useCallback(() => {
+    setLoading(true);
+    Promise.all([
+      devicesApi.list(),
+      hardwareApi.getChanges()
+    ]).then(([dList, chList]) => {
+      setDevices(dList);
+      setChanges(chList || []);
+      setLoading(false);
+    }).catch(() => {
+      setLoading(false);
+    });
+  }, []);
+
+  useEffect(() => {
+    loadData();
+    const unsub1 = wsClient.on('hardware.change', () => loadData());
+    const unsub2 = wsClient.on('baseline.updated', () => loadData());
+    const unsub3 = wsClient.on('device.updated', () => loadData());
+    return () => {
+      unsub1();
+      unsub2();
+      unsub3();
+    };
+  }, [loadData]);
+
+  // Derived metrics
+  const totalDevs = devices.length;
+  const mismatchDevs = devices.filter(d => {
+    const hasUnresolved = changes.some(c => c.deviceId === d.id && (c.baselineDiffStatus === 'MISMATCH' || (!c.acknowledged && c.severity === 'Critical')));
+    return (d.hardwareChangesCount && d.hardwareChangesCount > 0) || hasUnresolved || d.healthStatus === 'Critical';
+  });
+  const matchingDevs = devices.filter(d => d.baseline && !mismatchDevs.some(m => m.id === d.id));
+  const noBaselineDevs = devices.filter(d => !d.baseline);
+  const compliancePct = totalDevs > 0 ? Math.round((matchingDevs.length / totalDevs) * 100) : 100;
+
+  // Filtered devices for Fleet tab
+  const filteredDevices = devices.filter(d => {
+    const matchQuery = `${d.name} ${d.hostname} ${d.id} ${d.ip} ${d.group || ''}`.toLowerCase().includes(query.toLowerCase());
+    const isMismatch = mismatchDevs.some(m => m.id === d.id);
+    const hasBaseline = !!d.baseline;
+    
+    let matchStatus = true;
+    if (statusFilter === 'MISMATCH') matchStatus = isMismatch;
+    else if (statusFilter === 'MATCH') matchStatus = hasBaseline && !isMismatch;
+    else if (statusFilter === 'NO_BASELINE') matchStatus = !hasBaseline;
+
+    return matchQuery && matchStatus;
+  });
+
+  // Filtered changes for History tab
+  const filteredChanges = changes.filter(c => {
+    const dev = devices.find(d => d.id === c.deviceId);
+    const devName = dev?.name || dev?.hostname || c.deviceId;
+    const matchQuery = `${devName} ${c.deviceId} ${c.component} ${c.previousValue} ${c.currentValue} ${c.changeType}`.toLowerCase().includes(query.toLowerCase());
+    const matchComp = componentFilter === 'ALL' || c.component === componentFilter;
+    return matchQuery && matchComp;
+  });
+
+  const handleApproveSingle = async (device: Device) => {
+    if (!device.hardwareSpec) {
+      notify('У данного устройства нет доступного аппаратного снимка для эталона');
+      return;
+    }
+    setApproving(true);
+    try {
+      await devicesApi.setBaseline(device.id, device.hardwareSpec);
+      notify(`✅ Текущая конфигурация ПК ${device.name || device.id} утверждена как эталон!`);
+      setApproveDevice(null);
+      setDiffDevice(null);
+      loadData();
+    } catch {
+      notify('Ошибка утверждения эталона');
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  const handleBulkApprove = async () => {
+    setApproving(true);
+    try {
+      let count = 0;
+      for (const d of devices) {
+        if (d.hardwareSpec) {
+          await devicesApi.setBaseline(d.id, d.hardwareSpec);
+          count++;
+        }
+      }
+      notify(`✅ Утверждены эталоны для ${count} рабочих станций!`);
+      setBulkApproveModal(false);
+      loadData();
+    } catch {
+      notify('Ошибка при групповом утверждении эталонов');
+    } finally {
+      setApproving(false);
+    }
+  };
+
+  const formatChangeTime = (dateStr?: string) => {
+    if (!dateStr) return '';
+    try {
+      const d = new Date(dateStr.includes('T') ? dateStr : dateStr.replace(' ', 'T') + 'Z');
+      if (isNaN(d.getTime())) return dateStr;
+      return d.toLocaleString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+    } catch {
+      return dateStr;
+    }
+  };
+
+  return (
+    <>
+      <PageHeader
+        eyebrow="OPERATIONS & COMPLIANCE"
+        title="Аппаратный эталон (Baseline)"
+        description="Контроль целостности оборудования парка ПК, фиксация извлечения или подмены планок ОЗУ, дисков, видеокарт и утверждение аппаратных эталонов."
+        actions={
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <Button icon={<RefreshCw size={14} />} onClick={() => { loadData(); notify('Данные эталонов обновлены'); }}>
+              {t('common.refresh')}
+            </Button>
+            <Button primary icon={<Sparkles size={14} />} onClick={() => setBulkApproveModal(true)}>
+              Утвердить всё как эталон
+            </Button>
+          </div>
+        }
+      />
+
+      {/* KPI Bento Cards */}
+      <div className="bento-grid" style={{ marginBottom: '22px' }}>
+        <div className="bento-card col-3">
+          <div className="bento-header">
+            <span className="bento-card-title">Соответствие парка</span>
+            <div className="bento-icon cyan"><Cpu size={18} /></div>
+          </div>
+          <div className="bento-value">{loading ? '—' : `${compliancePct}%`} <small>Эталон</small></div>
+          <div className="bento-footer">
+            <span style={{ color: mismatchDevs.length > 0 ? 'var(--red)' : 'var(--green)' }}>
+              {mismatchDevs.length === 0 ? 'Все ПК соответствуют эталону' : `${mismatchDevs.length} ПК с расхождениями`}
+            </span>
+            <Check size={14} style={{ color: mismatchDevs.length === 0 ? 'var(--green)' : 'var(--orange)' }} />
+          </div>
+        </div>
+
+        <div className="bento-card col-3" onClick={() => setStatusFilter('MISMATCH')} style={{ cursor: 'pointer' }}>
+          <div className="bento-header">
+            <span className="bento-card-title">Расхождения железа</span>
+            <div className="bento-icon red"><AlertTriangle size={18} /></div>
+          </div>
+          <div className="bento-value" style={{ color: mismatchDevs.length > 0 ? '#ef4444' : 'inherit' }}>
+            {loading ? '—' : mismatchDevs.length} <small>ПК с несовпадением</small>
+          </div>
+          <div className="bento-footer">
+            <span>ОЗУ, диски, GPU на контроле</span>
+            <ArrowRight size={14} style={{ color: 'var(--muted)' }} />
+          </div>
+        </div>
+
+        <div className="bento-card col-3" onClick={() => setStatusFilter('MATCH')} style={{ cursor: 'pointer' }}>
+          <div className="bento-header">
+            <span className="bento-card-title">Утверждённые эталоны</span>
+            <div className="bento-icon green"><ShieldCheck size={18} /></div>
+          </div>
+          <div className="bento-value">{loading ? '—' : `${matchingDevs.length} / ${totalDevs}`} <small>станций</small></div>
+          <div className="bento-footer">
+            <span>{noBaselineDevs.length > 0 ? `${noBaselineDevs.length} ПК без эталона` : 'Все ПК зафиксированы'}</span>
+            <Check size={14} style={{ color: 'var(--green)' }} />
+          </div>
+        </div>
+
+        <div className="bento-card col-3" onClick={() => setActiveTab('history')} style={{ cursor: 'pointer' }}>
+          <div className="bento-header">
+            <span className="bento-card-title">Журнал изменений</span>
+            <div className="bento-icon purple"><Activity size={18} /></div>
+          </div>
+          <div className="bento-value">{loading ? '—' : changes.length} <small>событий</small></div>
+          <div className="bento-footer">
+            <span>Автофиксация через Heartbeat</span>
+            <ArrowRight size={14} style={{ color: 'var(--muted)' }} />
+          </div>
+        </div>
+      </div>
+
+      {/* Tabs Switcher */}
+      <div className="tab-group" style={{ marginBottom: '18px' }}>
+        <button
+          className={`tab-btn ${activeTab === 'fleet' ? 'active' : ''}`}
+          onClick={() => setActiveTab('fleet')}
+        >
+          <Monitor size={15} /> Рабочие станции & Эталоны ({devices.length})
+        </button>
+        <button
+          className={`tab-btn ${activeTab === 'history' ? 'active' : ''}`}
+          onClick={() => setActiveTab('history')}
+        >
+          <Activity size={15} /> Хроника изменений оборудования ({changes.length})
+        </button>
+      </div>
+
+      {/* TAB 1: FLEET BASELINES */}
+      {activeTab === 'fleet' && (
+        <section className="panel">
+          <div className="panel-heading" style={{ flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <h2>Состояние аппаратных эталонов</h2>
+              <p>Текущая физическая конфигурация ПК в сравнении с утверждённым профилем безопасности</p>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <div className="search" style={{ minWidth: '240px' }}>
+                <Search size={15} />
+                <input
+                  placeholder="Поиск по имени, IP или группе..."
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+              <select
+                className="select"
+                value={statusFilter}
+                onChange={(e) => setStatusFilter(e.target.value as any)}
+                style={{ height: '34px', fontSize: '12px' }}
+              >
+                <option value="ALL">Все статусы ({devices.length})</option>
+                <option value="MISMATCH">Только с расхождениями ({mismatchDevs.length})</option>
+                <option value="MATCH">Соответствует эталону ({matchingDevs.length})</option>
+                <option value="NO_BASELINE">Без эталона ({noBaselineDevs.length})</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ overflowX: 'auto' }}>
+            <table className="device-table">
+              <thead>
+                <tr>
+                  <th>Рабочая станция</th>
+                  <th>Группа</th>
+                  <th>Текущее оборудование (Live)</th>
+                  <th>Утверждённый эталон</th>
+                  <th>Статус эталона</th>
+                  <th style={{ textAlign: 'right' }}>Действия</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredDevices.length === 0 ? (
+                  <tr>
+                    <td colSpan={6} style={{ textAlign: 'center', padding: '36px', color: 'var(--muted)' }}>
+                      Нет рабочих станций, соответствующих заданным критериям фильтра
+                    </td>
+                  </tr>
+                ) : (
+                  filteredDevices.map(device => {
+                    const isMismatch = mismatchDevs.some(m => m.id === device.id);
+                    const hasBaseline = !!device.baseline;
+                    const liveRam = device.hardwareSpec?.ram;
+                    const liveRamGb = liveRam?.totalGb || (liveRam?.slots ? liveRam.slots.reduce((s, x) => s + (x.sizeGb || 0), 0) : 0);
+                    const liveSlotsCount = liveRam?.slots?.length || 0;
+                    const liveStorageCount = device.hardwareSpec?.storage?.length || 0;
+
+                    const blRam = device.baseline?.spec?.ram;
+                    const blRamGb = blRam?.totalGb || (blRam?.slots ? blRam.slots.reduce((s, x) => s + (x.sizeGb || 0), 0) : 0);
+                    const blSlotsCount = blRam?.slots?.length || 0;
+                    const blStorageCount = device.baseline?.spec?.storage?.length || 0;
+
+                    return (
+                      <tr key={device.id}>
+                        <td>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                            <span className={`status-dot ${device.powerStatus === 'On' ? 'online' : 'offline'}`} />
+                            <div>
+                              <strong
+                                style={{ cursor: onDevice ? 'pointer' : 'default', color: 'var(--ink)' }}
+                                onClick={() => onDevice && onDevice(device.id)}
+                              >
+                                {device.name || device.hostname || device.id}
+                              </strong>
+                              <div style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                                {device.ip || '—'} · {device.id}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          <span className="group-badge">{device.group || 'Без группы'}</span>
+                        </td>
+                        <td>
+                          <div style={{ fontSize: '12px' }}>
+                            <div>
+                              <Cpu size={12} style={{ display: 'inline', marginRight: '4px', verticalAlign: '-1px', color: 'var(--blue)' }} />
+                              <strong>ОЗУ:</strong> {liveRamGb > 0 ? `${liveRamGb} GB` : '—'} {liveSlotsCount > 0 ? `(${liveSlotsCount} мод.)` : ''}
+                            </div>
+                            <div style={{ color: 'var(--muted)', fontSize: '11px', marginTop: '2px' }}>
+                              <HardDrive size={11} style={{ display: 'inline', marginRight: '4px', verticalAlign: '-1px' }} />
+                              Диски: {liveStorageCount > 0 ? `${liveStorageCount} шт.` : '—'} · GPU: {device.hardwareSpec?.gpus?.length || 0}
+                            </div>
+                          </div>
+                        </td>
+                        <td>
+                          {hasBaseline ? (
+                            <div style={{ fontSize: '12px' }}>
+                              <div>
+                                <strong>ОЗУ:</strong> {blRamGb > 0 ? `${blRamGb} GB` : '—'} {blSlotsCount > 0 ? `(${blSlotsCount} мод.)` : ''}
+                              </div>
+                              <div style={{ color: 'var(--muted)', fontSize: '11px', marginTop: '2px' }}>
+                                Диски: {blStorageCount > 0 ? `${blStorageCount} шт.` : '—'} · {device.baseline?.approvedBy || 'Оператор'}
+                              </div>
+                            </div>
+                          ) : (
+                            <span style={{ fontSize: '11px', color: 'var(--muted)', fontStyle: 'italic' }}>
+                              Эталон не утвержден
+                            </span>
+                          )}
+                        </td>
+                        <td>
+                          {isMismatch ? (
+                            <span className="badge mismatch" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              <AlertTriangle size={12} /> Расхождение
+                            </span>
+                          ) : hasBaseline ? (
+                            <span className="badge match" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px' }}>
+                              <Check size={12} /> Соответствует
+                            </span>
+                          ) : (
+                            <span className="status-pill idle">Нет эталона</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          <div style={{ display: 'inline-flex', gap: '6px', alignItems: 'center' }}>
+                            <button
+                              className="btn btn-sm"
+                              style={{ padding: '4px 8px', fontSize: '11px' }}
+                              onClick={() => setDiffDevice(device)}
+                              title="Сравнить текущую конфигурацию с утверждённым эталоном"
+                            >
+                              <Eye size={12} /> Сравнить
+                            </button>
+                            <button
+                              className="btn btn-sm btn-primary"
+                              style={{ padding: '4px 8px', fontSize: '11px' }}
+                              onClick={() => handleApproveSingle(device)}
+                              title="Утвердить текущую конфигурацию ПК как новый эталон"
+                              disabled={approving}
+                            >
+                              <Check size={12} /> Утвердить
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* TAB 2: HARDWARE CHANGES HISTORY */}
+      {activeTab === 'history' && (
+        <section className="panel">
+          <div className="panel-heading" style={{ flexWrap: 'wrap', gap: '12px' }}>
+            <div>
+              <h2>Журнал аппаратных событий</h2>
+              <p>Хронологическая летопись всех изменений оборудования, обнаруженных фоновыми агентами</p>
+            </div>
+            <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+              <div className="search" style={{ minWidth: '220px' }}>
+                <Search size={15} />
+                <input
+                  placeholder="Поиск по событию, ПК или железу..."
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </div>
+              <select
+                className="select"
+                value={componentFilter}
+                onChange={(e) => setComponentFilter(e.target.value as any)}
+                style={{ height: '34px', fontSize: '12px' }}
+              >
+                <option value="ALL">Все компоненты</option>
+                <option value="RAM">Оперативная память (RAM)</option>
+                <option value="Storage">Накопители (Диски / SSD)</option>
+                <option value="GPU">Видеокарты (GPU)</option>
+                <option value="CPU">Процессоры (CPU)</option>
+              </select>
+            </div>
+          </div>
+
+          <div style={{ overflowX: 'auto' }}>
+            <table className="device-table">
+              <thead>
+                <tr>
+                  <th>Время</th>
+                  <th>Рабочая станция</th>
+                  <th>Компонент</th>
+                  <th>Тип события</th>
+                  <th>Предыдущее значение</th>
+                  <th>Текущее значение</th>
+                  <th>Статус</th>
+                  <th style={{ textAlign: 'right' }}>Действие</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredChanges.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} style={{ textAlign: 'center', padding: '36px', color: 'var(--muted)' }}>
+                      Журнал аппаратных изменений пуст. Все системы стабильны.
+                    </td>
+                  </tr>
+                ) : (
+                  filteredChanges.map(change => {
+                    const dev = devices.find(d => d.id === change.deviceId);
+                    const devName = dev?.name || dev?.hostname || change.deviceId;
+                    const isRemoved = change.changeType === 'REMOVED';
+                    const isAdded = change.changeType === 'ADDED';
+
+                    return (
+                      <tr key={change.id}>
+                        <td style={{ fontSize: '11px', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                          {formatChangeTime(change.timestamp)}
+                        </td>
+                        <td>
+                          <strong
+                            style={{ cursor: onDevice ? 'pointer' : 'default', color: 'var(--ink)' }}
+                            onClick={() => onDevice && onDevice(change.deviceId)}
+                          >
+                            {devName}
+                          </strong>
+                          <div style={{ fontSize: '10px', color: 'var(--muted)' }}>{change.deviceId}</div>
+                        </td>
+                        <td>
+                          <span style={{ fontWeight: 600 }}>{change.component}</span>
+                        </td>
+                        <td>
+                          <span className={`status-pill ${isRemoved ? 'closed' : (isAdded ? 'open' : 'idle')}`}>
+                            {isRemoved ? 'Извлечено' : (isAdded ? 'Добавлено' : 'Заменено')}
+                          </span>
+                        </td>
+                        <td style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                          {change.previousValue || '—'}
+                        </td>
+                        <td style={{ fontSize: '12px', fontWeight: 600 }}>
+                          {change.currentValue || '—'}
+                        </td>
+                        <td>
+                          {change.baselineDiffStatus === 'ACCEPTED_AS_BASELINE' ? (
+                            <span className="badge match" style={{ fontSize: '10px' }}>Принято в эталон</span>
+                          ) : (
+                            <span className="badge mismatch" style={{ fontSize: '10px' }}>Несоответствие</span>
+                          )}
+                        </td>
+                        <td style={{ textAlign: 'right' }}>
+                          {dev && (
+                            <button
+                              className="btn btn-sm"
+                              style={{ padding: '4px 8px', fontSize: '11px' }}
+                              onClick={() => handleApproveSingle(dev)}
+                              title="Принять данную конфигурацию как новый эталон"
+                            >
+                              Принять эталон
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </section>
+      )}
+
+      {/* MODAL: COMPARISON DIFF (Live Spec vs Approved Baseline) */}
+      {diffDevice && (
+        <div className="modal-backdrop" onClick={() => setDiffDevice(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '720px', maxWidth: '95vw' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div className="confirm-icon" style={{ background: 'var(--blue-soft)', color: 'var(--blue)', margin: 0 }}>
+                  <Cpu size={20} />
+                </div>
+                <div>
+                  <h2 style={{ margin: 0, fontSize: '18px' }}>Сравнение конфигурации: {diffDevice.name || diffDevice.hostname}</h2>
+                  <span style={{ fontSize: '12px', color: 'var(--muted)' }}>ID: {diffDevice.id} · IP: {diffDevice.ip || '—'}</span>
+                </div>
+              </div>
+              <button className="btn btn-sm" onClick={() => setDiffDevice(null)} style={{ border: 'none', background: 'transparent' }}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '14px', marginBottom: '18px' }}>
+              {/* Current Live Spec */}
+              <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', paddingBottom: '8px', borderBottom: '1px solid var(--line)' }}>
+                  <strong style={{ fontSize: '13px', color: 'var(--blue)' }}>Текущее железо (Live)</strong>
+                  <span className="status-dot online" title="Подключено" />
+                </div>
+                
+                {/* RAM */}
+                <div style={{ marginBottom: '12px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ОПЕРАТИВНАЯ ПАМЯТЬ</div>
+                  <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>
+                    {diffDevice.hardwareSpec?.ram?.totalGb || 0} GB ({diffDevice.hardwareSpec?.ram?.slots?.length || 0} модулей)
+                  </div>
+                  {diffDevice.hardwareSpec?.ram?.slots?.map((s, i) => (
+                    <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--blue)', marginTop: '4px' }}>
+                      {s.slot}: {s.sizeGb || s.capacityGb || 8} GB {s.type || 'DDR4'} {s.frequencyMhz ? `${s.frequencyMhz} MHz` : ''}
+                      <div style={{ color: 'var(--muted)', fontSize: '10px' }}>S/N: {s.serialNumber || '—'}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* Storage */}
+                <div style={{ marginBottom: '12px' }}>
+                  <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>НАКОПИТЕЛИ</div>
+                  <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>
+                    {diffDevice.hardwareSpec?.storage?.length || 0} дисков
+                  </div>
+                  {diffDevice.hardwareSpec?.storage?.map((d, i) => (
+                    <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--blue)', marginTop: '4px' }}>
+                      {d.model} ({d.capacityGb} GB)
+                      <div style={{ color: 'var(--muted)', fontSize: '10px' }}>S/N: {d.serialNumber || '—'}</div>
+                    </div>
+                  ))}
+                </div>
+
+                {/* GPU */}
+                <div>
+                  <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ВИДЕОКАРТА</div>
+                  <div style={{ fontSize: '12px', marginTop: '2px' }}>
+                    {diffDevice.hardwareSpec?.gpus?.[0]?.model || 'Интегрированная графика'}
+                  </div>
+                </div>
+              </div>
+
+              {/* Baseline Spec */}
+              <div style={{ border: '1px solid var(--line)', borderRadius: '8px', padding: '14px', background: 'var(--panel)' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', paddingBottom: '8px', borderBottom: '1px solid var(--line)' }}>
+                  <strong style={{ fontSize: '13px', color: 'var(--green)' }}>Утверждённый эталон</strong>
+                  {diffDevice.baseline ? (
+                    <span style={{ fontSize: '11px', color: 'var(--muted)' }}>{diffDevice.baseline.approvedBy}</span>
+                  ) : (
+                    <span style={{ fontSize: '11px', color: 'var(--orange)' }}>Не утверждён</span>
+                  )}
+                </div>
+
+                {diffDevice.baseline ? (
+                  <>
+                    {/* Baseline RAM */}
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ЭТАЛОН ОЗУ</div>
+                      <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>
+                        {diffDevice.baseline.spec?.ram?.totalGb || 0} GB ({diffDevice.baseline.spec?.ram?.slots?.length || 0} модулей)
+                      </div>
+                      {diffDevice.baseline.spec?.ram?.slots?.map((s, i) => (
+                        <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--green)', marginTop: '4px' }}>
+                          {s.slot}: {s.sizeGb || s.capacityGb || 8} GB {s.type || 'DDR4'} {s.frequencyMhz ? `${s.frequencyMhz} MHz` : ''}
+                          <div style={{ color: 'var(--muted)', fontSize: '10px' }}>S/N: {s.serialNumber || '—'}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Baseline Storage */}
+                    <div style={{ marginBottom: '12px' }}>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ЭТАЛОН ДИСКОВ</div>
+                      <div style={{ fontSize: '13px', fontWeight: 600, marginTop: '2px' }}>
+                        {diffDevice.baseline.spec?.storage?.length || 0} дисков
+                      </div>
+                      {diffDevice.baseline.spec?.storage?.map((d, i) => (
+                        <div key={i} style={{ fontSize: '11px', color: 'var(--ink)', padding: '2px 0 2px 8px', borderLeft: '2px solid var(--green)', marginTop: '4px' }}>
+                          {d.model} ({d.capacityGb} GB)
+                          <div style={{ color: 'var(--muted)', fontSize: '10px' }}>S/N: {d.serialNumber || '—'}</div>
+                        </div>
+                      ))}
+                    </div>
+
+                    {/* Baseline GPU */}
+                    <div>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>ЭТАЛОН GPU</div>
+                      <div style={{ fontSize: '12px', marginTop: '2px' }}>
+                        {diffDevice.baseline.spec?.gpus?.[0]?.model || 'Интегрированная графика'}
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <div style={{ textAlign: 'center', padding: '30px 10px', color: 'var(--muted)' }}>
+                    <ShieldCheck size={28} style={{ color: 'var(--orange)', marginBottom: '8px' }} />
+                    <p style={{ margin: 0, fontSize: '12px' }}>У этой рабочей станции пока нет сохранённого эталона.</p>
+                    <small>Нажмите «Утвердить текущее как эталон», чтобы зафиксировать текущий состав железа.</small>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
+              <Button onClick={() => setDiffDevice(null)}>Закрыть</Button>
+              <Button primary icon={<Check size={14} />} onClick={() => handleApproveSingle(diffDevice)} disabled={approving}>
+                Утвердить текущее как эталон
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: BULK APPROVE */}
+      {bulkApproveModal && (
+        <div className="modal-backdrop" onClick={() => setBulkApproveModal(false)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '480px' }}>
+            <div className="confirm-icon" style={{ background: 'var(--blue-soft)', color: 'var(--blue)' }}>
+              <Sparkles size={22} />
+            </div>
+            <h2>Утвердить эталоны для всех ПК?</h2>
+            <p>
+              Текущий аппаратный срез всех {devices.length} рабочих станций (объем и планки ОЗУ, серийные номера дисков, видеокарты) будет зафиксирован как официальный эталон. Все текущие предупреждения о расхождениях будут сняты.
+            </p>
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '20px' }}>
+              <Button onClick={() => setBulkApproveModal(false)}>Отмена</Button>
+              <Button primary icon={<Check size={14} />} onClick={handleBulkApprove} disabled={approving}>
+                {approving ? 'Утверждение...' : 'Да, утвердить для всех'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
