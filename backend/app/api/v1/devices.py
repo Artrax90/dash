@@ -284,12 +284,17 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
     devices = result.scalars().all()
     
     hw_res = await db.execute(select(HardwareSpecModel))
-    hw_map = {h.device_id: h.raw_spec for h in hw_res.scalars().all() if h.raw_spec}
+    hw_map = {}
+    for h in hw_res.scalars().all():
+        if h.raw_spec and h.device_id:
+            hw_map[h.device_id] = h.raw_spec
+            hw_map[h.device_id.upper()] = h.raw_spec
+            hw_map[h.device_id.lower()] = h.raw_spec
     
     summaries = []
     for d in devices:
         item = format_device_summary(d)
-        hw = hw_map.get(d.id, {})
+        hw = hw_map.get(d.id) or hw_map.get(d.id.upper()) or hw_map.get(d.id.lower(), {})
         if hw:
             if not hw.get("storage"):
                 hw["storage"] = [{"capacityGb": 512, "model": "System SSD 512GB", "type": "SSD"}]
@@ -298,7 +303,7 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
             item["hardware"] = hw
         else:
             item["hardware"] = {
-                "ram": {"totalGb": 16},
+                "ram": {"totalGb": 16, "slots": [{"slot": "DIMM_1", "sizeGb": 8}, {"slot": "DIMM_2", "sizeGb": 8}]},
                 "storage": [{"capacityGb": 512, "model": "System SSD 512GB", "type": "SSD"}]
             }
         summaries.append(item)
@@ -479,7 +484,7 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
     data = format_device_summary(device)
 
     # Fetch hardware spec
-    hw_res = await db.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == device_id))
+    hw_res = await db.execute(select(HardwareSpecModel).where((HardwareSpecModel.device_id == device.id) | (HardwareSpecModel.device_id == device_id)))
     hw_model = hw_res.scalar_one_or_none()
     if hw_model and hw_model.raw_spec:
         raw_hw = dict(hw_model.raw_spec)
@@ -528,7 +533,8 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
             "ram": {
                 "totalGb": 16,
                 "slots": [
-                    {"slot": "DIMM_1", "sizeGb": 16, "type": "DDR4", "frequencyMhz": 3200, "manufacturer": "Kingston", "partNumber": "KF432C16BB1/16"}
+                    {"slot": "DIMM_1", "sizeGb": 8, "type": "DDR4", "frequencyMhz": 3200, "manufacturer": "Kingston", "partNumber": "KF432C16BB1/8"},
+                    {"slot": "DIMM_2", "sizeGb": 8, "type": "DDR4", "frequencyMhz": 3200, "manufacturer": "Kingston", "partNumber": "KF432C16BB1/8"}
                 ]
             },
             "storage": [

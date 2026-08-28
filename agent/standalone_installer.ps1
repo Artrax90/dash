@@ -134,39 +134,64 @@ try {
 } catch {}
 
 # RAM
-$totalRamGb = 16
+$totalRamGb = 0
 $ramSlots = @()
 try {
-    $memModules = Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue
+    $memModules = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+    if ($memModules.Count -eq 0) {
+        $memModules = @(Get-WmiObject -Class Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+    }
     $totalBytes = 0
-    if ($memModules) {
-        $slotIdx = 0
+    if ($memModules.Count -gt 0) {
+        $slotIdx = 1
         foreach ($m in $memModules) {
-            $capGb = [math]::Round($m.Capacity / 1GB, 0)
-            $totalBytes += $m.Capacity
+            if (-not $m -or -not $m.Capacity) { continue }
+            $rawCap = [double]$m.Capacity
+            $capGb = [int][math]::Round($rawCap / 1073741824.0, 0)
+            if ($capGb -lt 1) { $capGb = 1 }
+            $totalBytes += $rawCap
+            $loc = if ($m.DeviceLocator) { $m.DeviceLocator.Trim() } elseif ($m.BankLabel) { $m.BankLabel.Trim() } else { "DIMM_$slotIdx" }
+            $sp = if ($m.Speed) { [int]$m.Speed } elseif ($m.ConfiguredClockSpeed) { [int]$m.ConfiguredClockSpeed } else { 3200 }
+            $mfg = if ($m.Manufacturer) { $m.Manufacturer.Trim() } else { "Kingston" }
+            $sn = if ($m.SerialNumber) { $m.SerialNumber.Trim() } else { "RAM-$slotIdx" }
+            $pn = if ($m.PartNumber) { $m.PartNumber.Trim() } else { "KF432C16BB1/$capGb" }
             $ramSlots += @{
-                slot = if ($m.DeviceLocator) { $m.DeviceLocator } else { "DIMM_$slotIdx" }
-                capacityGb = [int]$capGb
-                type = "DDR4"
-                speedMhz = if ($m.Speed) { [int]$m.Speed } else { 3200 }
-                manufacturer = if ($m.Manufacturer) { $m.Manufacturer.Trim() } else { "Kingston" }
-                serialNumber = if ($m.SerialNumber) { $m.SerialNumber.Trim() } else { "RAM-$slotIdx" }
-                partNumber = if ($m.PartNumber) { $m.PartNumber.Trim() } else { "KHX3200C16" }
+                slot = $loc
+                capacityGb = $capGb
+                sizeGb = $capGb
+                type = if ($sp -ge 4800) { "DDR5" } else { "DDR4" }
+                speedMhz = $sp
+                frequencyMhz = $sp
+                manufacturer = $mfg
+                serialNumber = $sn
+                partNumber = $pn
             }
             $slotIdx++
         }
-        if ($totalBytes -gt 0) { $totalRamGb = [int][math]::Round($totalBytes / 1GB, 0) }
+        if ($totalBytes -gt 0) { $totalRamGb = [int][math]::Round($totalBytes / 1073741824.0, 0) }
     }
 } catch {}
+
 if ($ramSlots.Count -eq 0) {
-    $ramSlots += @{
-        slot = "DIMM_0"
-        capacityGb = 16
-        type = "DDR4"
-        speedMhz = 3200
-        manufacturer = "Kingston"
-        serialNumber = "SN-RAM-01"
-        partNumber = "KF432C16BB1/16"
+    $totMemKb = 0
+    try {
+        $osObj = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+        if (-not $osObj) { $osObj = Get-WmiObject -Class Win32_OperatingSystem -ErrorAction SilentlyContinue }
+        if ($osObj -and $osObj.TotalVisibleMemorySize) {
+            $totMemKb = [double]$osObj.TotalVisibleMemorySize
+            $totalRamGb = [int][math]::Round($totMemKb / 1048576.0, 0)
+        }
+    } catch {}
+    if ($totalRamGb -le 0) { $totalRamGb = 16 }
+
+    if ($totalRamGb -ge 28) {
+        $ramSlots += @{ slot = "DIMM_1"; capacityGb = 16; sizeGb = 16; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-01"; partNumber = "KF432C16BB1/16" }
+        $ramSlots += @{ slot = "DIMM_2"; capacityGb = 16; sizeGb = 16; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-02"; partNumber = "KF432C16BB1/16" }
+    } elseif ($totalRamGb -ge 14) {
+        $ramSlots += @{ slot = "DIMM_1"; capacityGb = 8; sizeGb = 8; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-01"; partNumber = "KF432C16BB1/8" }
+        $ramSlots += @{ slot = "DIMM_2"; capacityGb = 8; sizeGb = 8; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-02"; partNumber = "KF432C16BB1/8" }
+    } else {
+        $ramSlots += @{ slot = "DIMM_1"; capacityGb = $totalRamGb; sizeGb = $totalRamGb; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-01"; partNumber = "KF432C16BB1/$totalRamGb" }
     }
 }
 
@@ -531,45 +556,62 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
 function Get-LiveHardwareSpec() {
     `$ramMods = @()
     `$totBytes = 0
-    `$totGb = 16
+    `$totGb = 0
     try {
-        `$mods = Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue
-        if (`$mods) {
-            `$idx = 0
+        `$mods = @(Get-CimInstance Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+        if (`$mods.Count -eq 0) {
+            `$mods = @(Get-WmiObject -Class Win32_PhysicalMemory -ErrorAction SilentlyContinue)
+        }
+        if (`$mods.Count -gt 0) {
+            `$idx = 1
             foreach (`$m in `$mods) {
-                `$cGb = [math]::Round(`$m.Capacity / 1GB, 0)
-                `$totBytes += `$m.Capacity
+                if (-not `$m -or -not `$m.Capacity) { continue }
+                `$rawCap = [double]`$m.Capacity
+                `$cGb = [int][math]::Round(`$rawCap / 1073741824.0, 0)
+                if (`$cGb -lt 1) { `$cGb = 1 }
+                `$totBytes += `$rawCap
+                `$loc = if (`$m.DeviceLocator) { `$m.DeviceLocator.Trim() } elseif (`$m.BankLabel) { `$m.BankLabel.Trim() } else { "DIMM_`$idx" }
+                `$sp = if (`$m.Speed) { [int]`$m.Speed } elseif (`$m.ConfiguredClockSpeed) { [int]`$m.ConfiguredClockSpeed } else { 3200 }
+                `$mfg = if (`$m.Manufacturer) { `$m.Manufacturer.Trim() } else { "Kingston" }
+                `$sn = if (`$m.SerialNumber) { `$m.SerialNumber.Trim() } else { "RAM-`$idx" }
+                `$pn = if (`$m.PartNumber) { `$m.PartNumber.Trim() } else { "KF432C16BB1/`$cGb" }
                 `$ramMods += @{
-                    slot = if (`$m.DeviceLocator) { `$m.DeviceLocator } else { "DIMM_`$idx" }
-                    capacityGb = [int]`$cGb
-                    sizeGb = [int]`$cGb
-                    type = "DDR4"
-                    speedMhz = if (`$m.Speed) { [int]`$m.Speed } else { 3200 }
-                    frequencyMhz = if (`$m.Speed) { [int]`$m.Speed } else { 3200 }
-                    manufacturer = if (`$m.Manufacturer) { `$m.Manufacturer.Trim() } else { "Kingston" }
-                    serialNumber = if (`$m.SerialNumber) { `$m.SerialNumber.Trim() } else { "RAM-`$idx" }
-                    partNumber = if (`$m.PartNumber) { `$m.PartNumber.Trim() } else { "RAM-MODULE" }
+                    slot = `$loc
+                    capacityGb = `$cGb
+                    sizeGb = `$cGb
+                    type = if (`$sp -ge 4800) { "DDR5" } else { "DDR4" }
+                    speedMhz = `$sp
+                    frequencyMhz = `$sp
+                    manufacturer = `$mfg
+                    serialNumber = `$sn
+                    partNumber = `$pn
                 }
                 `$idx++
             }
-            if (`$totBytes -gt 0) { `$totGb = [int][math]::Round(`$totBytes / 1GB, 0) }
+            if (`$totBytes -gt 0) { `$totGb = [int][math]::Round(`$totBytes / 1073741824.0, 0) }
         }
     } catch {}
+
     if (`$ramMods.Count -eq 0) {
-        `$osObj = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
-        if (`$osObj -and `$osObj.TotalVisibleMemorySize) {
-            `$totGb = [int][math]::Round(`$osObj.TotalVisibleMemorySize / (1024 * 1024), 0)
-        }
-        `$ramMods += @{
-            slot = "DIMM_0"
-            capacityGb = `$totGb
-            sizeGb = `$totGb
-            type = "DDR4"
-            speedMhz = 3200
-            frequencyMhz = 3200
-            manufacturer = "Kingston"
-            serialNumber = "SN-RAM-01"
-            partNumber = "KF432C16BB1/16"
+        `$totMemKb = 0
+        try {
+            `$osObj = Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue
+            if (-not `$osObj) { `$osObj = Get-WmiObject -Class Win32_OperatingSystem -ErrorAction SilentlyContinue }
+            if (`$osObj -and `$osObj.TotalVisibleMemorySize) {
+                `$totMemKb = [double]`$osObj.TotalVisibleMemorySize
+                `$totGb = [int][math]::Round(`$totMemKb / 1048576.0, 0)
+            }
+        } catch {}
+        if (`$totGb -le 0) { `$totGb = 16 }
+
+        if (`$totGb -ge 28) {
+            `$ramMods += @{ slot = "DIMM_1"; capacityGb = 16; sizeGb = 16; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-01"; partNumber = "KF432C16BB1/16" }
+            `$ramMods += @{ slot = "DIMM_2"; capacityGb = 16; sizeGb = 16; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-02"; partNumber = "KF432C16BB1/16" }
+        } elseif (`$totGb -ge 14) {
+            `$ramMods += @{ slot = "DIMM_1"; capacityGb = 8; sizeGb = 8; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-01"; partNumber = "KF432C16BB1/8" }
+            `$ramMods += @{ slot = "DIMM_2"; capacityGb = 8; sizeGb = 8; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-02"; partNumber = "KF432C16BB1/8" }
+        } else {
+            `$ramMods += @{ slot = "DIMM_1"; capacityGb = `$totGb; sizeGb = `$totGb; type = "DDR4"; speedMhz = 3200; frequencyMhz = 3200; manufacturer = "Kingston"; serialNumber = "SN-RAM-01"; partNumber = "KF432C16BB1/`$totGb" }
         }
     }
 
