@@ -130,7 +130,7 @@ class DeviceOut(DeviceBase):
     lastSeenIso: Optional[str] = None
     osVersion: str
     agentVersion: str
-    latestAgentVersion: Optional[str] = "2.4.2"
+    latestAgentVersion: Optional[str] = "2.4.3"
     isOutdated: Optional[bool] = False
     updateStatus: Optional[str] = "idle"
     maintenance: bool = False

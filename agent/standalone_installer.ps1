@@ -37,7 +37,7 @@ try {
     Write-Host "          Проверьте, что сервер запущен и порт 2301 открыт в брандмауэре." -ForegroundColor Yellow
 }
 
-function Invoke-ApiPost($url, $data) {
+function Invoke-ApiPost($url, $data, [bool]$silent = $false) {
     try {
         $json = $data | ConvertTo-Json -Depth 8 -Compress
         $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
@@ -45,6 +45,7 @@ function Invoke-ApiPost($url, $data) {
         $req.Method = "POST"
         $req.ContentType = "application/json; charset=utf-8"
         $req.Timeout = 10000
+        $req.Proxy = $null
         $stream = $req.GetRequestStream()
         $stream.Write($bytes, 0, $bytes.Length)
         $stream.Close()
@@ -55,7 +56,9 @@ function Invoke-ApiPost($url, $data) {
         $resp.Close()
         return ($resText | ConvertFrom-Json)
     } catch {
-        Write-Host "      [!] Ошибка передачи API POST ($url): $($_.Exception.Message)" -ForegroundColor Red
+        if (-not $silent) {
+            Write-Host "      [!] Ошибка передачи API POST ($url): $($_.Exception.Message)" -ForegroundColor Red
+        }
         return $null
     }
 }
@@ -374,7 +377,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.4.2"
+    agentVersion = "2.4.3"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -428,7 +431,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.4.2'
+`$AgentVersion = '2.4.3'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -439,9 +442,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.4.2") {
+function Update-AgentService([string]`$targetVer = "2.4.3") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.4.2"
+        `$targetVer = "2.4.3"
     }
     try {
         # 1. Report update in progress
@@ -504,7 +507,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.4.2"
+        Update-AgentService "2.4.3"
         return
     }
 
@@ -1520,12 +1523,15 @@ $heartbeatPayload = @{
 }
 
 $hbOk = $false
-for ($attempt = 1; $attempt -le 3; $attempt++) {
+# Give network link 1.5 seconds to settle after WoL/NIC power configuration
+Start-Sleep -Milliseconds 1500
+
+for ($attempt = 1; $attempt -le 4; $attempt++) {
     try {
-        $hbRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/heartbeat" $heartbeatPayload
+        $hbRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/heartbeat" $heartbeatPayload -silent ($attempt -lt 4)
         if ($hbRes) { $hbOk = $true; break }
     } catch {}
-    Start-Sleep -Milliseconds 800
+    Start-Sleep -Milliseconds 1200
 }
 
 if ($hbOk) {
