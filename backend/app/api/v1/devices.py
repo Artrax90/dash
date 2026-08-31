@@ -260,7 +260,11 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "currentUser": (d.current_user or "—") if is_online else "—",
         "powerStatus": effective_power,
         "agentStatus": effective_agent,
-        "rdpStatus": (d.rdp_status.value if hasattr(d.rdp_status, 'value') else str(d.rdp_status)) if is_online else "Closed",
+        "rdpStatus": (
+            (lambda s_list: f"Активен ({len(s_list)})" if len(s_list) > 0 else (d.rdp_status.value if hasattr(d.rdp_status, 'value') else str(d.rdp_status)))(
+                (lambda: (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id) or __import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id.upper()) or []))()
+            )
+        ) if is_online else "Closed",
         "healthStatus": effective_health,
         "cpu": d.cpu_usage if is_online else 0,
         "ram": d.ram_usage if is_online else 0,

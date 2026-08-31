@@ -534,7 +534,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.4.1</span>
+            <span>v2.4.2</span>
           </div>
         </div>
       </div>
@@ -608,7 +608,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.4.1</span>
+          <span style={{ color: '#475569' }}>v2.4.2</span>
         </div>
       </div>
     </div>
@@ -1119,8 +1119,17 @@ function Button({ children, primary = false, onClick, icon, title, disabled }: {
 }
 
 function StatusPill({ status, type = 'default' }: { status: string; type?: 'default' | 'health' | 'state' }) {
-  const cls = (status || '').toLowerCase().split(' ').join('-');
-  return <span className={`status-pill ${type} ${cls}`}><i />{status}</span>;
+  const s = (status || '').toLowerCase();
+  let pillClass = 'default';
+  if (s.includes('актив') || s.includes('active') || s.includes('running') || s.includes('healthy') || s.includes('connected') || s.includes('on') || s.includes('success')) {
+    pillClass = 'active';
+  } else if (s.includes('откл') || s.includes('disc') || s.includes('error') || s.includes('failed') || s.includes('critical') || s.includes('offline') || s.includes('stopped') || s.includes('closed')) {
+    pillClass = 'offline';
+  } else if (s.includes('idle') || s.includes('warning') || s.includes('простой')) {
+    pillClass = 'idle';
+  }
+  const cls = s.split(' ').join('-');
+  return <span className={`status-pill ${type} ${pillClass} ${cls}`}><i />{status}</span>;
 }
 
 function DeviceStatusBadge({ powerStatus, healthStatus }: { powerStatus: string; healthStatus?: string }) {
@@ -1639,7 +1648,7 @@ function DeviceTable({
                           {device.id}{device.name !== device.hostname ? ` · ${device.hostname}` : ''} · {device.ip}
                           {device.isOutdated && (
                             <span style={{ marginLeft: '6px', color: 'var(--yellow)', fontWeight: 600 }}>
-                              · v{device.agentVersion || '1.4.2'} (Доступно v{device.latestAgentVersion || '2.4.1'})
+                              · v{device.agentVersion || '1.4.2'} (Доступно v{device.latestAgentVersion || '2.4.2'})
                             </span>
                           )}
                         </small>
@@ -1719,7 +1728,7 @@ function DeviceTable({
                             onAction(`Команда обновления агента отправлена на ${device.name}`);
                           }}
                         >
-                          <RotateCw size={14} style={{ color: 'var(--blue)' }} /> Обновить агент (до v{device.latestAgentVersion || '2.4.1'})
+                          <RotateCw size={14} style={{ color: 'var(--blue)' }} /> Обновить агент (до v{device.latestAgentVersion || '2.4.2'})
                         </button>
                         {onEditMetadata && (
                           <button
@@ -1845,9 +1854,15 @@ function Devices({
     const devGroups = getDeviceGroups(d);
     const matchQuery = `${d.name} ${d.id} ${devGroups.join(' ')} ${d.ip} ${d.hostname} ${d.currentUser} ${(d.tags || []).join(' ')}`.toLowerCase().includes(query.toLowerCase());
     const matchGroup = filterGroup === 'ALL' || devGroups.some(g => g.toLowerCase() === filterGroup.toLowerCase());
-    const matchStatus = filterStatus === 'ALL' || d.powerStatus.toLowerCase() === filterStatus.toLowerCase();
-    const matchRdp = !filterRdpOnly || d.rdpStatus === 'Running' || d.rdpStatus === 'Active';
-    const matchMaint = !filterMaintenanceOnly || d.maintenance;
+    const matchRdp = !filterRdpOnly || Boolean(
+      d.rdpStatus && (
+        d.rdpStatus.toLowerCase().includes('актив') ||
+        d.rdpStatus.toLowerCase().includes('active') ||
+        d.rdpStatus.toLowerCase().includes('running') ||
+        d.rdpStatus === 'Running' ||
+        d.rdpStatus === 'Active'
+      )
+    );
     return matchQuery && matchGroup && matchStatus && matchRdp && matchMaint;
   });
 
@@ -2537,7 +2552,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
             style={device.isOutdated ? { borderColor: 'rgba(234,179,8,0.4)', color: 'var(--yellow)', background: 'rgba(234,179,8,0.06)' } : undefined}
             title="Удаленно обновить службу агента по сети (OTA)"
           >
-            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.4.1'})` : 'Обновить агент')}
+            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.4.2'})` : 'Обновить агент')}
           </Button>
           <Button
             primary
@@ -2645,7 +2660,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <strong>v{device.agentVersion || '1.4.2'}</strong>
                   {device.isOutdated ? (
                     <span className="badge" style={{ background: 'rgba(234, 179, 8, 0.15)', color: 'var(--yellow)', fontWeight: 600, fontSize: '10px' }}>
-                      Доступно v{device.latestAgentVersion || '2.4.1'}
+                      Доступно v{device.latestAgentVersion || '2.4.2'}
                     </span>
                   ) : (
                     <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)', fontWeight: 600, fontSize: '10px' }}>
@@ -2689,7 +2704,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
           <section className="panel rdp-panel">
             <div className="panel-heading">
               <div><h2>{t('devices.rdpSessions')}</h2><p>{t('devices.activeConnections')}</p></div>
-              <StatusPill status={device.rdpStatus} />
+              <StatusPill status={sessions.length > 0 ? `Активен (${sessions.length})` : (device.rdpStatus || 'Stopped')} />
             </div>
             {sessions.length ? (
               <SessionTable sessions={sessions} onResetSession={handleResetSession} onAction={notify} />
@@ -9160,14 +9175,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 onClick={() => setFleetFilter('outdated')}
                 style={{ fontSize: '11px', padding: '4px 10px', color: fleetFilter !== 'outdated' && (versionInfo?.outdatedCount ?? 0) > 0 ? 'var(--yellow)' : undefined }}
               >
-                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.4.1')).length})
+                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.4.2')).length})
               </button>
               <button
                 className={`filter-button ${fleetFilter === 'updated' ? 'primary' : ''}`}
                 onClick={() => setFleetFilter('updated')}
                 style={{ fontSize: '11px', padding: '4px 10px' }}
               >
-                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.4.1')).length})
+                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.4.2')).length})
               </button>
             </div>
             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
@@ -9198,13 +9213,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 ) : (
                   fleetDevices
                     .filter(d => {
-                      const targetVer = versionInfo?.currentVersion || '2.4.1';
+                      const targetVer = versionInfo?.currentVersion || '2.4.2';
                       if (fleetFilter === 'outdated') return (d.agentVersion || '1.4.2') !== targetVer;
                       if (fleetFilter === 'updated') return (d.agentVersion || '1.4.2') === targetVer;
                       return true;
                     })
                     .map(dev => {
-                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.4.1';
+                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.4.2';
                       const curVer = dev.agentVersion || '1.4.2';
                       const isTargetVer = curVer === targetVer;
                       const isUpdating = updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING';
@@ -11241,7 +11256,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.4.1 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.4.2 · © 2026 Сергей Ерёмин
               </span>
             </div>
             <div style={{ flexShrink: 0 }}>
