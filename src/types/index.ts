@@ -180,6 +180,10 @@ export interface RdpSession {
   state: 'Active' | 'Disconnected' | 'Idle';
   idleTime: string;
   logonTime: string;
+  sessionName?: string;
+  type?: string;
+  clientIp?: string;
+  host?: string;
   disconnectedSince?: string;
 }
 

@@ -11,12 +11,19 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-def execute_power_command(action: str):
+AGENT_VERSION = "2.4.1"
+
+def execute_power_command(action: str, extra: dict = None):
     act = str(action).upper().strip()
-    print(f"[*] Executing power command: {act}")
+    print(f"[*] Executing power command: {act} (extra={extra})")
     is_win = platform.system() == "Windows"
     
-    if act in ["REBOOT", "RESTART"]:
+    if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
+        cfg = load_config()
+        server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
+        execute_agent_update(server_base, cfg, "2.4.1")
+        return
+    elif act in ["REBOOT", "RESTART"]:
         if is_win:
             subprocess.run("shutdown /r /f /t 0", shell=True)
         else:
@@ -31,13 +38,133 @@ def execute_power_command(action: str):
             subprocess.run("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
         else:
             subprocess.run("systemctl suspend", shell=True)
-    elif act in ["LOGOFF"]:
+    elif act in ["LOGOFF", "RESET_SESSION", "RDP_CLEANUP"]:
+        sess_id = extra.get("sessionId") if extra else None
         if is_win:
-            subprocess.run("shutdown /l /f", shell=True)
+            if sess_id is not None:
+                subprocess.run(f"logoff {sess_id} 2>nul & rwinsta {sess_id} 2>nul", shell=True)
+            else:
+                subprocess.run("shutdown /l /f", shell=True)
         else:
-            user = get_current_user()
-            if user and user not in ["root", "User"]:
-                subprocess.run(f"pkill -KILL -u {user}", shell=True)
+            if sess_id is not None:
+                subprocess.run(f"loginctl terminate-session {sess_id} 2>/dev/null || pkill -KILL -s {sess_id} 2>/dev/null", shell=True)
+            else:
+                user = get_current_user()
+                if user and user not in ["root", "User"]:
+                    subprocess.run(f"pkill -KILL -u {user}", shell=True)
+    elif act in ["LOCK"]:
+        if is_win:
+            subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
+        else:
+            subprocess.run("loginctl lock-session || xdg-screensaver lock || true", shell=True)
+
+def get_rdp_sessions() -> list:
+    sessions = []
+    seen_ids = set()
+    is_win = platform.system() == "Windows"
+    
+    if is_win:
+        # 1. Incoming RDP sessions via quser / qwinsta
+        try:
+            out = subprocess.check_output("quser 2>nul || qwinsta 2>nul || true", shell=True, text=True, errors="ignore")
+            for line in out.splitlines():
+                line = line.strip().lstrip(">").strip()
+                if not line or line.startswith("SESSIONNAME") or line.startswith("СЕАНС") or line.startswith("---"):
+                    continue
+                parts = line.split()
+                if len(parts) >= 2:
+                    s_name = parts[0]
+                    u_name = ""
+                    s_id = -1
+                    is_rdp = "rdp" in s_name.lower() or "tcp" in s_name.lower()
+                    if len(parts) >= 4 and parts[2].isdigit():
+                        u_name = parts[1]
+                        s_id = int(parts[2])
+                    elif len(parts) >= 3 and parts[1].isdigit():
+                        s_id = int(parts[1])
+                    
+                    if s_id >= 0 and s_id not in seen_ids and u_name and u_name != "65536":
+                        sessions.append({
+                            "id": s_id,
+                            "username": u_name,
+                            "sessionName": s_name,
+                            "type": "Входящий RDP" if is_rdp else "Локальный сеанс",
+                            "state": "Active",
+                            "idleTime": "0 мин",
+                            "logonTime": datetime.now().strftime("%Y-%m-%d %H:%M")
+                        })
+                        seen_ids.add(s_id)
+        except Exception:
+            pass
+        
+        # 2. Outgoing RDP client connections (mstsc -> RemotePort 3389)
+        try:
+            ps_cmd = 'Get-NetTCPConnection -RemotePort 3389 -State Established -ErrorAction SilentlyContinue | Select-Object RemoteAddress | ConvertTo-Json'
+            raw = run_ps_json(ps_cmd)
+            out_idx = 100
+            for item in normalize_list(raw):
+                rem_ip = item.get("RemoteAddress")
+                if rem_ip:
+                    sessions.append({
+                        "id": out_idx,
+                        "username": get_current_user(),
+                        "sessionName": f"mstsc -> {rem_ip}",
+                        "type": f"Исходящий RDP ({rem_ip})",
+                        "state": "Active",
+                        "idleTime": "0 мин",
+                        "logonTime": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "clientIp": rem_ip
+                    })
+                    out_idx += 1
+        except Exception:
+            pass
+    else:
+        # Linux sessions
+        try:
+            out = subprocess.check_output("who -u 2>/dev/null || true", shell=True, text=True, timeout=3)
+            for idx, line in enumerate(out.strip().splitlines()):
+                parts = line.split()
+                if len(parts) >= 4:
+                    uname = parts[0]
+                    terminal = parts[1]
+                    logon_date = f"{parts[2]} {parts[3]}"
+                    idle = parts[4] if len(parts) > 4 and parts[4] != "." else "0 мин"
+                    host = parts[-1].strip("()") if parts[-1].startswith("(") else "Local"
+                    is_remote = host != "Local" and host != ":0" and host != ""
+                    sessions.append({
+                        "id": idx + 1,
+                        "username": uname,
+                        "sessionName": f"pts/{terminal}",
+                        "type": f"Входящий сеанс ({host})" if is_remote else "Локальный сеанс",
+                        "state": "Active" if idle == "0 мин" or idle == "." else "Idle",
+                        "idleTime": idle,
+                        "logonTime": logon_date,
+                        "clientIp": host if is_remote else ""
+                    })
+        except Exception:
+            pass
+        
+        # Linux outgoing RDP/SSH
+        try:
+            out_conns = subprocess.check_output("ss -nt '( dport = :3389 )' 2>/dev/null || netstat -nt 2>/dev/null | grep :3389 || true", shell=True, text=True, timeout=3)
+            for idx, line in enumerate(out_conns.strip().splitlines()):
+                if "ESTAB" in line.upper() or "ESTABLISHED" in line.upper():
+                    parts = line.split()
+                    rem = parts[-1] if len(parts) > 0 else "Remote"
+                    sessions.append({
+                        "id": 100 + idx,
+                        "username": get_current_user(),
+                        "sessionName": f"rdp -> {rem}",
+                        "type": f"Исходящий RDP ({rem})",
+                        "state": "Active",
+                        "idleTime": "0 мин",
+                        "logonTime": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                        "clientIp": rem
+                    })
+        except Exception:
+            pass
+
+    return sessions
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CONFIG_PATH = os.environ.get("WM_CONFIG_PATH", os.path.join(SCRIPT_DIR, "config.json"))
@@ -1196,7 +1323,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.4.0"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.4.1"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:

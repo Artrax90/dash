@@ -374,7 +374,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.4.0"
+    agentVersion = "2.4.1"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -428,7 +428,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.4.0'
+`$AgentVersion = '2.4.1'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -439,9 +439,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.4.0") {
+function Update-AgentService([string]`$targetVer = "2.4.1") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.4.0"
+        `$targetVer = "2.4.1"
     }
     try {
         # 1. Report update in progress
@@ -504,7 +504,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.4.0"
+        Update-AgentService "2.4.1"
         return
     }
 
@@ -553,16 +553,19 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
 
 function Get-LiveRdpSessions() {
     `$sessions = @()
+    `$seenIds = @{}
+
+    # 1. Incoming sessions via quser
     try {
         `$quserOut = quser 2>&1 | Out-String
         if (`$quserOut -and `$quserOut -notmatch 'не найден|No User exists') {
-            `$lines = `$quserOut -split "[\r\n]+" | Where-Object { `$_.Trim() -ne '' }
+            `$lines = `$quserOut -split '[\r\n]+' | Where-Object { `$_.Trim() -ne '' }
             if (`$lines.Count -gt 1) {
                 for (`$i = 1; `$i -lt `$lines.Count; `$i++) {
                     `$line = `$lines[`$i]
                     `$clean = `$line.TrimStart('>').Trim()
                     `$parts = -split `$clean
-                    if (`$parts.Count -ge 5) {
+                    if (`$parts.Count -ge 4) {
                         `$uName = `$parts[0]
                         `$sessName = ''
                         `$sessId = 0
@@ -573,70 +576,132 @@ function Get-LiveRdpSessions() {
                         if (`$parts[1] -match '^\d+$') {
                             `$sessId = [int]`$parts[1]
                             `$sessState = `$parts[2]
-                            `$idle = `$parts[3]
-                            `$logon = (`$parts[4..(`$parts.Count-1)]) -join ' '
+                            if (`$parts.Count -ge 4) { `$idle = `$parts[3] }
+                            if (`$parts.Count -ge 5) { `$logon = (`$parts[4..(`$parts.Count-1)]) -join ' ' }
                         } else {
                             `$sessName = `$parts[1]
-                            try { `$sessId = [int]`$parts[2] } catch {}
-                            `$sessState = `$parts[3]
-                            `$idle = `$parts[4]
-                            `$logon = (`$parts[5..(`$parts.Count-1)]) -join ' '
+                            if (`$parts.Count -ge 3 -and `$parts[2] -match '^\d+$') { `$sessId = [int]`$parts[2] }
+                            if (`$parts.Count -ge 4) { `$sessState = `$parts[3] }
+                            if (`$parts.Count -ge 5) { `$idle = `$parts[4] }
+                            if (`$parts.Count -ge 6) { `$logon = (`$parts[5..(`$parts.Count-1)]) -join ' ' }
                         }
                         
                         `$stdState = 'Active'
-                        if (`$sessState -match 'Disc|Откл') { `$stdState = 'Disconnected' }
+                        if (`$sessState -match '(?i)Disc|Откл') { `$stdState = 'Disconnected' }
                         elseif (`$idle -notmatch '^(\.|00:00|none|нет)' -and `$idle -ne '' -and `$idle -ne '0 мин') { `$stdState = 'Idle' }
 
-                        `$sessions += @{
+                        `$isRdp = (`$sessName -match '(?i)rdp|tcp' -or `$sessId -gt 0)
+                        `$sObj = @{
                             id = `$sessId
                             deviceId = `$DeviceId
                             username = `$uName
-                            sessionName = `$sessName
+                            sessionName = if (`$sessName) { `$sessName } else { 'rdp-tcp#' + `$sessId }
+                            type = if (`$isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
                             state = `$stdState
                             idleTime = if (`$idle -eq '.' -or `$idle -eq 'нет') { '0 мин' } else { `$idle }
-                            logonTime = `$logon
+                            logonTime = if (`$logon) { `$logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
                         }
+                        `$sessions += `$sObj
+                        `$seenIds[`$sessId] = `$true
                     }
                 }
             }
         }
     } catch {}
 
-    if (`$sessions.Count -eq 0) {
-        try {
-            `$qwinstaOut = qwinsta 2>&1 | Out-String
-            if (`$qwinstaOut) {
-                `$lines = `$qwinstaOut -split "[\r\n]+" | Where-Object { `$_.Trim() -ne '' }
-                if (`$lines.Count -gt 1) {
-                    for (`$i = 1; `$i -lt `$lines.Count; `$i++) {
-                        `$line = `$lines[`$i]
-                        `$clean = `$line.TrimStart('>').Trim()
-                        `$parts = -split `$clean
-                        if (`$parts.Count -ge 3) {
-                            `$sName = `$parts[0]
-                            if (`$sName -match 'rdp|tcp|console' -and `$parts.Count -ge 4) {
-                                `$uName = `$parts[1]
-                                `$sId = 0
-                                try { `$sId = [int]`$parts[2] } catch {}
-                                `$sState = `$parts[3]
-                                if (`$uName -ne '' -and `$uName -ne '65536' -and `$sState -match 'Active|Disc|Актив|Откл') {
-                                    `$sessions += @{
-                                        id = `$sId
-                                        deviceId = `$DeviceId
-                                        username = `$uName
-                                        sessionName = `$sName
-                                        state = if (`$sState -match 'Disc|Откл') { 'Disconnected' } else { 'Active' }
-                                        idleTime = '0 мин'
-                                        logonTime = (Get-Date).ToString("yyyy-MM-dd HH:mm")
-                                    }
-                                }
-                            }
-                        }
+    # 2. Fallback to qwinsta for any active/disconnected sessions
+    try {
+        `$qwinstaRaw = & qwinsta.exe 2>&1
+        foreach (`$rawLine in `$qwinstaRaw) {
+            `$line = `$rawLine.ToString().Trim()
+            if (-not `$line -or `$line.StartsWith('SESSIONNAME') -or `$line.StartsWith('СЕАНС') -or `$line.StartsWith('---')) { continue }
+            `$clean = `$line.TrimStart('>').Trim()
+            `$parts = -split `$clean
+            if (`$parts.Count -ge 2) {
+                `$sName = `$parts[0]
+                `$uName = ''
+                `$sId = -1
+                `$isRdp = (`$sName -match '(?i)rdp-tcp#|rdp-tcp\b|rdp')
+                `$isConsole = (`$sName -match '(?i)console')
+
+                if (`$parts.Count -ge 4 -and `$parts[2] -match '^\d+$') {
+                    `$uName = `$parts[1]
+                    `$sId = [int]`$parts[2]
+                } elseif (`$parts.Count -ge 3 -and `$parts[1] -match '^\d+$') {
+                    `$sId = [int]`$parts[1]
+                }
+                
+                if (`$sId -ge 0 -and -not `$seenIds.ContainsKey(`$sId) -and `$uName -ne '' -and `$uName -ne '65536') {
+                    `$sessions += @{
+                        id = `$sId
+                        deviceId = `$DeviceId
+                        username = `$uName
+                        sessionName = `$sName
+                        type = if (`$isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
+                        state = 'Active'
+                        idleTime = '0 мин'
+                        logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+                    }
+                    `$seenIds[`$sId] = `$true
+                }
+            }
+        }
+    } catch {}
+
+    # 3. Outgoing RDP client connections (mstsc.exe connected to remote machines on port 3389)
+    try {
+        `$outConns = Get-NetTCPConnection -RemotePort 3389 -State Established -ErrorAction SilentlyContinue
+        if (`$outConns) {
+            `$outIdx = 100
+            foreach (`$c in `$outConns) {
+                `$remIp = `$c.RemoteAddress
+                `$sessions += @{
+                    id = `$outIdx
+                    deviceId = `$DeviceId
+                    username = `$env:USERNAME
+                    sessionName = ('mstsc -> ' + `$remIp)
+                    type = ('Исходящий RDP (' + `$remIp + ')')
+                    state = 'Active'
+                    idleTime = '0 мин'
+                    logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+                    clientIp = `$remIp
+                }
+                `$outIdx++
+            }
+        }
+    } catch {}
+
+    # 4. Attach client IP for incoming 3389 sockets
+    try {
+        `$inConns = Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue
+        if (`$inConns) {
+            foreach (`$inc in `$inConns) {
+                `$cliIp = `$inc.RemoteAddress
+                `$foundMatch = `$false
+                foreach (`$s in `$sessions) {
+                    if (`$s.type -eq 'Входящий RDP' -and -not `$s.clientIp) {
+                        `$s.clientIp = `$cliIp
+                        `$foundMatch = `$true
+                        break
+                    }
+                }
+                if (-not `$foundMatch -and `$sessions.Count -eq 0) {
+                    `$sessions += @{
+                        id = 201
+                        deviceId = `$DeviceId
+                        username = 'RDP-User'
+                        sessionName = ('rdp-in (' + `$cliIp + ')')
+                        type = ('Входящий RDP (' + `$cliIp + ')')
+                        state = 'Active'
+                        idleTime = '0 мин'
+                        logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+                        clientIp = `$cliIp
                     }
                 }
             }
-        } catch {}
-    }
+        }
+    } catch {}
+
     return `$sessions
 }
 

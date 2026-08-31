@@ -683,10 +683,10 @@ export const agentsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return {
-      currentVersion: '2.4.0',
+      currentVersion: '2.4.1',
       releaseDate: '2026-08-31',
       minSupportedVersion: '1.0.0',
-      changelog: 'Релиз v2.4.0: Полный мониторинг активных RDP и терминальных сессий в реальном времени, удаленный сброс (logoff) сессий, устранение ложных PCI-срабатываний IOMMU/чипсетов',
+      changelog: 'Релиз v2.4.1: Комплексный мониторинг входящих и исходящих RDP/mstsc сессий, IP-клиентов и удаленный сброс сессий',
       totalAgents: 0,
       upToDateCount: 0,
       outdatedCount: 0,
@@ -707,7 +707,7 @@ export const agentsApi = {
       status: 'queued',
       deviceId,
       message: `Команда обновления отправлена на ${deviceId}`,
-      targetVersion: '2.4.0'
+      targetVersion: '2.4.1'
     };
   },
   updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {
