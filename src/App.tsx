@@ -1265,6 +1265,11 @@ function Dashboard({
   const nextSch = enabledSchedules[0];
   const nextSchText = nextSch ? `${nextSch.time} ${nextSch.name}` : 'Все выключены';
 
+  const totalActiveSessions = (stats?.activeSessions !== undefined && stats.activeSessions > 0)
+    ? stats.activeSessions
+    : devices.filter(d => d.rdpStatus && (d.rdpStatus.toLowerCase().includes('актив') || d.rdpStatus.toLowerCase().includes('active'))).length;
+  const totalDisconnectedSessions = stats?.disconnectedSessions || 0;
+
   return (
     <>
       <PageHeader
@@ -1357,10 +1362,10 @@ function Dashboard({
               <span className="bento-card-title">RDP Сессии & Пользователи</span>
               <div className="bento-icon purple"><Monitor size={18} /></div>
             </div>
-            <div className="bento-value">{loading ? '—' : (stats?.activeSessions ?? 0)} <small>Сессий</small></div>
+            <div className="bento-value">{loading ? '—' : totalActiveSessions} <small>Сессий</small></div>
             <div style={{ display: 'flex', gap: '8px', fontSize: '11px', marginTop: '6px' }}>
-              <span className="status-pill active"><i /> {stats?.activeSessions ?? 0} активных</span>
-              <span className="status-pill idle"><i /> {stats?.disconnectedSessions ?? 0} брошенных</span>
+              <span className="status-pill active"><i /> {totalActiveSessions} активных</span>
+              <span className="status-pill idle"><i /> {totalDisconnectedSessions} брошенных</span>
             </div>
           </div>
           <div className="bento-footer">

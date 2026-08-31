@@ -366,13 +366,33 @@ async def get_device_stats(db: AsyncSession = Depends(get_db)):
     online = sum(1 for d in devices if check_online(d))
     offline = total - online
     problems = sum(1 for d in devices if check_online(d) and (d.health_status.value if hasattr(d.health_status, 'value') else str(d.health_status)) in ["Warning", "Critical"])
+    
+    # Calculate real active and disconnected sessions
+    from backend.app.api.v1.sessions import live_device_sessions
+    active_sessions = 0
+    disconnected_sessions = 0
+    
+    online_dev_ids = {d.id.upper() for d in devices if check_online(d)}
+    counted_devs = set()
+    for d in devices:
+        did_upper = d.id.upper()
+        if did_upper in online_dev_ids and did_upper not in counted_devs:
+            counted_devs.add(did_upper)
+            sess_list = live_device_sessions.get(d.id) or live_device_sessions.get(did_upper) or []
+            for s in sess_list:
+                st = str(s.get("state", "Active")).lower()
+                if "disc" in st or "откл" in st:
+                    disconnected_sessions += 1
+                else:
+                    active_sessions += 1
+
     return {
         "total": total,
         "online": online,
         "offline": offline,
         "problems": problems,
-        "activeSessions": 0,
-        "disconnectedSessions": 0,
+        "activeSessions": active_sessions,
+        "disconnectedSessions": disconnected_sessions,
         "hardwareAlertsCount": 0,
     }
 
