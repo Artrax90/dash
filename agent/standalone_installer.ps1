@@ -377,7 +377,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.4.3"
+    agentVersion = "2.4.4"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -431,7 +431,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.4.3'
+`$AgentVersion = '2.4.4'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -442,9 +442,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.4.3") {
+function Update-AgentService([string]`$targetVer = "2.4.4") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.4.3"
+        `$targetVer = "2.4.4"
     }
     try {
         # 1. Report update in progress
@@ -476,7 +476,8 @@ function Update-AgentService([string]`$targetVer = "2.4.3") {
         `$wc.DownloadFile("`$ServerUrl/install.ps1", `$tempInstaller)
 
         if (Test-Path `$tempInstaller) {
-            Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"`$tempInstaller`" -ServerUrl `"`$ServerUrl`" -Token `"$Token`"" -WindowStyle Hidden
+            `$procArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$tempInstaller, '-ServerUrl', `$ServerUrl, '-Token', '$Token')
+            Start-Process -FilePath "powershell.exe" -ArgumentList `$procArgs -WindowStyle Hidden
             exit
         }
     } catch {
@@ -507,7 +508,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.4.3"
+        Update-AgentService "2.4.4"
         return
     }
 
