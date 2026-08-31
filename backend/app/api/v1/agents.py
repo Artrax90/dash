@@ -712,7 +712,7 @@ def send_direct_lan_power_signal(
     except Exception as e:
         print(f"[Direct LAN Signal] Error sending to {ip_address}: {e}")
 
-def queue_device_command(device_id: str, action: str, force: bool = True, reason: str = "") -> Dict[str, Any]:
+def queue_device_command(device_id: str, action: str, force: bool = True, reason: str = "", extra_data: Dict[str, Any] = None) -> Dict[str, Any]:
     """
     Queue an OS power or administrative command to be dispatched on the device's next heartbeat.
     """
@@ -725,11 +725,15 @@ def queue_device_command(device_id: str, action: str, force: bool = True, reason
         "createdAt": datetime.utcnow().isoformat(),
         "createdTimestamp": time.time()
     }
+    if extra_data and isinstance(extra_data, dict):
+        cmd.update(extra_data)
     if device_id:
         pending_device_commands[device_id].append(cmd)
         pending_device_commands[device_id.upper()].append(cmd)
     print(f"[Command Queue] Queued {action} for {device_id} ({cmd['id']})")
     return cmd
+
+queue_agent_command = queue_device_command
 
 def clear_pending_power_commands(device_id: str):
     """Purge any stale shutdown or reboot commands for a device (e.g. when waking or starting up)."""

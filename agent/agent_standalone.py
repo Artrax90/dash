@@ -58,7 +58,7 @@ def save_config(cfg):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
-AGENT_VERSION = "2.3.2"
+AGENT_VERSION = "2.4.0"
 
 def http_post(url, data):
     req = urllib.request.Request(
@@ -778,7 +778,7 @@ def collect_hardware():
 
     return spec
 
-def execute_agent_update(server_base: str, cfg: dict, update_url: str = "", target_version: str = "2.3.2"):
+def execute_agent_update(server_base: str, cfg: dict, update_url: str = "", target_version: str = "2.4.0"):
     print(f"[*] Initiating remote agent update to v{target_version}...")
     device_id = cfg.get("device_id", "")
     prev_ver = AGENT_VERSION
@@ -871,6 +871,122 @@ def execute_agent_update(server_base: str, cfg: dict, update_url: str = "", targ
             })
         except Exception:
             pass
+
+def get_rdp_sessions() -> list:
+    sessions = []
+    try:
+        if platform.system() != "Windows":
+            # Linux active user and remote session collection
+            try:
+                out = subprocess.check_output("who -u 2>/dev/null || true", shell=True, text=True, timeout=3)
+                for idx, line in enumerate(out.strip().splitlines()):
+                    parts = line.split()
+                    if len(parts) >= 4:
+                        uname = parts[0]
+                        terminal = parts[1]
+                        logon_date = f"{parts[2]} {parts[3]}"
+                        idle = parts[4] if len(parts) > 4 and parts[4] != "." else "0 мин"
+                        host = parts[-1].strip("()") if parts[-1].startswith("(") else "Local"
+                        
+                        state = "Active"
+                        if idle != "." and idle != "0 мин" and idle != "old":
+                            state = "Idle"
+                        
+                        sessions.append({
+                            "id": idx + 1,
+                            "username": uname,
+                            "terminal": terminal,
+                            "sessionName": f"pts/{terminal}",
+                            "state": state,
+                            "idleTime": idle,
+                            "logonTime": logon_date,
+                            "host": host
+                        })
+            except Exception:
+                pass
+        else:
+            # Windows active session collection
+            try:
+                quser_out = subprocess.check_output("quser 2>nul || true", shell=True, text=True, timeout=3)
+                lines = [l.strip() for l in quser_out.splitlines() if l.strip()]
+                if len(lines) > 1:
+                    for line in lines[1:]:
+                        clean = line.lstrip(">").strip()
+                        parts = clean.split()
+                        if len(parts) >= 5:
+                            uname = parts[0]
+                            if parts[1].isdigit():
+                                sid = int(parts[1])
+                                sstate = parts[2]
+                                idle = parts[3]
+                                logon = " ".join(parts[4:])
+                                sname = ""
+                            else:
+                                sname = parts[1]
+                                sid = int(parts[2]) if parts[2].isdigit() else 0
+                                sstate = parts[3]
+                                idle = parts[4]
+                                logon = " ".join(parts[5:])
+                            
+                            std_state = "Active"
+                            if "disc" in sstate.lower() or "откл" in sstate.lower():
+                                std_state = "Disconnected"
+                            elif idle not in [".", "none", "нет", "00:00", "0 мин"]:
+                                std_state = "Idle"
+                            
+                            sessions.append({
+                                "id": sid,
+                                "username": uname,
+                                "sessionName": sname,
+                                "state": std_state,
+                                "idleTime": "0 мин" if idle in [".", "нет"] else idle,
+                                "logonTime": logon
+                            })
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"[!] Warning collecting sessions: {e}")
+    return sessions
+
+def execute_power_command(action: str, extra: dict = None):
+    act = (action or "").strip().upper()
+    print(f"[*] Executing administrative action: {act}")
+    is_win = platform.system() == "Windows"
+    try:
+        if act in ["REBOOT", "RESTART"]:
+            if is_win:
+                subprocess.Popen("shutdown /r /f /t 0", shell=True)
+            else:
+                subprocess.Popen("systemctl reboot || reboot || shutdown -r now", shell=True)
+        elif act in ["SHUTDOWN", "FORCE_SHUTDOWN", "POWEROFF"]:
+            if is_win:
+                subprocess.Popen("shutdown /s /f /t 0", shell=True)
+            else:
+                subprocess.Popen("systemctl poweroff || poweroff || shutdown -h now", shell=True)
+        elif act in ["SLEEP", "SUSPEND"]:
+            if is_win:
+                subprocess.Popen("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
+            else:
+                subprocess.Popen("systemctl suspend", shell=True)
+        elif act in ["LOGOFF", "RESET_SESSION", "RDP_CLEANUP"]:
+            sess_id = (extra or {}).get("sessionId")
+            if is_win:
+                if sess_id is not None:
+                    subprocess.Popen(f"logoff {sess_id} || rwinsta {sess_id}", shell=True)
+                else:
+                    subprocess.Popen("shutdown /l /f", shell=True)
+            else:
+                if sess_id is not None:
+                    subprocess.Popen(f"loginctl terminate-session {sess_id} || true", shell=True)
+                else:
+                    subprocess.Popen("pkill -KILL -u $(whoami) || true", shell=True)
+        elif act in ["LOCK"]:
+            if is_win:
+                subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
+            else:
+                subprocess.Popen("loginctl lock-session || true", shell=True)
+    except Exception as e:
+        print(f"[!] Error executing action {act}: {e}")
 
 def main():
     print("==================================================")
@@ -1060,6 +1176,7 @@ def main():
                 "osVersion": os_ver,
                 "agentVersion": AGENT_VERSION,
                 "isStartup": is_startup,
+                "rdpSessions": get_rdp_sessions(),
                 "processes": get_top_processes()
             })
             print(f"[Heartbeat] CPU: {cpu_percent}% | RAM: {ram_percent}% ({total_ram_gb} GB, {len(ram_slots)} slots) | PCI: {len(pci_devs)} | User: {user} | v{AGENT_VERSION}")
@@ -1079,11 +1196,11 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "1.9.0"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.4.0"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:
-                            execute_power_command(c_act)
+                            execute_power_command(c_act, extra=cmd)
         except Exception as e:
             print(f"[Heartbeat Error] {e}")
 

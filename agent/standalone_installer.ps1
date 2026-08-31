@@ -374,7 +374,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.3.2"
+    agentVersion = "2.4.0"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -418,10 +418,6 @@ try {
         Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.HardwareInterface -eq $true } | ForEach-Object {
             Set-NetAdapterPowerManagement -Name $_.Name -WakeOnMagicPacket Enabled -ErrorAction SilentlyContinue
             Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName "*Magic*" -DisplayValue "Enabled" -ErrorAction SilentlyContinue
-            Set-NetAdapterAdvancedProperty -Name $_.Name -DisplayName "*Wake*" -DisplayValue "Enabled" -ErrorAction SilentlyContinue
-        }
-        if ($IsAdmin) {
-            Set-ItemProperty -Path "HKLM:\SYSTEM\CurrentControlSet\Control\Session Manager\Power" -Name "HiberbootEnabled" -Value 0 -ErrorAction SilentlyContinue
         }
     } catch {}
 
@@ -432,7 +428,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.3.2'
+`$AgentVersion = '2.4.0'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -443,9 +439,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.3.2") {
+function Update-AgentService([string]`$targetVer = "2.4.0") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.3.2"
+        `$targetVer = "2.4.0"
     }
     try {
         # 1. Report update in progress
@@ -454,14 +450,14 @@ function Update-AgentService([string]`$targetVer = "2.3.2") {
             status = 'UPDATING'
             previousVersion = `$AgentVersion
             targetVersion = `$targetVer
-            details = "Начата загрузка пакета обновления PowerShell службы до v`$targetVer"
+            details = "Начало загрузки и применения обновления v`$targetVer"
         }
         `$json = `$updPayload | ConvertTo-Json -Depth 3 -Compress
         `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
         `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
-        `$req.Timeout = 5000
+        `$req.Timeout = 10000
         `$stream = `$req.GetRequestStream()
         `$stream.Write(`$bytes, 0, `$bytes.Length)
         `$stream.Close()
@@ -470,85 +466,45 @@ function Update-AgentService([string]`$targetVer = "2.3.2") {
     } catch {}
 
     try {
-        # 2. Download fresh service script directly
-        `$scriptPath = `$MyInvocation.MyCommand.Path
-        if (-not `$scriptPath -or -not (Test-Path `$scriptPath)) {
-            `$scriptPath = Join-Path "C:\Program Files\WorkstationManagerAgent" "run_service.ps1"
-        }
-        if (-not (Test-Path (Split-Path `$scriptPath))) {
-            `$scriptPath = Join-Path (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent") "run_service.ps1"
-        }
-        `$scriptDir = Split-Path `$scriptPath
-        `$newScriptPath = Join-Path `$scriptDir "run_service.ps1.new"
-
+        `$tempInstaller = Join-Path `$env:TEMP "wm_update_`$targetVer.ps1"
         `$wc = New-Object System.Net.WebClient
         `$wc.Encoding = [System.Text.Encoding]::UTF8
-        `$wc.DownloadFile("`$ServerUrl/agent.ps1?deviceId=`$DeviceId&mac=`$DeviceMac", `$newScriptPath)
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
+        `$wc.DownloadFile("`$ServerUrl/install.ps1", `$tempInstaller)
 
-        if ((Test-Path `$newScriptPath) -and (Get-Item `$newScriptPath).Length -gt 1000) {
-            # Atomically replace active service script
-            Move-Item -Path `$newScriptPath -Destination `$scriptPath -Force
-
-            # 3. Report success
-            `$okPayload = @{
-                deviceId = `$DeviceId
-                status = 'SUCCESS'
-                previousVersion = `$AgentVersion
-                newVersion = `$targetVer
-                details = "Служба агента успешно обновлена до v`$targetVer"
-            }
-            `$jsonOk = `$okPayload | ConvertTo-Json -Depth 3 -Compress
-            `$bytesOk = [System.Text.Encoding]::UTF8.GetBytes(`$jsonOk)
-            `$reqOk = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
-            `$reqOk.Method = 'POST'
-            `$reqOk.ContentType = 'application/json; charset=utf-8'
-            `$reqOk.Timeout = 5000
-            `$streamOk = `$reqOk.GetRequestStream()
-            `$streamOk.Write(`$bytesOk, 0, `$bytesOk.Length)
-            `$streamOk.Close()
-            `$respOk = `$reqOk.GetResponse()
-            `$respOk.Close()
-
-            # 4. In-place live reload without exiting process (Zero-Downtime Hot Reload)
-            `$script:AgentVersion = `$targetVer
-            `$AgentVersion = `$targetVer
-            
-            # Immediately send heartbeat with new version to confirm online status
-            Invoke-Heartbeat `$true | Out-Null
-            return `$true
-        } else {
-            throw "Скачанный файл службы пуст или поврежден"
+        if (Test-Path `$tempInstaller) {
+            Start-Process -FilePath "powershell.exe" -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"`$tempInstaller`" -ServerUrl `"`$ServerUrl`" -Token `"$Token`"" -WindowStyle Hidden
+            exit
         }
     } catch {
         try {
-            `$errPayload = @{
+            `$failPayload = @{
                 deviceId = `$DeviceId
                 status = 'FAILED'
                 previousVersion = `$AgentVersion
                 targetVersion = `$targetVer
-                details = "Ошибка загрузки обновления: " + `$_.Exception.Message
-                error = `$_.Exception.Message
+                details = "Ошибка загрузки скрипта обновления: " + `$_.Exception.Message
             }
-            `$jsonErr = `$errPayload | ConvertTo-Json -Depth 3 -Compress
-            `$bytesErr = [System.Text.Encoding]::UTF8.GetBytes(`$jsonErr)
-            `$reqErr = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
-            `$reqErr.Method = 'POST'
-            `$reqErr.ContentType = 'application/json; charset=utf-8'
-            `$reqErr.Timeout = 5000
-            `$streamErr = `$reqErr.GetRequestStream()
-            `$streamErr.Write(`$bytesErr, 0, `$bytesErr.Length)
-            `$streamErr.Close()
-            `$respErr = `$reqErr.GetResponse()
-            `$respErr.Close()
+            `$json = `$failPayload | ConvertTo-Json -Depth 3 -Compress
+            `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
+            `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
+            `$req.Method = 'POST'
+            `$req.ContentType = 'application/json; charset=utf-8'
+            `$req.Timeout = 10000
+            `$stream = `$req.GetRequestStream()
+            `$stream.Write(`$bytes, 0, `$bytes.Length)
+            `$stream.Close()
+            `$resp = `$req.GetResponse()
+            `$resp.Close()
         } catch {}
     }
 }
 
-function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false) {
+function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false, `$cmdObj = `$null) {
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.3.2"
+        Update-AgentService "2.4.0"
         return
     }
 
@@ -577,13 +533,111 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         try { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, `$false, `$false) } catch {}
         & "`$env:SystemRoot\System32\rundll32.exe" powrprof.dll,SetSuspendState 0,1,0
     }
-    elseif (`$act -eq 'LOGOFF') {
-        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(4) } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /l /f
+    elseif (`$act -eq 'LOGOFF' -or `$act -eq 'RESET_SESSION' -or `$act -eq 'RDP_CLEANUP') {
+        `$targetSessId = `$null
+        if (`$cmdObj -and `$cmdObj.sessionId -ne `$null) {
+            `$targetSessId = `$cmdObj.sessionId
+        }
+        if (`$targetSessId -ne `$null) {
+            & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId 2>`$null
+            & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId 2>`$null
+        } else {
+            try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(4) } catch {}
+            & "`$env:SystemRoot\System32\shutdown.exe" /l /f
+        }
     }
     elseif (`$act -eq 'LOCK') {
         & "`$env:SystemRoot\System32\rundll32.exe" user32.dll,LockWorkStation
     }
+}
+
+function Get-LiveRdpSessions() {
+    `$sessions = @()
+    try {
+        `$quserOut = quser 2>&1 | Out-String
+        if (`$quserOut -and `$quserOut -notmatch 'не найден|No User exists') {
+            `$lines = `$quserOut -split "[\r\n]+" | Where-Object { `$_.Trim() -ne '' }
+            if (`$lines.Count -gt 1) {
+                for (`$i = 1; `$i -lt `$lines.Count; `$i++) {
+                    `$line = `$lines[`$i]
+                    `$clean = `$line.TrimStart('>').Trim()
+                    `$parts = -split `$clean
+                    if (`$parts.Count -ge 5) {
+                        `$uName = `$parts[0]
+                        `$sessName = ''
+                        `$sessId = 0
+                        `$sessState = 'Active'
+                        `$idle = '0 мин'
+                        `$logon = ''
+                        
+                        if (`$parts[1] -match '^\d+$') {
+                            `$sessId = [int]`$parts[1]
+                            `$sessState = `$parts[2]
+                            `$idle = `$parts[3]
+                            `$logon = (`$parts[4..(`$parts.Count-1)]) -join ' '
+                        } else {
+                            `$sessName = `$parts[1]
+                            try { `$sessId = [int]`$parts[2] } catch {}
+                            `$sessState = `$parts[3]
+                            `$idle = `$parts[4]
+                            `$logon = (`$parts[5..(`$parts.Count-1)]) -join ' '
+                        }
+                        
+                        `$stdState = 'Active'
+                        if (`$sessState -match 'Disc|Откл') { `$stdState = 'Disconnected' }
+                        elseif (`$idle -notmatch '^(\.|00:00|none|нет)' -and `$idle -ne '' -and `$idle -ne '0 мин') { `$stdState = 'Idle' }
+
+                        `$sessions += @{
+                            id = `$sessId
+                            deviceId = `$DeviceId
+                            username = `$uName
+                            sessionName = `$sessName
+                            state = `$stdState
+                            idleTime = if (`$idle -eq '.' -or `$idle -eq 'нет') { '0 мин' } else { `$idle }
+                            logonTime = `$logon
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+
+    if (`$sessions.Count -eq 0) {
+        try {
+            `$qwinstaOut = qwinsta 2>&1 | Out-String
+            if (`$qwinstaOut) {
+                `$lines = `$qwinstaOut -split "[\r\n]+" | Where-Object { `$_.Trim() -ne '' }
+                if (`$lines.Count -gt 1) {
+                    for (`$i = 1; `$i -lt `$lines.Count; `$i++) {
+                        `$line = `$lines[`$i]
+                        `$clean = `$line.TrimStart('>').Trim()
+                        `$parts = -split `$clean
+                        if (`$parts.Count -ge 3) {
+                            `$sName = `$parts[0]
+                            if (`$sName -match 'rdp|tcp|console' -and `$parts.Count -ge 4) {
+                                `$uName = `$parts[1]
+                                `$sId = 0
+                                try { `$sId = [int]`$parts[2] } catch {}
+                                `$sState = `$parts[3]
+                                if (`$uName -ne '' -and `$uName -ne '65536' -and `$sState -match 'Active|Disc|Актив|Откл') {
+                                    `$sessions += @{
+                                        id = `$sId
+                                        deviceId = `$DeviceId
+                                        username = `$uName
+                                        sessionName = `$sName
+                                        state = if (`$sState -match 'Disc|Откл') { 'Disconnected' } else { 'Active' }
+                                        idleTime = '0 мин'
+                                        logonTime = (Get-Date).ToString("yyyy-MM-dd HH:mm")
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {}
+    }
+    return `$sessions
 }
 
 `$script:lastRamCount = -1
@@ -929,6 +983,8 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             }
         } catch {}
 
+        `$liveRdp = Get-LiveRdpSessions
+
         `$payload = @{
             deviceId = `$DeviceId
             ip = `$currentIp
@@ -972,6 +1028,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             currentUser = `$user
             osType = "Windows"
             osVersion = `$osCaption
+            rdpSessions = `$liveRdp
             processes = `$procList
         }
 
@@ -1005,7 +1062,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                     if (`$cmd.action -match 'UPDATE') {
                         Update-AgentService (`$cmd.targetVersion)
                     } else {
-                        Execute-PowerCommand `$cmd.action `$false
+                        Execute-PowerCommand `$cmd.action `$false `$cmd
                     }
                 }
             }
