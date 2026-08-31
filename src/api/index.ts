@@ -683,10 +683,10 @@ export const agentsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return {
-      currentVersion: '2.4.5',
+      currentVersion: '2.4.6',
       releaseDate: '2026-08-31',
       minSupportedVersion: '1.0.0',
-      changelog: 'Релиз v2.4.5: Комплексное определение RDP-сессий с OEM декодированием quser/qwinsta, сокетов netstat и активным опросом карточки ПК',
+      changelog: 'Релиз v2.4.6: Поддержка именованных параметров CLI [CmdletBinding()] в установщике и надежная доставка обновлений службы',
       totalAgents: 0,
       upToDateCount: 0,
       outdatedCount: 0,
@@ -707,7 +707,7 @@ export const agentsApi = {
       status: 'queued',
       deviceId,
       message: `Команда обновления отправлена на ${deviceId}`,
-      targetVersion: '2.4.5'
+      targetVersion: '2.4.6'
     };
   },
   updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {

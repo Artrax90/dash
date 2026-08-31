@@ -1,12 +1,20 @@
-﻿# ==============================================================================
+﻿[CmdletBinding()]
+param(
+    [Parameter(Position=0)]
+    [string]$ServerUrl = "__SERVER_URL__",
+    [Parameter(Position=1)]
+    [string]$Token = "__TOKEN__"
+)
+
+# ==============================================================================
 # Workstation Manager - Clean Standalone Installer Script (PowerShell Core)
 # ==============================================================================
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Continue'
-$ServerUrl = "__SERVER_URL__".TrimEnd('/')
-$Token = "__TOKEN__"
+if ($ServerUrl) { $ServerUrl = $ServerUrl.TrimEnd('/') }
+if (-not $Token) { $Token = "__TOKEN__" }
 
 # Installation directory
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -431,7 +439,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.4.5'
+`$AgentVersion = '2.4.6'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -442,9 +450,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.4.5") {
+function Update-AgentService([string]`$targetVer = "2.4.6") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.4.5"
+        `$targetVer = "2.4.6"
     }
     try {
         # 1. Report update in progress
@@ -508,7 +516,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.4.5"
+        Update-AgentService "2.4.6"
         return
     }
 
