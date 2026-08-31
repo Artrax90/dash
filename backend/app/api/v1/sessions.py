@@ -10,7 +10,7 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 live_device_sessions: Dict[str, List[Dict[str, Any]]] = {}
 
-def update_device_sessions(device_id: str, sessions_list: List[Dict[str, Any]]):
+def update_device_sessions(device_id: str, sessions_list: List[Dict[str, Any]], hostname: Optional[str] = None):
     if not device_id:
         return
     norm_list = []
@@ -21,9 +21,20 @@ def update_device_sessions(device_id: str, sessions_list: List[Dict[str, Any]]):
             norm_list.append(s_dict)
     live_device_sessions[device_id] = norm_list
     live_device_sessions[device_id.upper()] = norm_list
+    live_device_sessions[device_id.lower()] = norm_list
+    if hostname:
+        live_device_sessions[hostname] = norm_list
+        live_device_sessions[hostname.upper()] = norm_list
+        live_device_sessions[hostname.lower()] = norm_list
 
 @router.get("")
 async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    # Direct fast-path lookup if specific deviceId requested
+    if device_id:
+        for k in [device_id, device_id.upper(), device_id.lower()]:
+            if k in live_device_sessions:
+                return live_device_sessions[k]
+
     res = await db.execute(select(Device))
     devices = res.scalars().all()
     now = datetime.utcnow()
@@ -34,11 +45,19 @@ async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depe
             continue
         
         # Check if device is online
-        is_online = (d.power_status == PowerStatus.ON) and (d.last_seen and (now - d.last_seen).total_seconds() <= 180)
-        if not is_online:
+        p_val = d.power_status.value if hasattr(d.power_status, 'value') else str(d.power_status or '')
+        is_online = (p_val.lower() == "on") and (d.last_seen and (now - d.last_seen).total_seconds() <= 300)
+        if not is_online and not device_id:
             continue
 
-        reported = live_device_sessions.get(d.id) or live_device_sessions.get(d.id.upper(), [])
+        reported = (
+            live_device_sessions.get(d.id) or
+            live_device_sessions.get(d.id.upper()) or
+            live_device_sessions.get(d.id.lower()) or
+            (live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
+            (live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
+            []
+        )
         if reported:
             for s in reported:
                 all_sessions.append(s)

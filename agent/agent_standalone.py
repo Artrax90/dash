@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.4.4"
+AGENT_VERSION = "2.4.5"
 
 def execute_power_command(action: str, extra: dict = None):
     act = str(action).upper().strip()
@@ -21,7 +21,7 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.4.4")
+        execute_agent_update(server_base, cfg, "2.4.5")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
@@ -288,6 +288,125 @@ def get_top_processes():
             pass
 
     return procs
+
+def get_rdp_sessions():
+    sessions = []
+    seen_ids = set()
+    is_win = platform.system() == "Windows"
+    
+    if is_win:
+        try:
+            quser_path = os.path.join(os.environ.get("SystemRoot", "C:\\Windows"), "System32", "quser.exe")
+            if os.path.exists(quser_path):
+                proc = subprocess.run([quser_path], capture_output=True, timeout=3)
+                raw_out = ""
+                for enc in ["cp866", "utf-8", "cp1251"]:
+                    try:
+                        raw_out = proc.stdout.decode(enc)
+                        break
+                    except Exception:
+                        pass
+                if raw_out:
+                    lines = [l.strip() for l in raw_out.splitlines() if l.strip()]
+                    if len(lines) > 1:
+                        for line in lines[1:]:
+                            clean = line.lstrip(">").strip()
+                            parts = clean.split()
+                            if len(parts) >= 3:
+                                u_name = parts[0]
+                                s_name = ""
+                                s_id = 0
+                                s_state = "Active"
+                                idle = "0 мин"
+                                logon = ""
+                                if parts[1].isdigit():
+                                    s_id = int(parts[1])
+                                    s_state = parts[2]
+                                    if len(parts) >= 4: idle = parts[3]
+                                    if len(parts) >= 5: logon = " ".join(parts[4:])
+                                else:
+                                    s_name = parts[1]
+                                    if len(parts) >= 3 and parts[2].isdigit(): s_id = int(parts[2])
+                                    if len(parts) >= 4: s_state = parts[3]
+                                    if len(parts) >= 5: idle = parts[4]
+                                    if len(parts) >= 6: logon = " ".join(parts[5:])
+                                
+                                std_state = "Disconnected" if ("disc" in s_state.lower() or "откл" in s_state.lower()) else "Active"
+                                is_rdp = bool("rdp" in s_name.lower() or "tcp" in s_name.lower() or s_id > 0)
+                                s_obj = {
+                                    "id": s_id,
+                                    "username": u_name,
+                                    "sessionName": s_name or f"rdp-tcp#{s_id}",
+                                    "type": "Входящий RDP" if is_rdp else "Локальный сеанс",
+                                    "state": std_state,
+                                    "idleTime": "0 мин" if (not idle or any(x in idle.lower() for x in [".", "none", "нет", "отсут"])) else idle,
+                                    "logonTime": logon or datetime.utcnow().strftime("%Y-%m-%d %H:%M")
+                                }
+                                sessions.append(s_obj)
+                                seen_ids.add(s_id)
+        except Exception:
+            pass
+        
+        try:
+            import psutil
+            mstsc_pids = set()
+            mstsc_owners = {}
+            for p in psutil.process_iter(['pid', 'name', 'username', 'cmdline']):
+                p_name = (p.info.get('name') or '').lower()
+                if p_name in ['mstsc.exe', 'msrdc.exe', 'remotedesktop.exe']:
+                    pid = p.info.get('pid')
+                    mstsc_pids.add(pid)
+                    u = (p.info.get('username') or '').split('\\')[-1]
+                    if u and u.lower() not in ['system', 'network service', 'local service']:
+                        mstsc_owners[pid] = u
+            
+            out_idx = 100
+            for conn in psutil.net_connections(kind='tcp'):
+                if conn.status == 'ESTABLISHED':
+                    is_mstsc = conn.pid in mstsc_pids
+                    rem_port = conn.raddr.port if conn.raddr else 0
+                    rem_ip = conn.raddr.ip if conn.raddr else ''
+                    if (is_mstsc or (rem_port >= 3389 and rem_port <= 3399)) and rem_ip and rem_ip not in ['127.0.0.1', '0.0.0.0', '::1']:
+                        u_name = mstsc_owners.get(conn.pid) or get_current_user() or 'User'
+                        target_label = f"{rem_ip}:{rem_port}" if rem_port != 3389 else rem_ip
+                        sessions.append({
+                            "id": out_idx,
+                            "username": u_name,
+                            "sessionName": f"mstsc -> {target_label}",
+                            "type": f"Исходящий RDP ({rem_ip})",
+                            "state": "Active",
+                            "idleTime": "0 мин",
+                            "logonTime": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+                            "clientIp": rem_ip
+                        })
+                        out_idx += 1
+        except Exception:
+            pass
+    else:
+        try:
+            out = subprocess.check_output("who -u || w -h", shell=True, text=True, timeout=2)
+            idx = 1
+            for line in out.splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2:
+                    u_name = parts[0]
+                    tty = parts[1]
+                    is_remote = ":" in tty or "pts" in tty
+                    sessions.append({
+                        "id": idx,
+                        "username": u_name,
+                        "sessionName": tty,
+                        "type": "SSH / Remote" if is_remote else "Локальный сеанс",
+                        "state": "Active",
+                        "idleTime": parts[4] if len(parts) >= 5 and parts[4] != "." else "0 мин",
+                        "logonTime": f"{parts[2]} {parts[3]}" if len(parts) >= 4 else datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
+                        "clientIp": parts[-1].strip("()") if (len(parts) >= 6 and parts[-1].startswith("(") and parts[-1].endswith(")")) else ""
+                    })
+                    idx += 1
+        except Exception:
+            pass
+
+    return sessions
 
 def get_current_user():
     # 1. Try psutil users
@@ -1323,7 +1442,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.4.4"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.4.5"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:

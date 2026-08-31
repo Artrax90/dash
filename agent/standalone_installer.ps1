@@ -431,7 +431,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.4.4'
+`$AgentVersion = '2.4.5'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -442,9 +442,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.4.4") {
+function Update-AgentService([string]`$targetVer = "2.4.5") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.4.4"
+        `$targetVer = "2.4.5"
     }
     try {
         # 1. Report update in progress
@@ -508,7 +508,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.4.4"
+        Update-AgentService "2.4.5"
         return
     }
 
@@ -560,9 +560,41 @@ function Get-LiveRdpSessions() {
     `$seenIds = @{}
     `$primaryUser = ''
 
-    # 1. Incoming sessions via quser
+    # 0. Detect primary desktop user if running under SYSTEM
     try {
-        `$quserOut = quser 2>&1 | Out-String
+        `$cs = Get-CimInstance Win32_ComputerSystem -ErrorAction SilentlyContinue | Select-Object -First 1
+        if (`$cs -and `$cs.UserName) {
+            `$primaryUser = `$cs.UserName.Split("\")[-1]
+        }
+        if (-not `$primaryUser) {
+            `$expProc = Get-CimInstance Win32_Process -Filter "Name='explorer.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (`$expProc) {
+                `$expOwner = Invoke-CimMethod -InputObject `$expProc -MethodName GetOwner -ErrorAction SilentlyContinue
+                if (`$expOwner -and `$expOwner.User) { `$primaryUser = `$expOwner.User }
+            }
+        }
+    } catch {}
+
+    # 1. Incoming sessions via quser (with full path & OEM 866 support)
+    try {
+        `$quserExe = Join-Path `$env:SystemRoot "System32\quser.exe"
+        `$quserOut = ""
+        if (Test-Path `$quserExe) {
+            try {
+                `$pinfo = New-Object System.Diagnostics.ProcessStartInfo
+                `$pinfo.FileName = `$quserExe
+                `$pinfo.RedirectStandardOutput = `$true
+                `$pinfo.UseShellExecute = `$false
+                `$pinfo.StandardOutputEncoding = [System.Text.Encoding]::GetEncoding(866)
+                `$p = [System.Diagnostics.Process]::Start(`$pinfo)
+                `$quserOut = `$p.StandardOutput.ReadToEnd()
+                `$p.WaitForExit()
+            } catch {}
+        }
+        if (-not `$quserOut) {
+            `$quserOut = quser 2>&1 | Out-String
+        }
+
         if (`$quserOut -and `$quserOut -notmatch 'не найден|No User exists') {
             `$lines = `$quserOut -split '[\r\n]+' | Where-Object { `$_.Trim() -ne '' }
             if (`$lines.Count -gt 1) {
@@ -570,7 +602,7 @@ function Get-LiveRdpSessions() {
                     `$line = `$lines[`$i]
                     `$clean = `$line.TrimStart('>').Trim()
                     `$parts = -split `$clean
-                    if (`$parts.Count -ge 4) {
+                    if (`$parts.Count -ge 3) {
                         `$uName = `$parts[0]
                         if (-not `$primaryUser -and `$uName -notmatch '\$$') { `$primaryUser = `$uName }
                         `$sessName = ''
@@ -623,7 +655,8 @@ function Get-LiveRdpSessions() {
 
     # 2. Fallback to qwinsta for any active/disconnected sessions
     try {
-        `$qwinstaRaw = & qwinsta.exe 2>&1
+        `$qwinstaExe = Join-Path `$env:SystemRoot "System32\qwinsta.exe"
+        `$qwinstaRaw = if (Test-Path `$qwinstaExe) { & `$qwinstaExe 2>&1 } else { qwinsta 2>&1 }
         foreach (`$rawLine in `$qwinstaRaw) {
             `$line = `$rawLine.ToString().Trim()
             if (-not `$line -or `$line.StartsWith('SESSIONNAME') -or `$line.StartsWith('СЕАНС') -or `$line.StartsWith('---')) { continue }
@@ -661,37 +694,74 @@ function Get-LiveRdpSessions() {
         }
     } catch {}
 
-    # 3. Outgoing RDP client connections (all mstsc.exe processes and port 3389 connections)
+    # 3. Outgoing RDP client connections (mstsc.exe, msrdc.exe, RemoteDesktop.exe processes & connections)
     try {
-        `$mstscProcesses = @(Get-CimInstance Win32_Process -Filter "name='mstsc.exe'" -ErrorAction SilentlyContinue)
-        if (`$mstscProcesses.Count -eq 0) {
-            `$mstscProcesses = @(Get-WmiObject Win32_Process -Filter "name='mstsc.exe'" -ErrorAction SilentlyContinue)
+        `$rdpProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            `$_.Name -match '(?i)^(mstsc|msrdc|RemoteDesktop)\.exe$'
+        })
+        if (`$rdpProcs.Count -eq 0) {
+            `$rdpProcs = @(Get-Process -Name "mstsc", "msrdc", "RemoteDesktop" -ErrorAction SilentlyContinue)
         }
         
         `$mstscOwners = @{}
-        foreach (`$mp in `$mstscProcesses) {
+        foreach (`$mp in `$rdpProcs) {
+            `$pId = if (`$mp.ProcessId) { `$mp.ProcessId } else { `$mp.Id }
             try {
                 `$owner = Invoke-CimMethod -InputObject `$mp -MethodName GetOwner -ErrorAction SilentlyContinue
                 if (`$owner -and `$owner.User) {
-                    `$mstscOwners[`$mp.ProcessId] = `$owner.User
+                    `$mstscOwners[`$pId] = `$owner.User
                     if (-not `$primaryUser) { `$primaryUser = `$owner.User }
                 }
             } catch {}
         }
 
-        # Query all active network connections
-        `$allTcp = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
-        `$mstscPids = @(`$mstscProcesses | ForEach-Object { `$_.ProcessId })
+        # Query TCP connections via netstat (universal & reliable across all Windows OS)
+        `$allTcp = @()
+        try {
+            `$netLines = netstat -ano -p tcp | Select-String "ESTABLISHED"
+            foreach (`$nl in `$netLines) {
+                `$parts = -split `$nl.Line.Trim()
+                if (`$parts.Count -ge 5) {
+                    `$loc = `$parts[1]
+                    `$rem = `$parts[2]
+                    `$pidNum = [int]`$parts[4]
+                    `$rPort = if (`$rem.Contains(':')) { [int]`$rem.Split(':')[-1] } else { 0 }
+                    `$allTcp += [PSCustomObject]@{
+                        Local = `$loc
+                        Remote = `$rem
+                        RemoteAddress = `$rem.Split(':')[0]
+                        RemotePort = `$rPort
+                        OwningProcess = `$pidNum
+                    }
+                }
+            }
+        } catch {}
+
+        # Also merge with Get-NetTCPConnection if available
+        try {
+            `$netConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue
+            foreach (`$nc in `$netConns) {
+                `$allTcp += [PSCustomObject]@{
+                    Local = (`$nc.LocalAddress + ":" + `$nc.LocalPort)
+                    Remote = (`$nc.RemoteAddress + ":" + `$nc.RemotePort)
+                    RemoteAddress = `$nc.RemoteAddress
+                    RemotePort = [int]`$nc.RemotePort
+                    OwningProcess = [int]`$nc.OwningProcess
+                }
+            }
+        } catch {}
+
+        `$mstscPids = @(`$rdpProcs | ForEach-Object { if (`$_.ProcessId) { `$_.ProcessId } else { `$_.Id } })
         `$seenTargetKeys = @{}
         `$outIdx = 100
 
-        # Pass 3A: Every established connection from an mstsc process or to port 3389
+        # Pass 3A: Every established connection from an mstsc/msrdc process or to remote port 3389
         foreach (`$conn in `$allTcp) {
             `$isMstscPid = (`$mstscPids -contains `$conn.OwningProcess)
-            `$isPort3389 = (`$conn.RemotePort -eq 3389)
+            `$isPort3389 = (`$conn.RemotePort -ge 3389 -and `$conn.RemotePort -le 3399)
             if (`$isMstscPid -or `$isPort3389) {
                 `$remIp = `$conn.RemoteAddress
-                if (-not `$remIp -or `$remIp -eq '0.0.0.0' -or `$remIp -eq '127.0.0.1' -or `$remIp -eq '::1') { continue }
+                if (-not `$remIp -or `$remIp -match '^(0\.0\.0\.0|127\.0\.0\.1|::1)$') { continue }
                 `$targetKey = `$remIp + ':' + `$conn.RemotePort + ':' + `$conn.OwningProcess
                 if (`$seenTargetKeys.ContainsKey(`$targetKey)) { continue }
                 `$seenTargetKeys[`$targetKey] = `$true
@@ -716,8 +786,8 @@ function Get-LiveRdpSessions() {
         }
 
         # Pass 3B: If an mstsc process exists but had no Established TCP socket in the exact polling moment
-        foreach (`$mp in `$mstscProcesses) {
-            `$pidVal = `$mp.ProcessId
+        foreach (`$mp in `$rdpProcs) {
+            `$pidVal = if (`$mp.ProcessId) { `$mp.ProcessId } else { `$mp.Id }
             `$foundInTcp = `$false
             foreach (`$k in `$seenTargetKeys.Keys) {
                 if (`$k.EndsWith(':' + `$pidVal)) { `$foundInTcp = `$true; break }
@@ -781,7 +851,7 @@ function Get-LiveRdpSessions() {
         }
     } catch {}
 
-    return `$sessions
+    return @(`$sessions)
 }
 
 `$script:lastRamCount = -1

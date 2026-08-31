@@ -937,7 +937,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
             if "rdpSessions" in payload and isinstance(payload["rdpSessions"], list):
                 from backend.app.api.v1.sessions import update_device_sessions
-                update_device_sessions(device.id, payload["rdpSessions"])
+                update_device_sessions(device.id, payload["rdpSessions"], hostname=device.hostname)
                 if len(payload["rdpSessions"]) > 0:
                     device.rdp_status = RdpStatus.ACTIVE
                 else:
