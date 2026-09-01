@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.6.4"
+    agentVersion = "2.6.5"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -443,7 +443,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.6.4'
+`$AgentVersion = '2.6.5'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -458,9 +458,9 @@ try {
     Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class WtsHelper { [DllImport("wtsapi32.dll", SetLastError = true)] public static extern bool WTSLogoffSession(IntPtr hServer, int sessionId, bool bWait); [DllImport("wtsapi32.dll", SetLastError = true)] public static extern bool WTSDisconnectSession(IntPtr hServer, int sessionId, bool bWait); }' -ErrorAction SilentlyContinue
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.6.4") {
+function Update-AgentService([string]`$targetVer = "2.6.5") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.6.4"
+        `$targetVer = "2.6.5"
     }
     try {
         # 1. Report update in progress
@@ -542,7 +542,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.6.4"
+        Update-AgentService "2.6.5"
         return
     }
 
@@ -1459,11 +1459,6 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             if (`$respObj -and `$respObj.heartbeatInterval) {
                 `$script:currentInterval = [int]`$respObj.heartbeatInterval
             }
-            # Auto update check: if server announces newer version, auto-trigger update!
-            if (`$respObj -and `$respObj.latestVersion -and (`$respObj.latestVersion -ne `$AgentVersion)) {
-                Update-AgentService (`$respObj.latestVersion)
-                return `$true
-            }
             if (`$respObj -and `$respObj.pendingCommands) {
                 foreach (`$cmd in `$respObj.pendingCommands) {
                     if (`$cmd.action -match 'UPDATE') {
@@ -1472,6 +1467,11 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                         Execute-PowerCommand `$cmd.action `$false `$cmd
                     }
                 }
+            }
+            # Auto update check: if server announces newer version, auto-trigger update!
+            if (`$respObj -and `$respObj.latestVersion -and (`$respObj.latestVersion -ne `$AgentVersion)) {
+                Update-AgentService (`$respObj.latestVersion)
+                return `$true
             }
             return `$true
         }
@@ -1882,7 +1882,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.6.4"
+    agentVersion = "2.6.5"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

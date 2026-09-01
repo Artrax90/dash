@@ -493,15 +493,6 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     # Already open alert exists, do not duplicate
                     continue
 
-                if any(
-                    a.get("deviceId") == real_device_id and
-                    a.get("type") == "HARDWARE_MISMATCH" and
-                    a.get("state") == "Open" and
-                    (a.get("description") == alert_desc or c.get("currentValue", "---") in a.get("description", ""))
-                    for a in alerts_db
-                ):
-                    continue
-
                 if dev:
                     if str(c["severity"]).lower() == "critical":
                         dev.health_status = HealthStatus.CRITICAL
