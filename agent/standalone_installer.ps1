@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.6.7"
+    agentVersion = "2.6.8"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -610,12 +610,32 @@ public class WtsManagerService
             {
                 matches = true;
             }
+            // If no user specified or targetSessionId >= 100 or user is empty (disconnected session)
+            if (string.IsNullOrEmpty(cleanTargetUser) || string.IsNullOrEmpty(u))
+            {
+                matches = true;
+            }
 
             if (matches)
             {
                 bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, true);
                 if (ok) count++;
             }
+        }
+        return count;
+    }
+
+    public static int LogoffAllRemoteSessions()
+    {
+        int count = 0;
+        List<SessionData> sessions = GetSessions();
+        foreach (SessionData s in sessions)
+        {
+            if (s.SessionId <= 0 || s.SessionId >= 65535) continue;
+            if (!string.IsNullOrEmpty(s.WinStationName) && s.WinStationName.IndexOf("console", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+            bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, true);
+            if (ok) count++;
         }
         return count;
     }
@@ -634,7 +654,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.6.7'
+`$AgentVersion = '2.6.8'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -652,9 +672,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.6.7") {
+function Update-AgentService([string]`$targetVer = "2.6.8") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.6.7"
+        `$targetVer = "2.6.8"
     }
     try {
         # 1. Report update in progress
@@ -736,7 +756,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.6.7"
+        Update-AgentService "2.6.8"
         return
     }
 
@@ -829,6 +849,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         try {
             if ([WtsManagerService]) {
                 [WtsManagerService]::LogoffUserOrSession(`$targetUser, (if (`$targetSessId) { `$targetSessId } else { 0 }))
+                [WtsManagerService]::LogoffAllRemoteSessions()
             }
         } catch {}
 
@@ -866,10 +887,10 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
                 }
             } catch {}
 
-            # Direct fallback RPC attempts
-            if (`$targetSessId -ne `$null -and `$targetSessId -lt 100 -and `$targetSessId -gt 0) {
-                try { & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId /server:`$remHost /v 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId /server:`$remHost /v 2>`$null } catch {}
+            # Direct fallback RPC attempts for common terminal session IDs
+            1..10 | ForEach-Object {
+                try { & "`$env:SystemRoot\System32\logoff.exe" `$_ /server:`$remHost /v 2>`$null } catch {}
+                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$_ /server:`$remHost /v 2>`$null } catch {}
             }
             try { & "`$env:SystemRoot\System32\logoff.exe" /server:`$remHost /v 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\rwinsta.exe" /server:`$remHost /v 2>`$null } catch {}
@@ -2159,7 +2180,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.6.7"
+    agentVersion = "2.6.8"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
