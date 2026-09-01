@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.6.5"
+    agentVersion = "2.6.6"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -433,6 +433,197 @@ try {
         }
     } catch {}
 
+    # WTS Manager C# Helper
+    $wtsManagerCsCode = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public class WtsManagerService
+{
+    private static readonly IntPtr WTS_CURRENT_SERVER_HANDLE = IntPtr.Zero;
+
+    [DllImport("wtsapi32.dll", EntryPoint = "WTSEnumerateSessionsW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool WTSEnumerateSessions(
+        IntPtr hServer,
+        [MarshalAs(UnmanagedType.U4)] int Reserved,
+        [MarshalAs(UnmanagedType.U4)] int Version,
+        ref IntPtr ppSessionInfo,
+        [MarshalAs(UnmanagedType.U4)] ref int pCount);
+
+    [DllImport("wtsapi32.dll", EntryPoint = "WTSQuerySessionInformationW", CharSet = CharSet.Unicode, SetLastError = true)]
+    private static extern bool WTSQuerySessionInformation(
+        IntPtr hServer,
+        int sessionId,
+        WTS_INFO_CLASS wtsInfoClass,
+        out IntPtr ppBuffer,
+        out int pBytesReturned);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    public static extern bool WTSLogoffSession(
+        IntPtr hServer,
+        int SessionId,
+        bool bWait);
+
+    [DllImport("wtsapi32.dll", SetLastError = true)]
+    public static extern bool WTSDisconnectSession(
+        IntPtr hServer,
+        int SessionId,
+        bool bWait);
+
+    [DllImport("wtsapi32.dll")]
+    private static extern void WTSFreeMemory(IntPtr pMemory);
+
+    public enum WTS_INFO_CLASS
+    {
+        WTSInitialProgram,
+        WTSApplicationName,
+        WTSWorkingDirectory,
+        WTSOEMId,
+        WTSSessionId,
+        WTSUserName,
+        WTSWinStationName,
+        WTSDomainName,
+        WTSConnectState,
+        WTSClientBuildNumber,
+        WTSClientName,
+        WTSClientDirectory,
+        WTSClientProductId,
+        WTSClientHardwareId,
+        WTSClientAddress,
+        WTSClientDisplay,
+        WTSClientProtocolType
+    }
+
+    public enum WTS_CONNECTSTATE_CLASS
+    {
+        WTSActive,
+        WTSConnected,
+        WTSConnectQuery,
+        WTSShadow,
+        WTSDisconnected,
+        WTSIdle,
+        WTSListen,
+        WTSReset,
+        WTSDown,
+        WTSInit
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct WTS_SESSION_INFO
+    {
+        public int SessionId;
+        [MarshalAs(UnmanagedType.LPWStr)]
+        public string pWinStationName;
+        public WTS_CONNECTSTATE_CLASS State;
+    }
+
+    public class SessionData
+    {
+        public int SessionId;
+        public string WinStationName;
+        public string UserName;
+        public string DomainName;
+        public string State;
+    }
+
+    public static List<SessionData> GetSessions()
+    {
+        List<SessionData> list = new List<SessionData>();
+        IntPtr ppSessionInfo = IntPtr.Zero;
+        int count = 0;
+
+        if (WTSEnumerateSessions(WTS_CURRENT_SERVER_HANDLE, 0, 1, ref ppSessionInfo, ref count))
+        {
+            int dataSize = Marshal.SizeOf(typeof(WTS_SESSION_INFO));
+            long current = ppSessionInfo.ToInt64();
+
+            for (int i = 0; i < count; i++)
+            {
+                WTS_SESSION_INFO si = (WTS_SESSION_INFO)Marshal.PtrToStructure(new IntPtr(current), typeof(WTS_SESSION_INFO));
+                current += dataSize;
+
+                string userName = QuerySessionStr(si.SessionId, WTS_INFO_CLASS.WTSUserName);
+                string domainName = QuerySessionStr(si.SessionId, WTS_INFO_CLASS.WTSDomainName);
+                string winStation = QuerySessionStr(si.SessionId, WTS_INFO_CLASS.WTSWinStationName);
+                if (string.IsNullOrEmpty(winStation)) winStation = si.pWinStationName;
+
+                list.Add(new SessionData
+                {
+                    SessionId = si.SessionId,
+                    WinStationName = winStation ?? "",
+                    UserName = userName ?? "",
+                    DomainName = domainName ?? "",
+                    State = si.State.ToString()
+                });
+            }
+            WTSFreeMemory(ppSessionInfo);
+        }
+        return list;
+    }
+
+    private static string QuerySessionStr(int sessionId, WTS_INFO_CLASS infoClass)
+    {
+        IntPtr buffer = IntPtr.Zero;
+        int bytesReturned = 0;
+        try
+        {
+            if (WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sessionId, infoClass, out buffer, out bytesReturned) && buffer != IntPtr.Zero)
+            {
+                return Marshal.PtrToStringUni(buffer);
+            }
+        }
+        catch { }
+        finally
+        {
+            if (buffer != IntPtr.Zero) WTSFreeMemory(buffer);
+        }
+        return "";
+    }
+
+    public static int LogoffUserOrSession(string targetUser, int targetSessionId)
+    {
+        int count = 0;
+        string cleanTargetUser = "";
+        if (!string.IsNullOrEmpty(targetUser))
+        {
+            cleanTargetUser = targetUser.Trim().ToLower();
+            int slashIdx = cleanTargetUser.IndexOf('\\');
+            if (slashIdx >= 0) cleanTargetUser = cleanTargetUser.Substring(slashIdx + 1);
+        }
+
+        List<SessionData> sessions = GetSessions();
+        foreach (SessionData s in sessions)
+        {
+            if (s.SessionId == 0 || s.SessionId >= 65535) continue;
+            // STRICTLY PROTECT PHYSICAL CONSOLE
+            if (!string.IsNullOrEmpty(s.WinStationName) && s.WinStationName.IndexOf("console", StringComparison.OrdinalIgnoreCase) >= 0) continue;
+
+            bool matches = false;
+            string u = (s.UserName ?? "").Trim().ToLower();
+
+            if (!string.IsNullOrEmpty(cleanTargetUser) && (u == cleanTargetUser || u.IndexOf(cleanTargetUser) >= 0))
+            {
+                matches = true;
+            }
+            if (targetSessionId > 0 && targetSessionId < 100 && s.SessionId == targetSessionId)
+            {
+                matches = true;
+            }
+
+            if (matches)
+            {
+                bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, true);
+                if (ok) count++;
+            }
+        }
+        return count;
+    }
+}
+'@
+    $wtsCsFile = Join-Path $InstallDir "WtsManager.cs"
+    [System.IO.File]::WriteAllText($wtsCsFile, $wtsManagerCsCode, [System.Text.Encoding]::UTF8)
+
     # Service script
     $runServiceScript = Join-Path $InstallDir "run_service.ps1"
     $serviceScriptCode = @"
@@ -443,7 +634,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.6.5'
+`$AgentVersion = '2.6.6'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -455,12 +646,15 @@ if (-not `$createdNew) {
 }
 
 try {
-    Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class WtsHelper { [DllImport("wtsapi32.dll", SetLastError = true)] public static extern bool WTSLogoffSession(IntPtr hServer, int sessionId, bool bWait); [DllImport("wtsapi32.dll", SetLastError = true)] public static extern bool WTSDisconnectSession(IntPtr hServer, int sessionId, bool bWait); }' -ErrorAction SilentlyContinue
+    `$csPath = Join-Path '$InstallDir' "WtsManager.cs"
+    if (Test-Path `$csPath) {
+        Add-Type -Path `$csPath -ErrorAction SilentlyContinue
+    }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.6.5") {
+function Update-AgentService([string]`$targetVer = "2.6.6") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.6.5"
+        `$targetVer = "2.6.6"
     }
     try {
         # 1. Report update in progress
@@ -542,7 +736,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.6.5"
+        Update-AgentService "2.6.6"
         return
     }
 
@@ -631,7 +825,14 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (`$cmdObj -and `$cmdObj.username) { `$targetUser = `$cmdObj.username.Trim().ToLower() -replace '.*\\', '' }
         if (`$cmdObj -and `$cmdObj.user) { `$targetUser = `$cmdObj.user.Trim().ToLower() -replace '.*\\', '' }
 
-        # 1. If remote host is specified, send remote logoff/rwinsta to that remote server via RPC
+        # 1. Direct Win32 Terminal Services API Kernel Logoff via WtsManagerService
+        try {
+            if ([WtsManagerService]) {
+                [WtsManagerService]::LogoffUserOrSession(`$targetUser, (if (`$targetSessId) { `$targetSessId } else { 0 }))
+            }
+        } catch {}
+
+        # 2. If remote host is specified, send remote logoff/rwinsta to that remote server via RPC
         if (`$remHost) {
             try { & "`$env:SystemRoot\System32\logoff.exe" /server:`$remHost 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\rwinsta.exe" /server:`$remHost 2>`$null } catch {}
@@ -641,10 +842,10 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
             }
         }
 
-        # 2. Local terminal session logoff (STRICTLY for incoming RDP sessions, NEVER console!)
+        # 3. Local terminal session logoff (STRICTLY for incoming RDP sessions, NEVER console!)
         `$idsToLogoff = @()
 
-        # 2a. Check QWINSTA
+        # 3a. Check QWINSTA
         try {
             `$qwLines = @(qwinsta 2>`$null)
             foreach (`$line in `$qwLines) {
@@ -670,7 +871,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
             }
         } catch {}
 
-        # 2b. Check QUSER
+        # 3b. Check QUSER
         try {
             `$quLines = @(quser 2>`$null)
             foreach (`$ql in `$quLines) {
@@ -690,16 +891,15 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
             }
         } catch {}
 
-        # Execute logoff for all matched RDP session IDs via Win32 API and system CLI
+        # Execute logoff for all matched RDP session IDs via system CLI
         foreach (`$sId in (`$idsToLogoff | Select-Object -Unique)) {
-            try { [WtsHelper]::WTSLogoffSession([IntPtr]::Zero, `$sId, `$false) } catch {}
             try { & "`$env:SystemRoot\System32\logoff.exe" `$sId 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\logoff.exe" "`$sId" /v 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\rwinsta.exe" `$sId 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\reset.exe" session `$sId 2>`$null } catch {}
         }
 
-        # 3. Terminate ONLY the specific local mstsc/msrdc client process for this outgoing RDP
+        # 4. Terminate ONLY the specific local mstsc/msrdc client process for this outgoing RDP
         `$pidsToKill = @()
         if (`$targetPid -and `$targetPid -gt 0) {
             `$pidsToKill += [int]`$targetPid
@@ -752,6 +952,35 @@ function Get-LiveRdpSessions() {
             if (`$expProc) {
                 `$expOwner = Invoke-CimMethod -InputObject `$expProc -MethodName GetOwner -ErrorAction SilentlyContinue
                 if (`$expOwner -and `$expOwner.User) { `$primaryUser = `$expOwner.User }
+            }
+        }
+    } catch {}
+
+    # 0.1 Native WTS API Discovery (Direct Kernel API, 100% Reliable)
+    try {
+        if ([WtsManagerService]) {
+            `$wList = [WtsManagerService]::GetSessions()
+            foreach (`$ws in `$wList) {
+                if (`$ws.SessionId -gt 0 -and `$ws.SessionId -lt 65535 -and `$ws.WinStationName -notmatch "(?i)console") {
+                    `$u = `$ws.UserName
+                    if (-not `$u) { `$u = `$primaryUser }
+                    if (-not `$u) { `$u = 'Unknown' }
+
+                    `$stdState = if (`$ws.State -match "(?i)Disc") { 'Disconnected' } else { 'Active' }
+                    `$sObj = @{
+                        id = `$ws.SessionId
+                        deviceId = `$DeviceId
+                        username = `$u
+                        sessionName = if (`$ws.WinStationName) { `$ws.WinStationName } else { ('rdp-tcp#' + `$ws.SessionId) }
+                        type = 'Входящий RDP'
+                        state = `$stdState
+                        idleTime = '0 мин'
+                        logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+                        clientIp = ''
+                    }
+                    `$sessions += `$sObj
+                    `$seenIds[`$ws.SessionId] = `$true
+                }
             }
         }
     } catch {}
@@ -1882,7 +2111,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.6.5"
+    agentVersion = "2.6.6"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
