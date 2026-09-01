@@ -171,6 +171,7 @@ export interface Device {
   hardwareChangesCount?: number;
   alertPolicy?: AlertPolicy;
   executionProfile?: ExecutionProfile;
+  rdpSessions?: RdpSession[];
 }
 
 export interface RdpSession {

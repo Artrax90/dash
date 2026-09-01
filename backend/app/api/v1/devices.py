@@ -243,6 +243,18 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
             except Exception:
                 upd_status = "idle"
 
+    from backend.app.api.v1.sessions import live_device_sessions
+    live_sessions = (
+        live_device_sessions.get(d.id) or
+        live_device_sessions.get(d.id.upper()) or
+        live_device_sessions.get(d.id.lower()) or
+        (live_device_sessions.get(d.hostname) if d.hostname else None) or
+        (live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
+        (live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
+        (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
+        []
+    )
+
     return {
         "id": d.id,
         "name": d.name,
@@ -260,20 +272,10 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "currentUser": (d.current_user or "—") if is_online else "—",
         "powerStatus": effective_power,
         "agentStatus": effective_agent,
+        "rdpSessions": live_sessions if is_online else [],
         "rdpStatus": (
-            (lambda s_list: f"Активен ({len(s_list)})" if len(s_list) > 0 else (
+            f"Активен ({len(live_sessions)})" if len(live_sessions) > 0 else (
                 "Активен" if str(d.rdp_status).lower() in ["active", "running", "активен"] else (d.rdp_status.value if hasattr(d.rdp_status, 'value') else str(d.rdp_status))
-            ))(
-                (lambda: (
-                    __import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id) or
-                    __import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id.upper()) or
-                    __import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id.lower()) or
-                    (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.hostname) if d.hostname else None) or
-                    (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
-                    (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
-                    (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.ip_address) if d.ip_address else None) or
-                    []
-                ))()
             )
         ) if is_online else "Closed",
         "healthStatus": effective_health,

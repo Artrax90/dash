@@ -534,7 +534,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.4.7</span>
+            <span>v2.4.8</span>
           </div>
         </div>
       </div>
@@ -608,7 +608,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.4.7</span>
+          <span style={{ color: '#475569' }}>v2.4.8</span>
         </div>
       </div>
     </div>
@@ -1648,7 +1648,7 @@ function DeviceTable({
                           {device.id}{device.name !== device.hostname ? ` · ${device.hostname}` : ''} · {device.ip}
                           {device.isOutdated && (
                             <span style={{ marginLeft: '6px', color: 'var(--yellow)', fontWeight: 600 }}>
-                              · v{device.agentVersion || '1.4.2'} (Доступно v{device.latestAgentVersion || '2.4.7'})
+                              · v{device.agentVersion || '1.4.2'} (Доступно v{device.latestAgentVersion || '2.4.8'})
                             </span>
                           )}
                         </small>
@@ -1728,7 +1728,7 @@ function DeviceTable({
                             onAction(`Команда обновления агента отправлена на ${device.name}`);
                           }}
                         >
-                          <RotateCw size={14} style={{ color: 'var(--blue)' }} /> Обновить агент (до v{device.latestAgentVersion || '2.4.7'})
+                          <RotateCw size={14} style={{ color: 'var(--blue)' }} /> Обновить агент (до v{device.latestAgentVersion || '2.4.8'})
                         </button>
                         {onEditMetadata && (
                           <button
@@ -2567,7 +2567,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
             style={device.isOutdated ? { borderColor: 'rgba(234,179,8,0.4)', color: 'var(--yellow)', background: 'rgba(234,179,8,0.06)' } : undefined}
             title="Удаленно обновить службу агента по сети (OTA)"
           >
-            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.4.7'})` : 'Обновить агент')}
+            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.4.8'})` : 'Обновить агент')}
           </Button>
           <Button
             primary
@@ -2675,7 +2675,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <strong>v{device.agentVersion || '1.4.2'}</strong>
                   {device.isOutdated ? (
                     <span className="badge" style={{ background: 'rgba(234, 179, 8, 0.15)', color: 'var(--yellow)', fontWeight: 600, fontSize: '10px' }}>
-                      Доступно v{device.latestAgentVersion || '2.4.7'}
+                      Доступно v{device.latestAgentVersion || '2.4.8'}
                     </span>
                   ) : (
                     <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)', fontWeight: 600, fontSize: '10px' }}>
@@ -2997,7 +2997,15 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
         </div>
       )}
 
-      {tab === 'Monitoring' && <DeviceMonitoringTab device={device} spec={spec} notify={notify} />}
+      {tab === 'Monitoring' && (
+        <DeviceMonitoringTab
+          device={device}
+          spec={spec}
+          sessions={sessions}
+          onResetSession={handleResetSession}
+          notify={notify}
+        />
+      )}
       {tab === 'RDP Sessions' && (
         <section className="panel table-panel">
           <div className="panel-heading">
@@ -3263,10 +3271,14 @@ function SessionTable({
 function DeviceMonitoringTab({
   device,
   spec,
+  sessions = [],
+  onResetSession,
   notify
 }: {
   device: Device;
   spec?: HardwareSpec;
+  sessions?: RdpSession[];
+  onResetSession?: (sessionId: number) => void;
   notify?: (msg: string) => void;
 }) {
   const [timeRange, setTimeRange] = useState<'1h' | '6h' | '24h' | '7d'>('1h');
@@ -3460,7 +3472,7 @@ function DeviceMonitoringTab({
               <span className="device-telemetry-sep">·</span>
               <span>IP: <span className="device-telemetry-chip">{device.ip}</span></span>
               <span className="device-telemetry-sep">·</span>
-              <span>Агент v1.4.2</span>
+              <span>Агент v{device.agentVersion || '2.4.8'}</span>
               <span>Uptime: <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{formatLiveUptime(device.uptime, device.bootTimeIso, device.powerStatus === 'On')}</span></span>
               {device.bootTimeIso && device.powerStatus === 'On' && (
                 <>
@@ -3689,6 +3701,25 @@ function DeviceMonitoringTab({
             </div>
           </div>
         </div>
+      </section>
+
+      {/* Live RDP Sessions Panel in Device Monitoring Tab */}
+      <section className="panel rdp-panel">
+        <div className="panel-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h2>{t('devices.rdpSessions')}</h2>
+            <p>Текущие терминальные и удаленные сеансы на рабочей станции {device.name}</p>
+          </div>
+          <StatusPill status={sessions && sessions.length > 0 ? `Активен (${sessions.length})` : (device.rdpStatus || 'Stopped')} />
+        </div>
+        {sessions && sessions.length > 0 ? (
+          <SessionTable sessions={sessions} onResetSession={onResetSession} onAction={notify} />
+        ) : (
+          <div className="empty-state" style={{ minHeight: '130px' }}>
+            <Monitor size={22} />
+            <div>Нет активных RDP сессий на данной рабочей станции</div>
+          </div>
+        )}
       </section>
 
       {/* Top Running Processes for THIS PC */}
@@ -3949,6 +3980,19 @@ function Monitoring({
     ? Math.max(...scopeOnlineDevices.map(d => d.cpu))
     : 0;
 
+  const totalRdpSessions = scopeOnlineDevices.reduce((sum, d) => {
+    if (d.rdpSessions && Array.isArray(d.rdpSessions)) return sum + d.rdpSessions.length;
+    const match = (d.rdpStatus || '').match(/\((\d+)\)/);
+    if (match) return sum + parseInt(match[1], 10);
+    if (String(d.rdpStatus).toLowerCase().includes('актив') || String(d.rdpStatus).toLowerCase().includes('active')) return sum + 1;
+    return sum;
+  }, 0);
+
+  const devicesWithRdp = scopeOnlineDevices.filter(d => {
+    return (d.rdpSessions && d.rdpSessions.length > 0) ||
+      (d.rdpStatus && (d.rdpStatus.toLowerCase().includes('актив') || d.rdpStatus.toLowerCase().includes('active')));
+  });
+
   // Helper to reliably get device storage capacity
   const getDeviceStorageCapacity = (d: Device): number => {
     if (d.hardware?.storage && Array.isArray(d.hardware.storage) && d.hardware.storage.length > 0) {
@@ -4159,6 +4203,36 @@ function Monitoring({
               ) : (
                 <span className="muted-text">
                   Все станции выключены (офлайн)
+                </span>
+              )}
+            </div>
+          </div>
+        </div>
+
+        {/* Card 5: RDP Sessions & Active Connections */}
+        <div className="monitoring-card-modern">
+          <div className="monitoring-card-header">
+            <span className="monitoring-card-title">RDP Сессии & Сеансы</span>
+            <div className="monitoring-card-icon blue"><Monitor size={18} /></div>
+          </div>
+          <div>
+            <div className="monitoring-card-value">
+              {totalRdpSessions} <small style={{ fontSize: '14px', fontWeight: 500 }}>активных</small>
+            </div>
+            <div className="telemetry-progress-track" style={{ margin: '8px 0' }}>
+              <div
+                className="telemetry-progress-fill normal"
+                style={{ width: `${Math.min(100, (devicesWithRdp.length / Math.max(1, scopeOnlineDevices.length)) * 100)}%` }}
+              />
+            </div>
+            <div className="monitoring-card-sub">
+              {totalRdpSessions > 0 ? (
+                <span style={{ color: 'var(--blue)', fontWeight: 600 }}>
+                  🟢 {devicesWithRdp.length} ПК с активными RDP сессиями
+                </span>
+              ) : (
+                <span className="muted-text">
+                  Все терминальные сеансы завершены (0 сессий)
                 </span>
               )}
             </div>
@@ -4448,11 +4522,24 @@ function Monitoring({
                       <td>
                         <div>
                           <strong>{d.currentUser || '—'}</strong>
-                          {d.rdpStatus && d.rdpStatus !== 'None' && (
-                            <small style={{ display: 'block', color: 'var(--blue)', fontSize: '10px' }}>
-                              RDP {d.rdpStatus}
-                            </small>
-                          )}
+                          {(() => {
+                            const sessCount = (d.rdpSessions && d.rdpSessions.length) || (
+                              d.rdpStatus && d.rdpStatus.match(/\((\d+)\)/) ? parseInt(d.rdpStatus.match(/\((\d+)\)/)![1], 10) : 0
+                            );
+                            const isActive = sessCount > 0 || (d.rdpStatus && (d.rdpStatus.toLowerCase().includes('актив') || d.rdpStatus.toLowerCase().includes('active')));
+                            if (isActive) {
+                              return (
+                                <span className="status-pill active" style={{ display: 'inline-flex', fontSize: '10px', padding: '2px 6px', marginTop: '3px' }}>
+                                  <i /> RDP {sessCount > 0 ? `Активен (${sessCount})` : (d.rdpStatus || 'Активен')}
+                                </span>
+                              );
+                            }
+                            return (
+                              <small style={{ display: 'block', color: 'var(--muted)', fontSize: '10px', marginTop: '2px' }}>
+                                RDP: {d.rdpStatus || 'Отключен'}
+                              </small>
+                            );
+                          })()}
                         </div>
                       </td>
 
@@ -9190,14 +9277,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 onClick={() => setFleetFilter('outdated')}
                 style={{ fontSize: '11px', padding: '4px 10px', color: fleetFilter !== 'outdated' && (versionInfo?.outdatedCount ?? 0) > 0 ? 'var(--yellow)' : undefined }}
               >
-                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.4.7')).length})
+                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.4.8')).length})
               </button>
               <button
                 className={`filter-button ${fleetFilter === 'updated' ? 'primary' : ''}`}
                 onClick={() => setFleetFilter('updated')}
                 style={{ fontSize: '11px', padding: '4px 10px' }}
               >
-                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.4.7')).length})
+                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.4.8')).length})
               </button>
             </div>
             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
@@ -9228,13 +9315,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 ) : (
                   fleetDevices
                     .filter(d => {
-                      const targetVer = versionInfo?.currentVersion || '2.4.7';
+                      const targetVer = versionInfo?.currentVersion || '2.4.8';
                       if (fleetFilter === 'outdated') return (d.agentVersion || '1.4.2') !== targetVer;
                       if (fleetFilter === 'updated') return (d.agentVersion || '1.4.2') === targetVer;
                       return true;
                     })
                     .map(dev => {
-                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.4.7';
+                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.4.8';
                       const curVer = dev.agentVersion || '1.4.2';
                       const isTargetVer = curVer === targetVer;
                       const isUpdating = updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING';
@@ -11271,7 +11358,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.4.7 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.4.8 · © 2026 Сергей Ерёмин
               </span>
             </div>
             <div style={{ flexShrink: 0 }}>
