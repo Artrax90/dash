@@ -370,10 +370,16 @@ export const sessionsApi = {
     } catch {}
     return [];
   },
-  logoff: async (deviceIdOrSessionId: string | number, sessionId?: number): Promise<boolean> => {
+  logoff: async (deviceIdOrSessionId: string | number, sessionId?: number, extra?: { pid?: number; type?: string; isOutgoing?: boolean }): Promise<boolean> => {
     try {
-      const targetId = (sessionId !== undefined) ? sessionId : deviceIdOrSessionId;
-      const res = await fetch(`${API_BASE}/sessions/${targetId}/logoff`, { method: 'POST' });
+      const devId = typeof deviceIdOrSessionId === 'string' ? deviceIdOrSessionId : undefined;
+      const targetId = (sessionId !== undefined) ? sessionId : (typeof deviceIdOrSessionId === 'number' ? deviceIdOrSessionId : 0);
+      const url = `${API_BASE}/sessions/${targetId}/logoff${devId ? `?device_id=${encodeURIComponent(devId)}` : ''}`;
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ deviceId: devId, device_id: devId, ...extra })
+      });
       if (res.ok) return true;
     } catch {}
     return true;

@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.5.3"
+    agentVersion = "2.5.4"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -443,7 +443,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.5.3'
+`$AgentVersion = '2.5.4'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -454,9 +454,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.5.3") {
+function Update-AgentService([string]`$targetVer = "2.5.4") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.5.3"
+        `$targetVer = "2.5.4"
     }
     try {
         # 1. Report update in progress
@@ -538,7 +538,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.5.3"
+        Update-AgentService "2.5.4"
         return
     }
 
@@ -563,21 +563,31 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
         & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 /d p:0:0
     }
-    elseif (`$act -eq 'SLEEP' -or `$act -eq 'SUSPEND') {
-        try { Add-Type -AssemblyName System.Windows.Forms; [System.Windows.Forms.Application]::SetSuspendState([System.Windows.Forms.PowerState]::Suspend, `$false, `$false) } catch {}
-        & "`$env:SystemRoot\System32\rundll32.exe" powrprof.dll,SetSuspendState 0,1,0
+    elseif (`$act -eq 'CLOSE_RDP' -or `$act -eq 'CLOSE_RDP_CLIENT' -or `$act -eq 'KILL_RDP' -or `$act -eq 'DISCONNECT_RDP') {
+        `$targetPid = `$null
+        if (`$cmdObj -and `$cmdObj.pid) {
+            try { `$targetPid = [int]`$cmdObj.pid } catch {}
+        }
+        if (`$targetPid -and `$targetPid -gt 0) {
+            try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
+        } else {
+            try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
+        }
     }
     elseif (`$act -eq 'LOGOFF' -or `$act -eq 'RESET_SESSION' -or `$act -eq 'RDP_CLEANUP') {
         `$targetSessId = `$null
         if (`$cmdObj -and `$cmdObj.sessionId -ne `$null) {
-            `$targetSessId = `$cmdObj.sessionId
+            try { `$targetSessId = [int]`$cmdObj.sessionId } catch {}
         }
-        if (`$targetSessId -ne `$null) {
-            & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId 2>`$null
-            & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId 2>`$null
-        } else {
-            try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(4) } catch {}
-            & "`$env:SystemRoot\System32\shutdown.exe" /l /f
+        if (`$targetSessId -ne `$null -and `$targetSessId -ge 0) {
+            if (`$targetSessId -ge 100) {
+                # Outgoing RDP session index fallback
+                try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
+            } else {
+                # Standard Windows terminal session ID
+                & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId 2>`$null
+                & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId 2>`$null
+            }
         }
     }
     elseif (`$act -eq 'LOCK') {
@@ -822,6 +832,7 @@ function Get-LiveRdpSessions() {
                     }
                     `$sessions += @{
                         id = `$outIdx
+                        pid = `$targetPid
                         deviceId = `$DeviceId
                         username = `$uName
                         sessionName = ('mstsc -> ' + `$displayTarget)
@@ -838,6 +849,7 @@ function Get-LiveRdpSessions() {
                 `$cleanIp = if (`$displayTarget -match '^(\d+\.\d+\.\d+\.\d+)') { `$matches[1] } else { '' }
                 `$sessions += @{
                     id = `$outIdx
+                    pid = `$targetPid
                     deviceId = `$DeviceId
                     username = `$uName
                     sessionName = ('mstsc -> ' + `$displayTarget)
@@ -1676,6 +1688,7 @@ function Get-InstallerLiveSessions() {
                 $cleanIp = if ($display -match '^(\d+\.\d+\.\d+\.\d+)') { $matches[1] } else { '' }
                 $sess += @{
                     id = $outIdx
+                    pid = $pidNum
                     deviceId = $deviceId
                     username = if ($env:USERNAME) { $env:USERNAME } else { 'User' }
                     sessionName = "mstsc -> $display"
@@ -1711,7 +1724,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.5.3"
+    agentVersion = "2.5.4"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

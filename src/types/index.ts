@@ -176,6 +176,7 @@ export interface Device {
 
 export interface RdpSession {
   id: number;
+  pid?: number;
   deviceId: string;
   username: string;
   state: 'Active' | 'Disconnected' | 'Idle';

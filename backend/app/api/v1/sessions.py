@@ -118,18 +118,55 @@ async def list_sessions(
 
     return all_sessions
 
+class LogoffRequest(BaseModel):
+    deviceId: Optional[str] = None
+    device_id: Optional[str] = None
+    pid: Optional[int] = None
+    type: Optional[str] = None
+    isOutgoing: Optional[bool] = None
+
 @router.post("/{session_id}/logoff")
-async def logoff_session(session_id: int, db: AsyncSession = Depends(get_db)):
+async def logoff_session(
+    session_id: int,
+    device_id: Optional[str] = None,
+    deviceId: Optional[str] = None,
+    req: Optional[LogoffRequest] = None,
+    db: AsyncSession = Depends(get_db)
+):
     from backend.app.api.v1.agents import queue_device_command
+    target_dev_id = (req.deviceId if req and req.deviceId else None) or (req.device_id if req and req.device_id else None) or device_id or deviceId
+    target_pid = req.pid if req else None
+    target_type = req.type if req else None
+
+    # If target device ID is explicitly provided
+    if target_dev_id:
+        target_dev_id_clean = target_dev_id.strip()
+        is_outgoing_rdp = (target_type and "Исходящий" in target_type) or (session_id >= 100)
+        action = "CLOSE_RDP_CLIENT" if is_outgoing_rdp else "LOGOFF"
+        queue_device_command(
+            device_id=target_dev_id_clean,
+            action=action,
+            reason=f"Admin requested {action} for session #{session_id}",
+            extra_data={"sessionId": session_id, "pid": target_pid, "type": target_type}
+        )
+        return {"status": "success", "message": f"{action} queued for session #{session_id} on {target_dev_id_clean}"}
+
+    # Fallback: search session in live memory
     for dev_id, sess_list in list(live_device_sessions.items()):
-        for s in sess_list:
-            if str(s.get("id")) == str(session_id):
-                queue_device_command(
-                    device_id=dev_id,
-                    action="LOGOFF",
-                    reason=f"Admin requested logoff for session #{session_id} ({s.get('username')})",
-                    extra_data={"sessionId": session_id, "username": s.get("username")}
-                )
-                return {"status": "success", "message": f"Logoff command queued for session {session_id} on {dev_id}"}
+        if isinstance(sess_list, list):
+            for s in sess_list:
+                if str(s.get("id")) == str(session_id):
+                    s_pid = s.get("pid")
+                    s_type = s.get("type", "")
+                    action = "CLOSE_RDP_CLIENT" if "Исходящий" in s_type or session_id >= 100 else "LOGOFF"
+                    queue_device_command(
+                        device_id=dev_id,
+                        action=action,
+                        reason=f"Admin requested {action} for session #{session_id} ({s.get('username')})",
+                        extra_data={"sessionId": session_id, "pid": s_pid, "type": s_type, "username": s.get("username")}
+                    )
+                    return {"status": "success", "message": f"{action} command queued for session #{session_id} on {dev_id}"}
+
     return {"status": "success", "message": f"Logoff command dispatched for session {session_id}"}
+
 
