@@ -534,7 +534,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.7.2</span>
+            <span>v2.8.0</span>
           </div>
         </div>
       </div>
@@ -608,7 +608,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.7.2</span>
+          <span style={{ color: '#475569' }}>v2.8.0</span>
         </div>
       </div>
     </div>
@@ -1838,6 +1838,75 @@ function Devices({
   const [editDevNotes, setEditDevNotes] = useState('');
   const [newTagInput, setNewTagInput] = useState('');
 
+  // Add Device Modal state (Agent vs Agentless / Thin Client)
+  const [addModalTab, setAddModalTab] = useState<'agent' | 'agentless'>('agent');
+  const [tcName, setTcName] = useState('');
+  const [tcIp, setTcIp] = useState('');
+  const [tcGroup, setTcGroup] = useState('Тонкие клиенты');
+  const [tcMac, setTcMac] = useState('');
+  const [tcIsProbing, setTcIsProbing] = useState(false);
+  const [tcProbeResult, setTcProbeResult] = useState<{ success: boolean; message: string; online: boolean } | null>(null);
+  const [tcIsSaving, setTcIsSaving] = useState(false);
+
+  const handleProbeTc = async () => {
+    if (!tcIp.trim()) {
+      notify('Введите IP-адрес тонкого клиента для проверки');
+      return;
+    }
+    setTcIsProbing(true);
+    setTcProbeResult(null);
+    try {
+      const res = await devicesApi.probe(tcIp.trim());
+      setTcProbeResult({ success: res.success, message: res.message, online: res.online });
+      if (res.mac) {
+        setTcMac(res.mac);
+        notify(`MAC-адрес успешно получен: ${res.mac}`);
+      } else {
+        notify('Устройство не ответило в сети. Введите MAC-адрес вручную.');
+      }
+    } catch (err: any) {
+      setTcProbeResult({ success: false, message: err?.message || 'Сбой проверки соединения', online: false });
+      notify(err?.message || 'Ошибка проверки соединения');
+    } finally {
+      setTcIsProbing(false);
+    }
+  };
+
+  const handleSaveTc = async () => {
+    if (!tcName.trim()) {
+      notify('Укажите имя тонкого клиента');
+      return;
+    }
+    if (!tcIp.trim()) {
+      notify('Укажите IP-адрес устройства');
+      return;
+    }
+    if (!tcMac.trim()) {
+      notify('Укажите MAC-адрес устройства для отправки пакетов Wake-on-LAN');
+      return;
+    }
+    setTcIsSaving(true);
+    try {
+      const res = await devicesApi.createAgentless({
+        name: tcName.trim(),
+        ip: tcIp.trim(),
+        mac: tcMac.trim(),
+        group: tcGroup.trim() || 'Тонкие клиенты'
+      });
+      notify(res?.message || `Тонкий клиент «${tcName}» добавлен в систему!`);
+      setShowAddModal(false);
+      setTcName('');
+      setTcIp('');
+      setTcMac('');
+      setTcProbeResult(null);
+      loadFleet();
+    } catch (err: any) {
+      notify(err?.message || 'Ошибка добавления устройства');
+    } finally {
+      setTcIsSaving(false);
+    }
+  };
+
   const loadFleet = () => {
     setLoading(true);
     devicesApi.list().then((data) => {
@@ -2270,62 +2339,170 @@ function Devices({
       {/* Add Device Modal */}
       {showAddModal && (
         <div className="modal-backdrop" onClick={() => setShowAddModal(false)}>
-          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '560px', textAlign: 'left' }}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '580px', textAlign: 'left' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
               <div className="confirm-icon" style={{ background: 'var(--blue-soft)', color: 'var(--blue)', margin: 0 }}><Plus size={22} /></div>
               <div>
                 <h2 style={{ fontSize: '17px', margin: 0 }}>Добавление новой рабочей станции</h2>
-                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>Автоматическая установка агента на Windows или Linux</p>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>Установка агента или регистрация безагентного тонкого клиента</p>
               </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              {(() => {
-                const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
-                const serverHost = window.location.hostname || 'localhost';
-                return (
-                  <>
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Быстрая установка через PowerShell (Windows):</label>
-                      <div className="code-card" style={{ marginTop: 0 }}>
-                        <pre>{`irm "http://${serverHost}:${effectivePort}/install.ps1" | iex`}</pre>
-                      </div>
-                      <button
-                        className="text-button"
-                        style={{ marginTop: '4px' }}
-                        onClick={() => {
-                          navigator.clipboard?.writeText(`irm "http://${serverHost}:${effectivePort}/install.ps1" | iex`);
-                          notify('Команда скопирована в буфер обмена');
-                        }}
-                      >
-                        <Copy size={12} /> Скопировать команду
-                      </button>
-                    </div>
-
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Быстрая установка через Bash (Linux Ubuntu/Debian):</label>
-                      <div className="code-card" style={{ marginTop: 0 }}>
-                        <pre>{`curl -fsSL "http://${serverHost}:${effectivePort}/install.sh" | sudo bash`}</pre>
-                      </div>
-                      <button
-                        className="text-button"
-                        style={{ marginTop: '4px' }}
-                        onClick={() => {
-                          navigator.clipboard?.writeText(`curl -fsSL "http://${serverHost}:${effectivePort}/install.sh" | sudo bash`);
-                          notify('Команда скопирована в буфер обмена');
-                        }}
-                      >
-                        <Copy size={12} /> Скопировать команду
-                      </button>
-                    </div>
-                  </>
-                );
-              })()}
+            {/* Modal Tabs */}
+            <div className="tabs" style={{ marginBottom: '16px', gap: '16px' }}>
+              <button
+                type="button"
+                className={addModalTab === 'agent' ? 'active' : ''}
+                onClick={() => setAddModalTab('agent')}
+              >
+                Установка агента (Windows / Linux)
+              </button>
+              <button
+                type="button"
+                className={addModalTab === 'agentless' ? 'active' : ''}
+                onClick={() => setAddModalTab('agentless')}
+              >
+                Тонкий клиент (WoL / Agentless)
+              </button>
             </div>
 
-            <div className="modal-actions" style={{ marginTop: '20px' }}>
-              <Button onClick={() => setShowAddModal(false)}>Закрыть</Button>
-            </div>
+            {addModalTab === 'agentless' ? (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.2)', padding: '12px 14px', borderRadius: '8px', fontSize: '12px', color: 'var(--ink)' }}>
+                  💡 <strong>Безагентный режим:</strong> предназначен для тонких клиентов (WTware, Thinstation, бездисковые терминалы). Сервер автоматически будит устройство по сети (Wake-on-LAN) по кнопке и расписанию.
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Имя устройства / Рабочее место</label>
+                  <input
+                    className="text-input"
+                    placeholder="Например: ТК Склад 1, WTware Бухгалтерия..."
+                    value={tcName}
+                    onChange={e => setTcName(e.target.value)}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>IP-адрес в локальной сети</label>
+                    <input
+                      className="text-input mono"
+                      placeholder="192.168.0.150"
+                      value={tcIp}
+                      onChange={e => { setTcIp(e.target.value); setTcProbeResult(null); }}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Группа</label>
+                    <input
+                      className="text-input"
+                      placeholder="Тонкие клиенты"
+                      value={tcGroup}
+                      onChange={e => setTcGroup(e.target.value)}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600, margin: 0 }}>Физический MAC-адрес (для WoL)</label>
+                    <Button
+                      type="button"
+                      icon={tcIsProbing ? <RefreshCw size={12} className="spin" /> : <Search size={12} />}
+                      onClick={handleProbeTc}
+                      disabled={tcIsProbing || !tcIp.trim()}
+                      style={{ padding: '4px 10px', fontSize: '11px' }}
+                    >
+                      {tcIsProbing ? 'Опрос сети...' : '🔍 Проверить соединение'}
+                    </Button>
+                  </div>
+                  <input
+                    className="text-input mono"
+                    placeholder="00:11:22:33:44:55"
+                    value={tcMac}
+                    onChange={e => setTcMac(e.target.value)}
+                    style={{ width: '100%', fontFamily: "'DM Mono', monospace" }}
+                  />
+                  {tcProbeResult && (
+                    <div style={{
+                      marginTop: '6px',
+                      padding: '6px 10px',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      background: tcProbeResult.success ? 'rgba(34, 197, 94, 0.12)' : 'rgba(234, 179, 8, 0.12)',
+                      color: tcProbeResult.success ? 'var(--green)' : 'var(--yellow)',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '6px'
+                    }}>
+                      {tcProbeResult.success ? <Check size={13} /> : <AlertTriangle size={13} />}
+                      <span>{tcProbeResult.message}</span>
+                    </div>
+                  )}
+                  <small style={{ color: 'var(--muted)', fontSize: '11px', display: 'block', marginTop: '4px' }}>
+                    Нажмите «Проверить соединение» при включенном устройстве — сервер автоматически считает MAC из таблицы ARP.
+                  </small>
+                </div>
+
+                <div className="modal-actions" style={{ marginTop: '14px' }}>
+                  <Button onClick={() => setShowAddModal(false)}>Отмена</Button>
+                  <Button primary disabled={tcIsSaving || !tcName.trim() || !tcIp.trim() || !tcMac.trim()} onClick={handleSaveTc}>
+                    {tcIsSaving ? 'Сохранение...' : 'Добавить тонкий клиент'}
+                  </Button>
+                </div>
+              </div>
+            ) : (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                {(() => {
+                  const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
+                  const serverHost = window.location.hostname || 'localhost';
+                  return (
+                    <>
+                      <div>
+                        <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Быстрая установка через PowerShell (Windows):</label>
+                        <div className="code-card" style={{ marginTop: 0 }}>
+                          <pre>{`irm "http://${serverHost}:${effectivePort}/install.ps1" | iex`}</pre>
+                        </div>
+                        <button
+                          className="text-button"
+                          style={{ marginTop: '4px' }}
+                          onClick={() => {
+                            navigator.clipboard?.writeText(`irm "http://${serverHost}:${effectivePort}/install.ps1" | iex`);
+                            notify('Команда скопирована в буфер обмена');
+                          }}
+                        >
+                          <Copy size={12} /> Скопировать команду
+                        </button>
+                      </div>
+
+                      <div>
+                        <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Быстрая установка через Bash (Linux Ubuntu/Debian):</label>
+                        <div className="code-card" style={{ marginTop: 0 }}>
+                          <pre>{`curl -fsSL "http://${serverHost}:${effectivePort}/install.sh" | sudo bash`}</pre>
+                        </div>
+                        <button
+                          className="text-button"
+                          style={{ marginTop: '4px' }}
+                          onClick={() => {
+                            navigator.clipboard?.writeText(`curl -fsSL "http://${serverHost}:${effectivePort}/install.sh" | sudo bash`);
+                            notify('Команда скопирована в буфер обмена');
+                          }}
+                        >
+                          <Copy size={12} /> Скопировать команду
+                        </button>
+                      </div>
+                    </>
+                  );
+                })()}
+
+                <div className="modal-actions" style={{ marginTop: '14px' }}>
+                  <Button onClick={() => setShowAddModal(false)}>Закрыть</Button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -2623,7 +2800,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
             style={device.isOutdated ? { borderColor: 'rgba(234,179,8,0.4)', color: 'var(--yellow)', background: 'rgba(234,179,8,0.06)' } : undefined}
             title="Удаленно обновить службу агента по сети (OTA)"
           >
-            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.7.2'})` : 'Обновить агент')}
+            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.8.0'})` : 'Обновить агент')}
           </Button>
           <Button
             primary
@@ -2731,7 +2908,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <strong>v{device.agentVersion || '1.4.2'}</strong>
                   {device.isOutdated ? (
                     <span className="badge" style={{ background: 'rgba(234, 179, 8, 0.15)', color: 'var(--yellow)', fontWeight: 600, fontSize: '10px' }}>
-                      Доступно v{device.latestAgentVersion || '2.7.2'}
+                      Доступно v{device.latestAgentVersion || '2.8.0'}
                     </span>
                   ) : (
                     <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)', fontWeight: 600, fontSize: '10px' }}>
@@ -3606,7 +3783,7 @@ function DeviceMonitoringTab({
               <span className="device-telemetry-sep">·</span>
               <span>IP: <span className="device-telemetry-chip">{device.ip}</span></span>
               <span className="device-telemetry-sep">·</span>
-              <span>Агент v{device.agentVersion || '2.7.2'}</span>
+              <span>Агент v{device.agentVersion || '2.8.0'}</span>
               <span>Uptime: <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{formatLiveUptime(device.uptime, device.bootTimeIso, device.powerStatus === 'On')}</span></span>
               {device.bootTimeIso && device.powerStatus === 'On' && (
                 <>
@@ -5094,13 +5271,19 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
     setConfirm(undefined);
   };
 
+  const isAgentless = device.agentVersion === 'Agentless' || device.osType === 'ThinClient' || device.osType === 'Standalone' || (device.tags || []).includes('Тонкий клиент') || (device.tags || []).includes('Agentless') || device.id.startsWith('TC-');
+
   return (
     <>
       <div className="power-grid">
         <section className="panel power-card" style={{ display: 'flex', flexDirection: 'column', minHeight: '320px' }}>
           <div className="power-orb"><Power size={25} /></div>
-          <h2>Управление питанием рабочей станции</h2>
-          <p>Отправка низкоуровневых команд пробуждения через Ethernet (WoL), программной перезагрузки и выключения операционной системы.</p>
+          <h2>{isAgentless ? 'Управление питанием тонкого клиента' : 'Управление питанием рабочей станции'}</h2>
+          <p>
+            {isAgentless 
+              ? `Отправка низкоуровневого пакета Wake-on-LAN (WoL) на сетевой адаптер ${device.mac}. Безагентный режим: удаленное завершение работы отключено.`
+              : 'Отправка низкоуровневых команд пробуждения через Ethernet (WoL), программной перезагрузки и выключения операционной системы.'}
+          </p>
           <div className="power-buttons" style={{ marginTop: 'auto' }}>
             <Button
               primary
@@ -5109,15 +5292,19 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
             >
               Включить (WoL)
             </Button>
-            <Button icon={<RefreshCw size={15} />} onClick={() => setConfirm('Reboot')}>
-              {t('devices.reboot')}
-            </Button>
-            <Button icon={<Power size={15} />} onClick={() => setConfirm('Shutdown')}>
-              {t('devices.shutdown')}
-            </Button>
-            <Button icon={<AlertTriangle size={15} />} onClick={() => setConfirm('Force shutdown')}>
-              {t('devices.forceShutdown')}
-            </Button>
+            {!isAgentless && (
+              <>
+                <Button icon={<RefreshCw size={15} />} onClick={() => setConfirm('Reboot')}>
+                  {t('devices.reboot')}
+                </Button>
+                <Button icon={<Power size={15} />} onClick={() => setConfirm('Shutdown')}>
+                  {t('devices.shutdown')}
+                </Button>
+                <Button icon={<AlertTriangle size={15} />} onClick={() => setConfirm('Force shutdown')}>
+                  {t('devices.forceShutdown')}
+                </Button>
+              </>
+            )}
           </div>
         </section>
 
@@ -5176,13 +5363,19 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
       <section className="panel" style={{ marginTop: '20px', padding: '24px' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
           <div>
-            <h2 style={{ fontSize: '16px', margin: 0 }}>Персональное расписание включения и выключения</h2>
-            <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '4px 0 0' }}>Настройка времени автоматического старта по WoL и вечернего гашения рабочей станции</p>
+            <h2 style={{ fontSize: '16px', margin: 0 }}>
+              {isAgentless ? 'Персональное расписание включения (Wake-on-LAN)' : 'Персональное расписание включения и выключения'}
+            </h2>
+            <p style={{ color: 'var(--muted)', fontSize: '12px', margin: '4px 0 0' }}>
+              {isAgentless 
+                ? 'Настройка времени автоматического утреннего старта тонкого клиента по Magic Packet (WoL)'
+                : 'Настройка времени автоматического старта по WoL и вечернего гашения рабочей станции'}
+            </p>
           </div>
           <Clock3 size={20} className="heading-icon" />
         </div>
 
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
+        <div style={{ display: 'grid', gridTemplateColumns: isAgentless ? '1fr' : 'repeat(auto-fit, minmax(320px, 1fr))', gap: '20px' }}>
           {/* Morning wake */}
           <div className="panel info-panel" style={{ border: '1px solid var(--line)', padding: '16px', borderRadius: '10px' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
@@ -5222,71 +5415,75 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Magic Packet отправляется на MAC-адрес {device.mac}</span>
           </div>
 
-          {/* Evening shutdown */}
-          <div className="panel info-panel" style={{ border: '1px solid var(--line)', padding: '16px', borderRadius: '10px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-              <div>
-                <strong style={{ fontSize: '13px', display: 'block' }}>🌙 Вечернее выключение</strong>
-                <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Штатное завершение работы в конце дня</span>
+          {!isAgentless && (
+            <>
+              {/* Evening shutdown */}
+              <div className="panel info-panel" style={{ border: '1px solid var(--line)', padding: '16px', borderRadius: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <div>
+                    <strong style={{ fontSize: '13px', display: 'block' }}>🌙 Вечернее выключение</strong>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Штатное завершение работы в конце дня</span>
+                  </div>
+                  <Switch checked={eveningEnabled} onChange={setEveningEnabled} />
+                </div>
+
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Время выключения:</span>
+                  <input
+                    type="time"
+                    className="text-input"
+                    value={eveningTime}
+                    onChange={(e) => setEveningTime(e.target.value)}
+                    style={{ width: '110px', fontFamily: "'DM Mono', monospace" }}
+                  />
+                </div>
+
+                <div style={{ marginBottom: '12px' }}>
+                  <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '6px' }}>Дни недели:</span>
+                  <div style={{ display: 'flex', gap: '4px' }}>
+                    {allDays.map(day => (
+                      <button
+                        key={day}
+                        onClick={() => toggleDay(day, eveningDays, setEveningDays)}
+                        className={eveningDays.includes(day) ? 'button primary' : 'button'}
+                        style={{ padding: '4px 8px', fontSize: '11px', minWidth: '32px' }}
+                      >
+                        {day}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--muted)', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={forceShutdown} onChange={(e) => setForceShutdown(e.target.checked)} />
+                  Принудительно закрывать незавершенные программы (Force Kill)
+                </label>
               </div>
-              <Switch checked={eveningEnabled} onChange={setEveningEnabled} />
-            </div>
 
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-              <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Время выключения:</span>
-              <input
-                type="time"
-                className="text-input"
-                value={eveningTime}
-                onChange={(e) => setEveningTime(e.target.value)}
-                style={{ width: '110px', fontFamily: "'DM Mono', monospace" }}
-              />
-            </div>
+              {/* Weekly reboot */}
+              <div className="panel info-panel" style={{ border: '1px solid var(--line)', padding: '16px', borderRadius: '10px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                  <div>
+                    <strong style={{ fontSize: '13px', display: 'block' }}>🔄 Профилактическая перезагрузка</strong>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Еженедельная очистка памяти и служб</span>
+                  </div>
+                  <Switch checked={rebootEnabled} onChange={setRebootEnabled} />
+                </div>
 
-            <div style={{ marginBottom: '12px' }}>
-              <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '6px' }}>Дни недели:</span>
-              <div style={{ display: 'flex', gap: '4px' }}>
-                {allDays.map(day => (
-                  <button
-                    key={day}
-                    onClick={() => toggleDay(day, eveningDays, setEveningDays)}
-                    className={eveningDays.includes(day) ? 'button primary' : 'button'}
-                    style={{ padding: '4px 8px', fontSize: '11px', minWidth: '32px' }}
-                  >
-                    {day}
-                  </button>
-                ))}
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
+                  <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Время (Воскресенье):</span>
+                  <input
+                    type="time"
+                    className="text-input"
+                    value={rebootTime}
+                    onChange={(e) => setRebootTime(e.target.value)}
+                    style={{ width: '110px', fontFamily: "'DM Mono', monospace" }}
+                  />
+                </div>
+                <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Перезагрузка выполняется в период минимальной нагрузки в выходной день.</span>
               </div>
-            </div>
-
-            <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', color: 'var(--muted)', cursor: 'pointer' }}>
-              <input type="checkbox" checked={forceShutdown} onChange={(e) => setForceShutdown(e.target.checked)} />
-              Принудительно закрывать незавершенные программы (Force Kill)
-            </label>
-          </div>
-
-          {/* Weekly reboot */}
-          <div className="panel info-panel" style={{ border: '1px solid var(--line)', padding: '16px', borderRadius: '10px' }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
-              <div>
-                <strong style={{ fontSize: '13px', display: 'block' }}>🔄 Профилактическая перезагрузка</strong>
-                <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Еженедельная очистка памяти и служб</span>
-              </div>
-              <Switch checked={rebootEnabled} onChange={setRebootEnabled} />
-            </div>
-
-            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '12px' }}>
-              <span style={{ fontSize: '12px', color: 'var(--muted)' }}>Время (Воскресенье):</span>
-              <input
-                type="time"
-                className="text-input"
-                value={rebootTime}
-                onChange={(e) => setRebootTime(e.target.value)}
-                style={{ width: '110px', fontFamily: "'DM Mono', monospace" }}
-              />
-            </div>
-            <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Перезагрузка выполняется в период минимальной нагрузки в выходной день.</span>
-          </div>
+            </>
+          )}
         </div>
 
         <div style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end' }}>
@@ -9421,14 +9618,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 onClick={() => setFleetFilter('outdated')}
                 style={{ fontSize: '11px', padding: '4px 10px', color: fleetFilter !== 'outdated' && (versionInfo?.outdatedCount ?? 0) > 0 ? 'var(--yellow)' : undefined }}
               >
-                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.7.2')).length})
+                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.8.0')).length})
               </button>
               <button
                 className={`filter-button ${fleetFilter === 'updated' ? 'primary' : ''}`}
                 onClick={() => setFleetFilter('updated')}
                 style={{ fontSize: '11px', padding: '4px 10px' }}
               >
-                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.7.2')).length})
+                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.8.0')).length})
               </button>
             </div>
             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
@@ -9459,13 +9656,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 ) : (
                   fleetDevices
                     .filter(d => {
-                      const targetVer = versionInfo?.currentVersion || '2.7.2';
+                      const targetVer = versionInfo?.currentVersion || '2.8.0';
                       if (fleetFilter === 'outdated') return (d.agentVersion || '1.4.2') !== targetVer;
                       if (fleetFilter === 'updated') return (d.agentVersion || '1.4.2') === targetVer;
                       return true;
                     })
                     .map(dev => {
-                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.7.2';
+                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.8.0';
                       const curVer = dev.agentVersion || '1.4.2';
                       const isTargetVer = curVer === targetVer;
                       const isUpdating = updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING';
@@ -11502,7 +11699,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.7.2 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.8.0 · © 2026 Сергей Ерёмин
               </span>
             </div>
             <div style={{ flexShrink: 0 }}>

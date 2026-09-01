@@ -8,7 +8,7 @@ from backend.app.models.device import Device, PowerStatus, HealthStatus, AgentSt
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
 from backend.app.models.alert import AlertPolicyModel
 from backend.app.models.schedule import ScheduleModel
-from backend.app.schemas.device import BulkOperationRequestSchema
+from backend.app.schemas.device import BulkOperationRequestSchema, DeviceProbeSchema, AgentlessDeviceCreateSchema
 from backend.app.services.wol_service import wol_service
 from backend.app.ws.manager import ws_manager
 from backend.app.core.config import settings
@@ -17,6 +17,10 @@ import collections
 import time
 import json
 import os
+import re
+import socket
+import asyncio
+import subprocess
 from datetime import datetime, timezone
 from backend.app.core.config import settings
 
@@ -183,17 +187,28 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     now_utc = datetime.utcnow()
     sec_since_last_seen = (now_utc - d.last_seen).total_seconds() if d.last_seen else 999999
     
+    is_agentless = (
+        d.agent_version == "Agentless" or 
+        d.os_type in ["ThinClient", "Standalone", "Agentless"] or 
+        (d.id and d.id.startswith("TC-")) or 
+        ("Тонкий клиент" in (d.tags or [])) or
+        ("Agentless" in (d.tags or []))
+    )
+
     # Effective timeout: default 75s (heartbeat is 60s standard)
     dev_interval = d.heartbeat_interval or 60
     timeout_threshold = max(75, dev_interval * 2 + 15)
     
-    is_online = (sec_since_last_seen <= timeout_threshold)
+    if is_agentless:
+        is_online = (d.power_status == PowerStatus.ON or str(d.power_status).lower() in ["on", "powerstatus.on"])
+    else:
+        is_online = (sec_since_last_seen <= timeout_threshold)
     
     effective_power = "On" if is_online else "Off"
-    effective_agent = "Connected" if is_online else "Disconnected"
+    effective_agent = "Agentless" if is_agentless else ("Connected" if is_online else "Disconnected")
     effective_health = (
         d.health_status.value if hasattr(d.health_status, 'value') else str(d.health_status)
-    ) if is_online else "Offline"
+    ) if is_online else ("Healthy" if is_agentless else "Offline")
 
     # Dynamic live uptime calculation
     calculated_uptime = d.uptime or "—"
@@ -215,7 +230,6 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
                 else:
                     calculated_uptime = f"{mins}м" if mins > 0 else "Менее 1 мин"
         elif calculated_uptime:
-            # Normalize any english "1d 04h" into russian "1д 04ч"
             calculated_uptime = (
                 str(calculated_uptime)
                 .replace("d ", "д ")
@@ -226,11 +240,11 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
 
     from backend.app.api.v1.agents import agent_update_statuses
     latest_ver = settings.LATEST_AGENT_VERSION
-    cur_ver = d.agent_version or "1.4.2"
-    is_outdated = (cur_ver != latest_ver)
+    cur_ver = "Agentless" if is_agentless else (d.agent_version or "1.4.2")
+    is_outdated = False if is_agentless else (cur_ver != latest_ver)
     
     upd_info = agent_update_statuses.get(d.id, {})
-    upd_status = upd_info.get("status", "idle")
+    upd_status = "idle" if is_agentless else upd_info.get("status", "idle")
     if not is_outdated:
         upd_status = "idle"
     elif upd_status == "UPDATING":
@@ -265,8 +279,8 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "groups": raw_groups,
         "ip": d.ip_address,
         "mac": d.mac_address,
-        "osType": d.os_type,
-        "osVersion": d.os_version,
+        "osType": d.os_type or ("ThinClient" if is_agentless else "Windows"),
+        "osVersion": d.os_version or ("Тонкий клиент / Agentless" if is_agentless else "Windows 11 Pro"),
         "agentVersion": cur_ver,
         "latestAgentVersion": latest_ver,
         "isOutdated": is_outdated,
@@ -279,7 +293,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "healthStatus": effective_health,
         "cpu": d.cpu_usage if is_online else 0,
         "ram": d.ram_usage if is_online else 0,
-        "disk": d.disk_usage,
+        "disk": d.disk_usage or 0,
         "uptime": calculated_uptime if is_online else "—",
         "uptimeSeconds": uptime_sec if is_online else 0,
         "bootTime": boot_time.strftime("%H:%M:%S") if (boot_time and is_online) else "—",
@@ -287,10 +301,204 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "lastSeen": d.last_seen.strftime("%H:%M:%S") if d.last_seen else "—",
         "lastSeenIso": (d.last_seen.isoformat() + "Z") if d.last_seen else None,
         "maintenance": d.maintenance_mode,
-        "tags": d.tags or [],
+        "tags": d.tags or ([] if not is_agentless else ["Тонкий клиент", "Agentless"]),
         "assetTag": d.asset_tag or "",
         "notes": d.notes or "",
         "heartbeatInterval": d.heartbeat_interval
+    }
+
+@router.post("/probe")
+async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(get_db)):
+    """
+    Probes an IP address on the local network via ICMP/TCP ping and inspects ARP cache 
+    to automatically discover the physical MAC address for Wake-on-LAN.
+    """
+    ip = payload.ip.strip()
+    if not ip:
+        raise HTTPException(status_code=400, detail="Укажите корректный IP-адрес")
+
+    is_online = False
+    
+    # 1. Trigger network activity to populate kernel ARP table
+    try:
+        ping_cmd = ["ping", "-n", "1", "-w", "700", ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", ip]
+        proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        rc = await asyncio.wait_for(proc.wait(), timeout=1.5)
+        if rc == 0:
+            is_online = True
+    except Exception:
+        pass
+
+    # Quick TCP connection attempt on common ports to trigger ARP resolution even if ICMP is blocked
+    if not is_online:
+        for p in [80, 443, 3389, 22, 9, 8080]:
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.settimeout(0.2)
+                res = s.connect_ex((ip, p))
+                s.close()
+                if res == 0:
+                    is_online = True
+                    break
+            except Exception:
+                pass
+
+    # 2. Extract MAC address from ARP cache
+    mac = None
+
+    # Strategy A: /proc/net/arp (Linux / Docker)
+    if os.path.exists("/proc/net/arp"):
+        try:
+            with open("/proc/net/arp", "r") as f:
+                for line in f:
+                    parts = line.split()
+                    if len(parts) >= 4 and parts[0] == ip:
+                        candidate = parts[3]
+                        if candidate and candidate != "00:00:00:00:00:00" and len(candidate.replace(":", "").replace("-", "")) == 12:
+                            mac = candidate.replace("-", ":").upper()
+                            is_online = True
+                            break
+        except Exception as e:
+            print(f"Error reading /proc/net/arp: {e}")
+
+    # Strategy B: `ip neigh show <ip>` (Linux / Docker)
+    if not mac:
+        try:
+            cmd = ["ip", "neigh", "show", ip]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.0)
+            text = out.decode("utf-8", errors="ignore")
+            m = re.search(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', text)
+            if m:
+                mac = m.group(1).upper()
+                is_online = True
+        except Exception:
+            pass
+
+    # Strategy C: `arp -a` / `arp -n <ip>`
+    if not mac:
+        try:
+            cmd = ["arp", "-a", ip] if os.name == "nt" else ["arp", "-n", ip]
+            proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.0)
+            text = out.decode("utf-8", errors="ignore")
+            m = re.search(r'([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})', text)
+            if m:
+                mac = m.group(1).replace("-", ":").upper()
+                is_online = True
+        except Exception:
+            pass
+
+    # Strategy D: Check existing DB record
+    if not mac:
+        db_res = await db.execute(select(Device).where(Device.ip_address == ip))
+        dev = db_res.scalars().first()
+        if dev and dev.mac_address and dev.mac_address != "00:00:00:00:00:00":
+            mac = dev.mac_address
+
+    # 3. Resolve hostname
+    hostname = None
+    try:
+        host_info = socket.gethostbyaddr(ip)
+        if host_info and host_info[0]:
+            hostname = host_info[0]
+    except Exception:
+        pass
+
+    clean_mac = re.sub(r'[^A-F0-9]', '', (mac or '').upper())
+    formatted_mac = ":".join([clean_mac[i:i+2] for i in range(0, len(clean_mac), 2)]) if len(clean_mac) == 12 else mac
+
+    if formatted_mac:
+        return {
+            "success": True,
+            "online": is_online,
+            "ip": ip,
+            "mac": formatted_mac,
+            "hostname": hostname,
+            "message": "Устройство обнаружено в сети! MAC-адрес успешно получен."
+        }
+    else:
+        return {
+            "success": False,
+            "online": is_online,
+            "ip": ip,
+            "mac": None,
+            "hostname": hostname,
+            "message": "Устройство не ответило в ARP-таблице (выключено или в другом сегменте). Введите MAC-адрес вручную."
+        }
+
+@router.post("/agentless")
+async def create_agentless_device(payload: AgentlessDeviceCreateSchema, db: AsyncSession = Depends(get_db)):
+    """
+    Registers or updates an agentless thin client device in the database for WoL and schedule management.
+    """
+    clean_ip = payload.ip.strip()
+    clean_mac_raw = re.sub(r'[^A-F0-9]', '', (payload.mac or '').upper())
+    if len(clean_mac_raw) != 12:
+        raise HTTPException(status_code=400, detail="Укажите корректный 12-значный MAC-адрес")
+    
+    formatted_mac = ":".join([clean_mac_raw[i:i+2] for i in range(0, 12, 2)])
+    clean_name = payload.name.strip() or f"ТК-{clean_mac_raw[-4:]}"
+    dev_id = f"TC-{clean_mac_raw[-4:]}"
+    
+    # Check if device already exists
+    existing = await db.execute(select(Device).where(
+        (Device.id == dev_id) | (Device.mac_address == formatted_mac) | (Device.ip_address == clean_ip)
+    ))
+    dev = existing.scalars().first()
+    
+    # Check live online status via ping
+    is_online = False
+    try:
+        ping_cmd = ["ping", "-n", "1", "-w", "500", clean_ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", clean_ip]
+        proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        rc = await asyncio.wait_for(proc.wait(), timeout=1.0)
+        is_online = (rc == 0)
+    except Exception:
+        pass
+
+    if dev:
+        dev.name = clean_name
+        dev.ip_address = clean_ip
+        dev.mac_address = formatted_mac
+        dev.group_name = payload.group or dev.group_name or "Тонкие клиенты"
+        dev.os_type = "ThinClient"
+        dev.os_version = "Тонкий клиент / Agentless"
+        dev.agent_version = "Agentless"
+        dev.power_status = PowerStatus.ON if is_online else PowerStatus.OFF
+        dev.agent_status = AgentStatus.CONNECTED if is_online else AgentStatus.DISCONNECTED
+        dev.tags = list(set((dev.tags or []) + (payload.tags or ["Тонкий клиент", "Agentless"])))
+        if payload.notes:
+            dev.notes = payload.notes
+    else:
+        dev = Device(
+            id=dev_id,
+            name=clean_name,
+            hostname=f"tc-{clean_mac_raw[-6:].lower()}",
+            group_name=payload.group or "Тонкие клиенты",
+            ip_address=clean_ip,
+            mac_address=formatted_mac,
+            broadcast_ip=payload.broadcastIp or "255.255.255.255",
+            os_type="ThinClient",
+            os_version="Тонкий клиент / Agentless",
+            agent_version="Agentless",
+            current_user="—",
+            power_status=PowerStatus.ON if is_online else PowerStatus.OFF,
+            agent_status=AgentStatus.CONNECTED if is_online else AgentStatus.DISCONNECTED,
+            health_status=HealthStatus.HEALTHY,
+            tags=payload.tags or ["Тонкий клиент", "Agentless"],
+            notes=payload.notes or "Безагентное устройство (Тонкий клиент)",
+            last_seen=datetime.utcnow()
+        )
+        db.add(dev)
+    
+    await db.commit()
+    await db.refresh(dev)
+    
+    return {
+        "status": "success",
+        "message": f"Тонкий клиент «{clean_name}» успешно добавлен в реестр",
+        "device": format_device_summary(dev)
     }
 
 @router.get("")

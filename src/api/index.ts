@@ -101,6 +101,30 @@ export const devicesApi = {
     }
     return wait(devices.find((device) => device.id === id));
   },
+  probe: async (ip: string): Promise<{ success: boolean; online: boolean; ip: string; mac?: string; hostname?: string; message: string }> => {
+    const res = await fetch(`${API_BASE}/devices/probe`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ ip })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Ошибка проверки соединения' }));
+      throw new Error(err.detail || 'Ошибка проверки соединения');
+    }
+    return await res.json();
+  },
+  createAgentless: async (payload: { name: string; ip: string; mac: string; group?: string; broadcastIp?: string; tags?: string[]; notes?: string }): Promise<{ status: string; message: string; device: Device }> => {
+    const res = await fetch(`${API_BASE}/devices/agentless`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Ошибка добавления тонкого клиента' }));
+      throw new Error(err.detail || 'Ошибка добавления тонкого клиента');
+    }
+    return await res.json();
+  },
   getPowerLogs: async (id: string): Promise<any[]> => {
     try {
       const res = await fetch(`${API_BASE}/devices/${id}/power-logs`);

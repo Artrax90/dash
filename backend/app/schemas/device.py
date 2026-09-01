@@ -130,7 +130,7 @@ class DeviceOut(DeviceBase):
     lastSeenIso: Optional[str] = None
     osVersion: str
     agentVersion: str
-    latestAgentVersion: str = Field(default="2.7.2")
+    latestAgentVersion: str = Field(default="2.8.0")
     isOutdated: Optional[bool] = False
     updateStatus: Optional[str] = "idle"
     maintenance: bool = False
@@ -147,3 +147,16 @@ class BulkOperationRequestSchema(BaseModel):
     parameters: Optional[Dict[str, Any]] = None
     user: Optional[str] = None
     initiator: Optional[str] = None
+
+class DeviceProbeSchema(BaseModel):
+    ip: str
+
+class AgentlessDeviceCreateSchema(BaseModel):
+    name: str
+    ip: str
+    mac: str
+    group: Optional[str] = "Тонкие клиенты"
+    broadcastIp: Optional[str] = "255.255.255.255"
+    tags: Optional[List[str]] = Field(default_factory=lambda: ["Тонкий клиент", "Agentless"])
+    notes: Optional[str] = ""
+
