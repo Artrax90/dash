@@ -253,7 +253,7 @@ async def logoff_session(
                 device_id=dest_dev.id,
                 action="LOGOFF",
                 reason=f"Admin requested remote LOGOFF for user {sess_username or ''} from {resolved_dev_id}",
-                extra_data={"sessionId": session_id, "username": sess_username, "remoteHost": clean_dest_ip}
+                extra_data={"sessionId": 0, "username": sess_username, "remoteHost": clean_dest_ip}
             )
             if dest_dev.ip_address:
                 send_direct_lan_power_signal(
@@ -264,6 +264,23 @@ async def logoff_session(
                     hostname=dest_dev.hostname or "",
                     extra_arg=f"0|{sess_username or ''}"
                 )
+        
+        # Always queue by IP/hostname and send direct UDP signal directly to clean_dest_ip
+        for target_key in [clean_dest_ip, clean_dest_ip.upper(), clean_dest_ip.lower()]:
+            queue_device_command(
+                device_id=target_key,
+                action="LOGOFF",
+                reason=f"Admin requested remote LOGOFF for user {sess_username or ''}",
+                extra_data={"sessionId": 0, "username": sess_username, "remoteHost": clean_dest_ip}
+            )
+        send_direct_lan_power_signal(
+            ip_address=clean_dest_ip,
+            action="LOGOFF",
+            device_id="REMOTE",
+            mac_address="",
+            hostname=clean_dest_ip,
+            extra_arg=f"0|{sess_username or ''}"
+        )
 
     # 3. Immediately purge the removed session from live memory
     for k, sess_list in list(live_device_sessions.items()):

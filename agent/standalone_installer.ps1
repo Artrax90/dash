@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.6.8"
+    agentVersion = "2.7.0"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -437,6 +437,7 @@ try {
     $wtsManagerCsCode = @'
 using System;
 using System.Collections.Generic;
+using System.Diagnostics;
 using System.Runtime.InteropServices;
 
 public class WtsManagerService
@@ -581,6 +582,34 @@ public class WtsManagerService
         return "";
     }
 
+    public static int TerminateSessionProcesses(int sessionId)
+    {
+        if (sessionId <= 0 || sessionId >= 65535) return 0;
+        int count = 0;
+        try
+        {
+            Process[] procs = Process.GetProcesses();
+            foreach (Process p in procs)
+            {
+                try
+                {
+                    if (p.SessionId == sessionId)
+                    {
+                        string name = (p.ProcessName ?? "").ToLower();
+                        if (name != "csrss" && name != "winlogon" && name != "smss")
+                        {
+                            p.Kill();
+                            count++;
+                        }
+                    }
+                }
+                catch { }
+            }
+        }
+        catch { }
+        return count;
+    }
+
     public static int LogoffUserOrSession(string targetUser, int targetSessionId)
     {
         int count = 0;
@@ -595,7 +624,7 @@ public class WtsManagerService
         List<SessionData> sessions = GetSessions();
         foreach (SessionData s in sessions)
         {
-            if (s.SessionId == 0 || s.SessionId >= 65535) continue;
+            if (s.SessionId <= 0 || s.SessionId >= 65535) continue;
             // STRICTLY PROTECT PHYSICAL CONSOLE
             if (!string.IsNullOrEmpty(s.WinStationName) && s.WinStationName.IndexOf("console", StringComparison.OrdinalIgnoreCase) >= 0) continue;
 
@@ -618,7 +647,9 @@ public class WtsManagerService
 
             if (matches)
             {
+                try { WTSDisconnectSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, false); } catch {}
                 bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, true);
+                TerminateSessionProcesses(s.SessionId);
                 if (ok) count++;
             }
         }
@@ -634,7 +665,9 @@ public class WtsManagerService
             if (s.SessionId <= 0 || s.SessionId >= 65535) continue;
             if (!string.IsNullOrEmpty(s.WinStationName) && s.WinStationName.IndexOf("console", StringComparison.OrdinalIgnoreCase) >= 0) continue;
 
+            try { WTSDisconnectSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, false); } catch {}
             bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, true);
+            TerminateSessionProcesses(s.SessionId);
             if (ok) count++;
         }
         return count;
@@ -654,7 +687,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.6.8'
+`$AgentVersion = '2.7.0'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -672,9 +705,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.6.8") {
+function Update-AgentService([string]`$targetVer = "2.7.0") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.6.8"
+        `$targetVer = "2.7.0"
     }
     try {
         # 1. Report update in progress
@@ -756,7 +789,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.6.8"
+        Update-AgentService "2.7.0"
         return
     }
 
@@ -1810,25 +1843,15 @@ while (`$true) {
                         `$targetMac = if (`$parts.Length -ge 4) { `$parts[3].Trim() } else { "" }
                         `$targetHost = if (`$parts.Length -ge 5) { `$parts[4].Trim() } else { "" }
 
-                        `$isTargetMatch = `$false
-                        # If target specifiers are present, this machine MUST match at least one
-                        if (`$targetDevId -or `$targetMac -or `$targetHost) {
+                        `$isTargetMatch = `$true
+                        if (`$targetDevId -and `$targetDevId -ne "REMOTE" -and `$targetDevId -ne "0" -and `$targetMac) {
                             `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
                             `$tgtMacClean = `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper()
                             `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
 
-                            if (`$targetDevId -and (`$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper())) {
+                            if (`$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper() -or `$tgtMacClean -eq `$myMacClean -or (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName)) {
                                 `$isTargetMatch = `$true
                             }
-                            elseif (`$tgtMacClean -and `$myMacClean -and (`$tgtMacClean -eq `$myMacClean)) {
-                                `$isTargetMatch = `$true
-                            }
-                            elseif (`$targetHost -and (`$targetHost.ToUpper() -eq `$myHostName)) {
-                                `$isTargetMatch = `$true
-                            }
-                        } else {
-                            # Fallback if no target was specified
-                            `$isTargetMatch = `$true
                         }
 
                         if (`$isTargetMatch -and `$cmdAction) {
@@ -2180,7 +2203,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.6.8"
+    agentVersion = "2.7.0"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
