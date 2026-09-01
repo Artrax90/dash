@@ -385,7 +385,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.4.8"
+    agentVersion = "2.4.9"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -439,7 +439,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.4.8'
+`$AgentVersion = '2.4.9'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -450,9 +450,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.4.8") {
+function Update-AgentService([string]`$targetVer = "2.4.9") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.4.8"
+        `$targetVer = "2.4.9"
     }
     try {
         # 1. Report update in progress
@@ -516,7 +516,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.4.8"
+        Update-AgentService "2.4.9"
         return
     }
 
@@ -581,10 +581,9 @@ function Get-LiveRdpSessions() {
                 if (`$expOwner -and `$expOwner.User) { `$primaryUser = `$expOwner.User }
             }
         }
-        if (-not `$primaryUser) { `$primaryUser = `$env:USERNAME }
     } catch {}
 
-    # 1. Incoming sessions via quser (with full path & encoding safety)
+    # 1. Incoming terminal RDP sessions via quser
     try {
         `$quserExe = Join-Path `$env:SystemRoot "System32\quser.exe"
         `$quserOut = if (Test-Path `$quserExe) { & `$quserExe 2>&1 | Out-String } else { quser 2>&1 | Out-String }
@@ -626,192 +625,146 @@ function Get-LiveRdpSessions() {
                             `$stdState = 'Idle'
                         }
 
-                        `$isRdp = (`$sessName -match '(?i)rdp|tcp')
-                        `$sObj = @{
-                            id = `$sessId
-                            deviceId = `$DeviceId
-                            username = `$uName
-                            sessionName = if (`$sessName) { `$sessName } else { ('rdp-tcp#' + `$sessId) }
-                            type = if (`$isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
-                            state = `$stdState
-                            idleTime = if (`$idle -eq '.' -or `$idle -eq 'none') { '0 мин' } else { `$idle }
-                            logonTime = if (`$logon) { `$logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
+                        `$isRdp = (`$sessName -match '(?i)rdp|tcp' -or `$sessName.StartsWith('rdp-tcp#'))
+                        if (`$isRdp) {
+                            `$sObj = @{
+                                id = `$sessId
+                                deviceId = `$DeviceId
+                                username = `$uName
+                                sessionName = if (`$sessName) { `$sessName } else { ('rdp-tcp#' + `$sessId) }
+                                type = 'Входящий RDP'
+                                state = `$stdState
+                                idleTime = if (`$idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0 мин' } else { `$idle }
+                                logonTime = if (`$logon) { `$logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
+                                clientIp = ''
+                            }
+                            `$sessions += `$sObj
+                            `$seenIds[`$sessId] = `$true
                         }
-                        `$sessions += `$sObj
-                        `$seenIds[`$sessId] = `$true
                     }
                 }
             }
         }
     } catch {}
 
-    # 2. Fallback to qwinsta for any active/disconnected sessions missed by quser
-    try {
-        `$qwinstaExe = Join-Path `$env:SystemRoot "System32\qwinsta.exe"
-        `$qwinstaRaw = if (Test-Path `$qwinstaExe) { & `$qwinstaExe 2>&1 } else { qwinsta 2>&1 }
-        foreach (`$rawLine in `$qwinstaRaw) {
-            `$line = `$rawLine.ToString().Trim()
-            if (-not `$line -or `$line.StartsWith('SESSIONNAME') -or `$line.StartsWith('---')) { continue }
-            `$clean = `$line.TrimStart('>').Trim()
-            `$parts = -split `$clean
-            if (`$parts.Count -ge 3) {
-                `$sName = `$parts[0]
-                `$uName = ''
-                `$sId = -1
-                `$sState = ''
+    if (-not `$primaryUser) { `$primaryUser = if (`$env:USERNAME) { `$env:USERNAME } else { 'User' } }
 
-                if (`$parts.Count -ge 4 -and `$parts[2] -match '^\d+$') {
-                    `$uName = `$parts[1]
-                    `$sId = [int]`$parts[2]
-                    `$sState = `$parts[3]
-                } elseif (`$parts.Count -ge 3 -and `$parts[1] -match '^\d+$') {
-                    `$uName = `$parts[0]
-                    `$sId = [int]`$parts[1]
-                    `$sState = `$parts[2]
-                }
-
-                if (`$sId -gt 0 -and `$sId -ne 65536 -and -not `$seenIds.ContainsKey(`$sId) -and `$uName -ne '' -and `$uName -notmatch '(?i)^(services|console|rdp-tcp|listener)$') {
-                    if (-not `$primaryUser -and -not `$uName.EndsWith('$')) { `$primaryUser = `$uName }
-                    `$isRdp = (`$sName -match '(?i)rdp-tcp#|rdp-tcp\b|rdp')
-                    `$firstChar = if (`$sState.Length -gt 0) { [int][char]`$sState[0] } else { 0 }
-                    `$stdState = if (`$sState -match '(?i)Disc' -or `$firstChar -eq 0x041E -or `$firstChar -eq 0x043E) { 'Disconnected' } else { 'Active' }
-                    `$sessions += @{
-                        id = `$sId
-                        deviceId = `$DeviceId
-                        username = `$uName
-                        sessionName = `$sName
-                        type = if (`$isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
-                        state = `$stdState
-                        idleTime = '0 мин'
-                        logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
-                    }
-                    `$seenIds[`$sId] = `$true
-                }
-            }
-        }
-    } catch {}
-
-    # 3. Outgoing RDP client connections (mstsc, msrdc, RemoteDesktop, mRemoteNG, RDCMan)
+    # 2. Outgoing RDP client connections (mstsc, msrdc, RemoteDesktop, mRemoteNG, RDCMan, RoyalTS)
     try {
         `$rdpProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            `$_.Name -match '(?i)^(mstsc|msrdc|RemoteDesktop|mRemoteNG|RDCMan)\.exe$'
+            `$_.Name -match '(?i)^(mstsc|msrdc|RemoteDesktop|mRemoteNG|RDCMan|RoyalTS|RemoteDesktopManager|RemoteDesktopManager64)\.exe$'
         })
         if (`$rdpProcs.Count -eq 0) {
             `$rdpProcs = @(Get-Process -Name "mstsc", "msrdc", "RemoteDesktop", "mRemoteNG", "RDCMan" -ErrorAction SilentlyContinue)
         }
 
+        # Resolve process owners
         `$mstscOwners = @{}
         foreach (`$mp in `$rdpProcs) {
-            `$pId = if (`$mp.ProcessId) { `$mp.ProcessId } else { `$mp.Id }
+            `$targetPid = if (`$mp.ProcessId) { `$mp.ProcessId } else { `$mp.Id }
             try {
                 `$owner = Invoke-CimMethod -InputObject `$mp -MethodName GetOwner -ErrorAction SilentlyContinue
                 if (`$owner -and `$owner.User) {
-                    `$mstscOwners[`$pId] = `$owner.User
+                    `$mstscOwners[`$targetPid] = `$owner.User
                     if (-not `$primaryUser) { `$primaryUser = `$owner.User }
                 }
             } catch {}
         }
 
-        # Query TCP connections via netstat (universal & resilient across all Windows OS)
+        # Query all active network connections
         `$allTcp = @()
         try {
-            `$netLines = netstat -ano -p tcp | Select-String "ESTABLISHED"
-            foreach (`$nl in `$netLines) {
-                try {
-                    `$parts = -split `$nl.Line.Trim()
-                    if (`$parts.Count -ge 5) {
-                        `$loc = `$parts[1]
-                        `$rem = `$parts[2]
-                        `$pidNum = [int]`$parts[4]
-                        `$rPort = 0
-                        if (`$rem.Contains(':')) {
-                            `$portStr = `$rem.Split(':')[-1]
-                            if (`$portStr -match '^\d+$') { `$rPort = [int]`$portStr }
-                        }
-                        `$allTcp += [PSCustomObject]@{
-                            Local = `$loc
-                            Remote = `$rem
-                            RemoteAddress = `$rem.Split(':')[0]
-                            RemotePort = `$rPort
-                            OwningProcess = `$pidNum
-                        }
-                    }
-                } catch {}
-            }
+            `$allTcp = @(Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue)
         } catch {}
-
-        # Also merge with Get-NetTCPConnection if available
-        try {
-            `$netConns = Get-NetTCPConnection -State Established -ErrorAction SilentlyContinue
-            foreach (`$nc in `$netConns) {
-                `$allTcp += [PSCustomObject]@{
-                    Local = (`$nc.LocalAddress + ":" + `$nc.LocalPort)
-                    Remote = (`$nc.RemoteAddress + ":" + `$nc.RemotePort)
-                    RemoteAddress = `$nc.RemoteAddress
-                    RemotePort = [int]`$nc.RemotePort
-                    OwningProcess = [int]`$nc.OwningProcess
+        if (`$allTcp.Count -eq 0) {
+            try {
+                `$netLines = netstat -ano -p tcp | Select-String "ESTABLISHED"
+                foreach (`$nl in `$netLines) {
+                    try {
+                        `$parts = -split `$nl.Line.Trim()
+                        if (`$parts.Count -ge 5) {
+                            `$rem = `$parts[2]
+                            `$pidNum = [int]`$parts[4]
+                            `$rPort = 0
+                            `$remAddr = `$rem
+                            if (`$rem.Contains(':')) {
+                                `$lastColon = `$rem.LastIndexOf(':')
+                                `$remAddr = `$rem.Substring(0, `$lastColon).Trim('[', ']')
+                                `$portStr = `$rem.Substring(`$lastColon + 1)
+                                if (`$portStr -match '^\d+$') { `$rPort = [int]`$portStr }
+                            }
+                            `$allTcp += [PSCustomObject]@{
+                                LocalAddress = `$parts[1]
+                                RemoteAddress = `$remAddr
+                                RemotePort = `$rPort
+                                OwningProcess = `$pidNum
+                            }
+                        }
+                    } catch {}
                 }
-            }
-        } catch {}
-
-        `$mstscPids = @(`$rdpProcs | ForEach-Object { if (`$_.ProcessId) { `$_.ProcessId } else { `$_.Id } })
-        `$seenTargetKeys = @{}
-        `$outIdx = 100
-
-        # Pass 3A: Every established connection from an RDP process or to remote port 3389/3390
-        foreach (`$conn in `$allTcp) {
-            `$isMstscPid = (`$mstscPids -contains `$conn.OwningProcess)
-            `$isPort3389 = (`$conn.RemotePort -ge 3389 -and `$conn.RemotePort -le 3399)
-            if (`$isMstscPid -or `$isPort3389) {
-                `$remIp = `$conn.RemoteAddress
-                if (-not `$remIp -or `$remIp -match '^(0\.0\.0\.0|127\.0\.0\.1|::1)$') { continue }
-                `$targetKey = `$remIp + ':' + `$conn.RemotePort + ':' + `$conn.OwningProcess
-                if (`$seenTargetKeys.ContainsKey(`$targetKey)) { continue }
-                `$seenTargetKeys[`$targetKey] = `$true
-
-                `$uName = if (`$mstscOwners.ContainsKey(`$conn.OwningProcess)) { `$mstscOwners[`$conn.OwningProcess] } else { `$primaryUser }
-                if (-not `$uName -or `$uName.EndsWith('$')) { `$uName = if (`$primaryUser) { `$primaryUser } else { `$env:USERNAME } }
-
-                `$targetLabel = `$remIp + (if (`$conn.RemotePort -ne 3389) { ':' + `$conn.RemotePort } else { '' })
-                `$sessions += @{
-                    id = `$outIdx
-                    deviceId = `$DeviceId
-                    username = `$uName
-                    sessionName = ('mstsc -> ' + `$targetLabel)
-                    type = ('Исходящий RDP (' + `$remIp + ')')
-                    state = 'Active'
-                    idleTime = '0 мин'
-                    logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
-                    clientIp = `$remIp
-                }
-                `$outIdx++
-            }
+            } catch {}
         }
 
-        # Pass 3B: If an mstsc process exists but had no Established TCP socket in the exact polling moment
+        `$outIdx = 100
+        `$seenPids = @{}
+
+        # Process each running RDP client process
         foreach (`$mp in `$rdpProcs) {
-            `$pidVal = if (`$mp.ProcessId) { `$mp.ProcessId } else { `$mp.Id }
-            `$foundInTcp = `$false
-            foreach (`$k in `$seenTargetKeys.Keys) {
-                if (`$k.EndsWith(':' + `$pidVal)) { `$foundInTcp = `$true; break }
-            }
-            if (-not `$foundInTcp) {
-                `$cmdLine = if (`$mp.CommandLine) { `$mp.CommandLine } else { "" }
-                `$winTitle = ""
-                try { `$winTitle = (Get-Process -Id `$pidVal -ErrorAction SilentlyContinue).MainWindowTitle } catch {}
+            `$targetPid = if (`$mp.ProcessId) { `$mp.ProcessId } else { `$mp.Id }
+            if (`$seenPids.ContainsKey(`$targetPid)) { continue }
+            `$seenPids[`$targetPid] = `$true
 
-                `$extTarget = ''
-                if (`$winTitle -and `$winTitle -match '^([0-9a-zA-Z\.\-_:]+)\s*-\s*') {
-                    `$extTarget = `$matches[1]
-                } elseif (`$cmdLine -match '(?i)/v:([^\s]+)') {
-                    `$extTarget = `$matches[1].Trim('"', "'")
-                } elseif (`$cmdLine -match '(?i)mstsc\.exe\s+([0-9a-zA-Z\.\-_:]+)') {
-                    `$extTarget = `$matches[1].Trim('"', "'")
+            `$uName = if (`$mstscOwners.ContainsKey(`$targetPid)) { `$mstscOwners[`$targetPid] } else { `$primaryUser }
+            if (-not `$uName -or `$uName.EndsWith('$')) { `$uName = `$primaryUser }
+
+            # 1. Find all active remote sockets for this specific PID
+            `$procConns = @(`$allTcp | Where-Object {
+                `$_.OwningProcess -eq `$targetPid -and
+                `$_.RemoteAddress -and
+                `$_.RemoteAddress -notmatch '^(0\.0\.0\.0|127\.0\.0\.1|::1)$'
+            })
+
+            # Also try to parse Window Title or CommandLine
+            `$winTitle = ""
+            try { `$winTitle = (Get-Process -Id `$targetPid -ErrorAction SilentlyContinue).MainWindowTitle } catch {}
+            `$titleTarget = ""
+            if (`$winTitle) {
+                `$splitTitle = `$winTitle -split '\s+[\u2013\u2014\-]\s+'
+                if (`$splitTitle.Count -ge 2 -and `$splitTitle[0].Trim()) {
+                    `$titleTarget = `$splitTitle[0].Trim()
                 }
-                `$displayTarget = if (`$extTarget) { `$extTarget } else { ('PID ' + `$pidVal) }
-                `$uName = if (`$mstscOwners.ContainsKey(`$pidVal)) { `$mstscOwners[`$pidVal] } else { `$primaryUser }
-                if (-not `$uName -or `$uName.EndsWith('$')) { `$uName = if (`$primaryUser) { `$primaryUser } else { `$env:USERNAME } }
+            }
+            if (-not `$titleTarget -and `$mp.CommandLine) {
+                if (`$mp.CommandLine -match '(?i)/v:([^\s]+)') {
+                    `$titleTarget = `$matches[1].Trim('"', "'")
+                }
+            }
 
+            if (`$procConns.Count -gt 0) {
+                foreach (`$conn in `$procConns) {
+                    `$remIp = `$conn.RemoteAddress
+                    `$remPort = [int]`$conn.RemotePort
+                    `$displayTarget = if (`$titleTarget) {
+                        `$titleTarget
+                    } else {
+                        `$remIp + (if (`$remPort -ne 3389 -and `$remPort -gt 0) { ':' + `$remPort } else { '' })
+                    }
+                    `$sessions += @{
+                        id = `$outIdx
+                        deviceId = `$DeviceId
+                        username = `$uName
+                        sessionName = ('mstsc -> ' + `$displayTarget)
+                        type = ('Исходящий RDP (' + `$displayTarget + ')')
+                        state = 'Active'
+                        idleTime = '0 мин'
+                        logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+                        clientIp = if (`$remIp -match '^\d+\.\d+\.\d+\.\d+') { `$remIp } else { '' }
+                    }
+                    `$outIdx++
+                }
+            } else {
+                `$displayTarget = if (`$titleTarget) { `$titleTarget } else { ('PID ' + `$targetPid) }
+                `$cleanIp = if (`$displayTarget -match '^(\d+\.\d+\.\d+\.\d+)') { `$matches[1] } else { '' }
                 `$sessions += @{
                     id = `$outIdx
                     deviceId = `$DeviceId
@@ -821,28 +774,28 @@ function Get-LiveRdpSessions() {
                     state = 'Active'
                     idleTime = '0 мин'
                     logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
-                    clientIp = if (`$extTarget -match '^\d+\.\d+\.\d+\.\d+') { `$extTarget } else { '' }
+                    clientIp = `$cleanIp
                 }
                 `$outIdx++
             }
         }
     } catch {}
 
-    # 4. Attach client IP for incoming 3389 sockets
+    # 3. Attach incoming client IP for port 3389 connections
     try {
-        `$inConns = Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue
-        if (`$inConns) {
+        `$inConns = @(`$allTcp | Where-Object { `$_.LocalPort -eq 3389 -and `$_.RemoteAddress -notmatch '^(0\.0\.0\.0|127\.0\.0\.1|::1)$' })
+        if (`$inConns.Count -gt 0) {
             foreach (`$inc in `$inConns) {
                 `$cliIp = `$inc.RemoteAddress
-                `$foundMatch = `$false
+                `$matched = `$false
                 foreach (`$s in `$sessions) {
                     if (`$s.type -eq 'Входящий RDP' -and -not `$s.clientIp) {
                         `$s.clientIp = `$cliIp
-                        `$foundMatch = `$true
+                        `$matched = `$true
                         break
                     }
                 }
-                if (-not `$foundMatch -and `$sessions.Count -eq 0) {
+                if (-not `$matched -and (`$sessions | Where-Object { `$_.type -eq 'Входящий RDP' }).Count -eq 0) {
                     `$sessions += @{
                         id = 201
                         deviceId = `$DeviceId
