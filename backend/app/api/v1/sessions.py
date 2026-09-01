@@ -18,6 +18,7 @@ def update_device_sessions(
     ip_address: Optional[str] = None
 ):
     if not device_id:
+        print(f"[SESSIONS] update_device_sessions called with EMPTY device_id, skipping")
         return
     norm_list = []
     for s in sessions_list:
@@ -36,6 +37,29 @@ def update_device_sessions(
 
     for k in keys_to_index:
         live_device_sessions[k] = norm_list
+
+    print(f"[SESSIONS] update_device_sessions: device_id={device_id}, sessions_count={len(norm_list)}, keys={list(keys_to_index)}, total_keys_in_memory={len(live_device_sessions)}")
+
+@router.get("/debug")
+async def debug_sessions():
+    """Debug endpoint to inspect live_device_sessions in-memory state"""
+    result = {}
+    unique_lists = set()
+    for k, v in live_device_sessions.items():
+        list_id = id(v)
+        if list_id not in unique_lists:
+            unique_lists.add(list_id)
+            result[k] = {
+                "count": len(v),
+                "sessions": v[:3]  # first 3 for brevity
+            }
+        else:
+            result[k] = {"count": len(v), "alias_of": "same_list"}
+    return {
+        "total_keys": len(live_device_sessions),
+        "unique_session_lists": len(unique_lists),
+        "data": result
+    }
 
 @router.get("")
 async def list_sessions(
@@ -102,3 +126,4 @@ async def logoff_session(session_id: int, db: AsyncSession = Depends(get_db)):
                 )
                 return {"status": "success", "message": f"Logoff command queued for session {session_id} on {dev_id}"}
     return {"status": "success", "message": f"Logoff command dispatched for session {session_id}"}
+

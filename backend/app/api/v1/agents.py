@@ -958,6 +958,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 device_live_processes[device.hostname.upper()] = payload["processes"]
 
             rdp_data = payload.get("rdpSessions") if "rdpSessions" in payload else (payload.get("rdp_sessions") or payload.get("sessions"))
+            has_rdp_key = "rdpSessions" in payload or "rdp_sessions" in payload or "sessions" in payload
+            print(f"[Heartbeat] Device {device.id}: rdpSessions key present={has_rdp_key}, rdp_data type={type(rdp_data).__name__}, rdp_data len={len(rdp_data) if isinstance(rdp_data, list) else 'N/A'}")
             if rdp_data is not None and isinstance(rdp_data, list):
                 from backend.app.api.v1.sessions import update_device_sessions
                 update_device_sessions(
@@ -971,6 +973,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                     device.rdp_status = RdpStatus.ACTIVE
                 else:
                     device.rdp_status = RdpStatus.STOPPED
+            else:
+                print(f"[Heartbeat] Device {device.id}: NO rdpSessions in payload! Payload keys: {list(payload.keys())}")
 
             device_net_changed = False
             if client_ip and device.ip_address != client_ip:
