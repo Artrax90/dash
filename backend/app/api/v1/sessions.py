@@ -243,14 +243,22 @@ async def logoff_session(
 
     # 2.5 If LOGOFF and dest_ip is known, also send LOGOFF to the destination server if managed
     if action == "LOGOFF" and dest_ip:
-        dest_res = await db.execute(select(Device).where((Device.ip_address == dest_ip) | (Device.hostname == dest_ip)))
+        clean_dest_ip = dest_ip.split(":")[0].strip()
+        dest_res = await db.execute(
+            select(Device).where(
+                (Device.ip_address == clean_dest_ip) |
+                (Device.hostname == clean_dest_ip) |
+                (Device.name == clean_dest_ip) |
+                (Device.id == clean_dest_ip)
+            )
+        )
         dest_dev = dest_res.scalar_one_or_none()
         if dest_dev:
             queue_device_command(
                 device_id=dest_dev.id,
                 action="LOGOFF",
                 reason=f"Admin requested remote LOGOFF for user {sess_username or ''} from {resolved_dev_id}",
-                extra_data={"sessionId": session_id, "username": sess_username, "remoteHost": dest_ip}
+                extra_data={"sessionId": session_id, "username": sess_username, "remoteHost": clean_dest_ip}
             )
             if dest_dev.ip_address:
                 send_direct_lan_power_signal(
@@ -259,7 +267,7 @@ async def logoff_session(
                     device_id=dest_dev.id,
                     mac_address=dest_dev.mac_address or "",
                     hostname=dest_dev.hostname or "",
-                    extra_arg=str(session_id)
+                    extra_arg=f"0|{sess_username or ''}"
                 )
 
     # 3. Immediately purge the removed session from live memory

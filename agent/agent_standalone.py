@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.6.1"
+AGENT_VERSION = "2.6.2"
 
 def execute_power_command(action: str, extra: dict = None):
     act = str(action).upper().strip()
@@ -21,7 +21,7 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.6.1")
+        execute_agent_update(server_base, cfg, "2.6.2")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
@@ -38,9 +38,17 @@ def execute_power_command(action: str, extra: dict = None):
             subprocess.run("rundll32.exe powrprof.dll,SetSuspendState 0,1,0", shell=True)
         else:
             subprocess.run("systemctl suspend", shell=True)
+    elif act in ["CLOSE_RDP", "CLOSE_RDP_CLIENT", "KILL_RDP"]:
+        target_pid = extra.get("pid") if extra else None
+        sess_id = extra.get("sessionId") if extra else None
+        if target_pid:
+            subprocess.run(f"taskkill /F /PID {target_pid} 2>nul", shell=True)
+        elif sess_id is not None and int(sess_id) >= 100:
+            subprocess.run(f"taskkill /F /PID {sess_id} 2>nul", shell=True)
     elif act in ["LOGOFF", "RESET_SESSION", "RDP_CLEANUP"]:
         sess_id = extra.get("sessionId") if extra else None
         target_pid = extra.get("pid") if extra else None
+        target_user = extra.get("username") if extra else None
         rem_host = extra.get("remoteHost") if extra else None
         if is_win:
             if rem_host:
@@ -49,8 +57,8 @@ def execute_power_command(action: str, extra: dict = None):
                 subprocess.run(f"logoff {sess_id} 2>nul & rwinsta {sess_id} 2>nul", shell=True)
             if target_pid:
                 subprocess.run(f"taskkill /F /PID {target_pid} 2>nul", shell=True)
-            if (sess_id is not None and int(sess_id) >= 100) or rem_host:
-                subprocess.run("taskkill /F /IM mstsc.exe /T 2>nul & taskkill /F /IM msrdc.exe /T 2>nul", shell=True)
+            elif sess_id is not None and int(sess_id) >= 100:
+                subprocess.run(f"taskkill /F /PID {sess_id} 2>nul", shell=True)
         else:
             if sess_id is not None:
                 subprocess.run(f"loginctl terminate-session {sess_id} 2>/dev/null || pkill -KILL -s {sess_id} 2>/dev/null", shell=True)
@@ -1444,7 +1452,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.6.1"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.6.2"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:
