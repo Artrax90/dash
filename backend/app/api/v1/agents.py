@@ -98,6 +98,24 @@ agent_update_statuses: Dict[str, Dict[str, Any]] = {}
 # Persistent token storage for rapid enrollment & DB sync
 tokens_store: List[Dict[str, Any]] = load_tokens()
 
+# Global fleet network neighbor (ARP / Get-NetNeighbor) cache populated by active Windows agents
+fleet_arp_cache: Dict[str, Dict[str, Any]] = {}
+
+@router.post("/probe-result")
+async def receive_probe_result(payload: Dict[str, Any]):
+    ip = payload.get("ip")
+    mac = payload.get("mac")
+    if ip and mac:
+        clean_ip = str(ip).strip()
+        clean_mac = str(mac).replace("-", ":").upper().strip()
+        fleet_arp_cache[clean_ip] = {
+            "mac": clean_mac,
+            "timestamp": time.time(),
+            "reportedBy": payload.get("reportedBy")
+        }
+        return {"status": "ok", "ip": clean_ip, "mac": clean_mac}
+    return {"status": "ignored"}
+
 @router.get("/download-bundle")
 async def download_agent_bundle(token: str = "", server_url: str = ""):
     """
@@ -810,6 +828,21 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
     effective_interval = agent_settings.get("defaultHeartbeatInterval", 60)
     device = None
+
+    # Cache all live network neighbors (Get-NetNeighbor) for instant fleet MAC discovery
+    neighbors = payload.get("netNeighbors") or payload.get("neighbors") or []
+    if isinstance(neighbors, list) and neighbors:
+        now_ts = time.time()
+        for n in neighbors:
+            if isinstance(n, dict):
+                nip = n.get("ip")
+                nmac = n.get("mac")
+                if nip and nmac and str(nmac).strip() != "00:00:00:00:00:00" and not str(nip).startswith("127."):
+                    fleet_arp_cache[str(nip).strip()] = {
+                        "mac": str(nmac).replace("-", ":").upper().strip(),
+                        "timestamp": now_ts,
+                        "reportedBy": device_id or payload.get("hostname")
+                    }
 
     lookup_conds = []
     if device_id:

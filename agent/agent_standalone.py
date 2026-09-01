@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.8.1"
+AGENT_VERSION = "2.8.2"
 
 def execute_power_command(action: str, extra: dict = None):
     act = str(action).upper().strip()
@@ -21,7 +21,7 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.8.1")
+        execute_agent_update(server_base, cfg, "2.8.2")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
@@ -1314,6 +1314,26 @@ def main():
                             tgt_mac_clean = tgt_mac.replace(":", "").replace("-", "").upper()
                             my_host = socket.gethostname().upper()
                             
+                            if cmd_act.startswith("PROBE_IP") or cmd_act.startswith("PROBE_NEIGHBOR"):
+                                target_ip = parts[2].strip() if len(parts) >= 3 else ""
+                                if target_ip:
+                                    def probe_worker(tip, s_base, d_id):
+                                        try:
+                                            if platform.system() == "Windows":
+                                                ps_script = f"Test-Connection -ComputerName {tip} -Count 1 -Quiet | Out-Null; (Get-NetNeighbor -IPAddress {tip} -ErrorAction SilentlyContinue | Where-Object {{ $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }}).LinkLayerAddress | Select-Object -First 1"
+                                                proc = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_script], capture_output=True, text=True, timeout=3)
+                                                fmac = proc.stdout.strip()
+                                                if fmac and len(fmac.replace("-", "").replace(":", "")) == 12:
+                                                    http_post(f"{s_base}/agents/probe-result", {
+                                                        "ip": tip,
+                                                        "mac": fmac.replace("-", ":").upper(),
+                                                        "reportedBy": d_id
+                                                    })
+                                        except Exception:
+                                            pass
+                                    threading.Thread(target=probe_worker, args=(target_ip, server_base, cfg["device_id"]), daemon=True).start()
+                                continue
+
                             matched = True
                             if tgt_id or tgt_mac or tgt_host:
                                 matched = (
@@ -1409,7 +1429,23 @@ def main():
             last_gpu_count = gpu_count
             last_net_count = net_count
 
-            os_type, os_ver = get_os_info()
+            net_neighbors = []
+            if platform.system() == "Windows":
+                try:
+                    ps_cmd = '(Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.LinkLayerAddress -and $_.LinkLayerAddress -ne "00-00-00-00-00-00" -and $_.IPAddress -notlike "127.*" -and $_.IPAddress -notlike "169.254.*" -and $_.State -ne "Unreachable" } | Select-Object @{N="ip";E={$_.IPAddress}}, @{N="mac";E={$_.LinkLayerAddress}}) | ConvertTo-Json -Compress'
+                    res = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", ps_cmd], capture_output=True, text=True, timeout=2)
+                    if res.stdout.strip():
+                        parsed = json.loads(res.stdout.strip())
+                        if isinstance(parsed, dict):
+                            parsed = [parsed]
+                        if isinstance(parsed, list):
+                            for item in parsed:
+                                ip_val = item.get("ip")
+                                mac_val = item.get("mac")
+                                if ip_val and mac_val:
+                                    net_neighbors.append({"ip": ip_val, "mac": mac_val.replace("-", ":").upper()})
+                except Exception:
+                    pass
 
             resp = http_post(f"{server_base}/agents/heartbeat", {
                 "deviceId": cfg["device_id"],
@@ -1433,7 +1469,8 @@ def main():
                 "agentVersion": AGENT_VERSION,
                 "isStartup": is_startup,
                 "rdpSessions": get_rdp_sessions(),
-                "processes": get_top_processes()
+                "processes": get_top_processes(),
+                "netNeighbors": net_neighbors
             })
             print(f"[Heartbeat] CPU: {cpu_percent}% | RAM: {ram_percent}% ({total_ram_gb} GB, {len(ram_slots)} slots) | PCI: {len(pci_devs)} | User: {user} | v{AGENT_VERSION}")
             is_startup = False
@@ -1452,7 +1489,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.8.1"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.8.2"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:

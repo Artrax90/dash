@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.8.1"
+    agentVersion = "2.8.2"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -687,7 +687,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.8.1'
+`$AgentVersion = '2.8.2'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -705,9 +705,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.8.1") {
+function Update-AgentService([string]`$targetVer = "2.8.2") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.8.1"
+        `$targetVer = "2.8.2"
     }
     try {
         # 1. Report update in progress
@@ -789,7 +789,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.8.1"
+        Update-AgentService "2.8.2"
         return
     }
 
@@ -1768,6 +1768,15 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             osVersion = `$osCaption
             rdpSessions = `$liveRdp
             processes = `$procList
+            netNeighbors = @(try {
+                Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
+                    `$_.LinkLayerAddress -and 
+                    `$_.LinkLayerAddress -ne '00-00-00-00-00-00' -and 
+                    `$_.IPAddress -notlike '127.*' -and 
+                    `$_.IPAddress -notlike '169.254.*' -and 
+                    `$_.State -ne 'Unreachable'
+                } | Select-Object -Property @{N='ip';E={`$_.IPAddress}}, @{N='mac';E={`$_.LinkLayerAddress.Replace('-', ':').ToUpper()}}
+            } catch { @() })
         }
 
         `$json = `$payload | ConvertTo-Json -Depth 5 -Compress
@@ -1839,6 +1848,24 @@ while (`$true) {
                     `$parts = `$msg.Split(":")
                     if (`$parts.Length -ge 2) {
                         `$cmdAction = `$parts[1].Trim()
+                        if (`$cmdAction -eq "PROBE_IP" -or `$cmdAction -eq "PROBE_NEIGHBOR") {
+                            `$targetProbeIp = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
+                            if (`$targetProbeIp) {
+                                try {
+                                    Test-Connection -ComputerName `$targetProbeIp -Count 1 -Quiet | Out-Null
+                                    `$fMac = (Get-NetNeighbor -IPAddress `$targetProbeIp -ErrorAction SilentlyContinue | Where-Object { `$_.LinkLayerAddress -and `$_.LinkLayerAddress -ne '00-00-00-00-00-00' }).LinkLayerAddress | Select-Object -First 1
+                                    if (`$fMac) {
+                                        `$pRes = @{
+                                            ip = `$targetProbeIp
+                                            mac = `$fMac.Replace('-', ':').ToUpper()
+                                            reportedBy = `$DeviceId
+                                        }
+                                        Invoke-ApiPost "`$ServerUrl/api/v1/agents/probe-result" `$pRes -silent `$true
+                                    }
+                                } catch {}
+                            }
+                            continue
+                        }
                         `$targetDevId = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
                         `$targetMac = if (`$parts.Length -ge 4) { `$parts[3].Trim() } else { "" }
                         `$targetHost = if (`$parts.Length -ge 5) { `$parts[4].Trim() } else { "" }
@@ -2203,7 +2230,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.8.1"
+    agentVersion = "2.8.2"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

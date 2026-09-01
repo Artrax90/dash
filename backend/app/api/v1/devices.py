@@ -317,55 +317,46 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
     if not ip:
         raise HTTPException(status_code=400, detail="Укажите корректный IP-адрес")
 
-    is_online = False
-    
-    # 1. Trigger network activity to populate kernel ARP table
-    try:
-        ping_cmd = ["ping", "-n", "1", "-w", "700", ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", ip]
-        proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-        rc = await asyncio.wait_for(proc.wait(), timeout=1.5)
-        if rc == 0:
-            is_online = True
-    except Exception:
-        pass
+    from backend.app.api.v1.agents import fleet_arp_cache
 
-    # Quick TCP connection attempt on common ports to trigger ARP resolution even if ICMP is blocked
-    if not is_online:
-        for p in [80, 443, 3389, 22, 9, 8080]:
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                s.settimeout(0.2)
-                res = s.connect_ex((ip, p))
-                s.close()
-                if res == 0:
-                    is_online = True
-                    break
-            except Exception:
-                pass
+    # Strategy 0: Check fleet neighbor cache populated by active Windows agents
+    cached_info = fleet_arp_cache.get(ip)
+    if cached_info and isinstance(cached_info, dict) and cached_info.get("mac"):
+        mac = cached_info.get("mac")
+        is_online = True
 
-    # 2. Extract MAC address from ARP cache / Get-NetNeighbor
-    mac = None
-
-    # Strategy 0: Primary on Windows / PowerShell -> Get-NetNeighbor -IPAddress <ip>
-    import shutil
-    ps_bin = shutil.which("powershell") or shutil.which("pwsh") or ("powershell.exe" if os.name == "nt" else None)
-    if ps_bin:
+    # 1. Trigger local network activity
+    if not mac:
         try:
-            ps_script = f"Test-Connection -ComputerName {ip} -Count 1 -Quiet | Out-Null; (Get-NetNeighbor -IPAddress {ip} -ErrorAction SilentlyContinue | Where-Object {{ $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }}).LinkLayerAddress | Select-Object -First 1"
-            proc = await asyncio.create_subprocess_exec(
-                ps_bin, "-NoProfile", "-NonInteractive", "-Command", ps_script,
-                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-            )
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=3.5)
-            text = out.decode("utf-8", errors="ignore").strip()
-            m = re.search(r'([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})', text)
-            if m:
-                mac = m.group(1).replace("-", ":").upper()
+            ping_cmd = ["ping", "-n", "1", "-w", "500", ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", ip]
+            proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+            rc = await asyncio.wait_for(proc.wait(), timeout=1.0)
+            if rc == 0:
                 is_online = True
-        except Exception as e:
-            print(f"Error executing Get-NetNeighbor: {e}")
+        except Exception:
+            pass
 
-    # Strategy A: /proc/net/arp (Linux / Docker)
+    # Strategy 1: Local PowerShell Get-NetNeighbor (Windows / Local Host)
+    if not mac:
+        import shutil
+        ps_bin = shutil.which("powershell") or shutil.which("pwsh") or ("powershell.exe" if os.name == "nt" else None)
+        if ps_bin:
+            try:
+                ps_script = f"Test-Connection -ComputerName {ip} -Count 1 -Quiet | Out-Null; (Get-NetNeighbor -IPAddress {ip} -ErrorAction SilentlyContinue | Where-Object {{ $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }}).LinkLayerAddress | Select-Object -First 1"
+                proc = await asyncio.create_subprocess_exec(
+                    ps_bin, "-NoProfile", "-NonInteractive", "-Command", ps_script,
+                    stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+                )
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.5)
+                text = out.decode("utf-8", errors="ignore").strip()
+                m = re.search(r'([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})', text)
+                if m:
+                    mac = m.group(1).replace("-", ":").upper()
+                    is_online = True
+            except Exception as e:
+                print(f"Error executing Get-NetNeighbor: {e}")
+
+    # Strategy 2: Linux / Docker local ARP cache (/proc/net/arp, ip neigh, arp -a)
     if not mac and os.path.exists("/proc/net/arp"):
         try:
             with open("/proc/net/arp", "r") as f:
@@ -380,12 +371,11 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
         except Exception as e:
             print(f"Error reading /proc/net/arp: {e}")
 
-    # Strategy B: `ip neigh show <ip>` (Linux / Docker)
     if not mac:
         try:
             cmd = ["ip", "neigh", "show", ip]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.5)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.0)
             text = out.decode("utf-8", errors="ignore")
             m = re.search(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', text)
             if m:
@@ -394,12 +384,11 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
         except Exception:
             pass
 
-    # Strategy C: `arp -a` / `arp -n <ip>`
     if not mac:
         try:
             cmd = ["arp", "-a", ip] if os.name == "nt" else ["arp", "-n", ip]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.5)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.0)
             text = out.decode("utf-8", errors="ignore")
             m = re.search(r'([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})', text)
             if m:
@@ -408,7 +397,42 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
         except Exception:
             pass
 
-    # Strategy D: Check existing DB record
+    # Strategy 3: Real-Time LAN Agent Relay (Dispatch UDP probe to online Windows agents on LAN)
+    if not mac:
+        try:
+            probe_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            probe_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+            probe_msg = f"WM_CMD:PROBE_IP:{ip}".encode("utf-8")
+            
+            # Send to LAN broadcast addresses
+            for b_ip in ["255.255.255.255", "192.168.1.255", "192.168.0.255", "10.0.0.255", "172.16.255.255"]:
+                try:
+                    probe_sock.sendto(probe_msg, (b_ip, 48123))
+                except Exception:
+                    pass
+            
+            # Send directly to all registered device IPs
+            dev_res = await db.execute(select(Device).where(Device.ip_address.isnot(None)))
+            for dev_row in dev_res.scalars().all():
+                if dev_row.ip_address and not dev_row.ip_address.startswith("127."):
+                    try:
+                        probe_sock.sendto(probe_msg, (dev_row.ip_address, 48123))
+                    except Exception:
+                        pass
+            probe_sock.close()
+
+            # Await fast agent response in fleet_arp_cache
+            for _ in range(12):
+                await asyncio.sleep(0.12)
+                c_info = fleet_arp_cache.get(ip)
+                if c_info and isinstance(c_info, dict) and c_info.get("mac"):
+                    mac = c_info.get("mac")
+                    is_online = True
+                    break
+        except Exception as e:
+            print(f"Error in Agent Relay UDP probe: {e}")
+
+    # Strategy 4: Check existing DB record
     if not mac:
         db_res = await db.execute(select(Device).where(Device.ip_address == ip))
         dev = db_res.scalars().first()
@@ -434,7 +458,7 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             "ip": ip,
             "mac": formatted_mac,
             "hostname": hostname,
-            "message": "Устройство обнаружено в сети! MAC-адрес успешно получен."
+            "message": f"Устройство обнаружено в сети! MAC-адрес: {formatted_mac}"
         }
     else:
         return {
