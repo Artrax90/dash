@@ -59,6 +59,7 @@ class TelemetryCollector:
             "currentUser": primary_user,
             "osType": platform.system(),
             "osVersion": f"{platform.system()} {platform.release()}",
+            "rdpSessions": TelemetryCollector.get_rdp_sessions(),
         }
 
     @staticmethod

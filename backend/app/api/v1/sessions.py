@@ -12,7 +12,7 @@ live_device_sessions: Dict[str, List[Dict[str, Any]]] = {}
 
 def update_device_sessions(
     device_id: str,
-    sessions_list: List[Dict[str, Any]],
+    sessions_list: Any,
     hostname: Optional[str] = None,
     reported_device_id: Optional[str] = None,
     ip_address: Optional[str] = None
@@ -20,6 +20,12 @@ def update_device_sessions(
     if not device_id:
         print(f"[SESSIONS] update_device_sessions called with EMPTY device_id, skipping")
         return
+
+    if isinstance(sessions_list, dict):
+        sessions_list = [sessions_list]
+    elif not isinstance(sessions_list, list):
+        sessions_list = []
+
     norm_list = []
     for s in sessions_list:
         if isinstance(s, dict):

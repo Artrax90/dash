@@ -957,10 +957,19 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 device_live_processes[device.id.upper()] = payload["processes"]
                 device_live_processes[device.hostname.upper()] = payload["processes"]
 
-            rdp_data = payload.get("rdpSessions") if "rdpSessions" in payload else (payload.get("rdp_sessions") or payload.get("sessions"))
+            raw_rdp = payload.get("rdpSessions") if "rdpSessions" in payload else (payload.get("rdp_sessions") or payload.get("sessions"))
             has_rdp_key = "rdpSessions" in payload or "rdp_sessions" in payload or "sessions" in payload
-            print(f"[Heartbeat] Device {device.id}: rdpSessions key present={has_rdp_key}, rdp_data type={type(rdp_data).__name__}, rdp_data len={len(rdp_data) if isinstance(rdp_data, list) else 'N/A'}")
-            if rdp_data is not None and isinstance(rdp_data, list):
+            
+            # Normalize dict to list if single session object was sent by PowerShell ConvertTo-Json
+            if isinstance(raw_rdp, dict):
+                rdp_data = [raw_rdp]
+            elif isinstance(raw_rdp, list):
+                rdp_data = raw_rdp
+            else:
+                rdp_data = [] if has_rdp_key else None
+
+            print(f"[Heartbeat] Device {device.id}: rdpSessions key present={has_rdp_key}, raw type={type(raw_rdp).__name__}, rdp_data items={len(rdp_data) if rdp_data is not None else 'N/A'}")
+            if rdp_data is not None:
                 from backend.app.api.v1.sessions import update_device_sessions
                 update_device_sessions(
                     device_id=device.id,
