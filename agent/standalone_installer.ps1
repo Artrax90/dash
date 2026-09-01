@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.6.3"
+    agentVersion = "2.6.4"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -443,7 +443,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.6.3'
+`$AgentVersion = '2.6.4'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -455,22 +455,12 @@ if (-not `$createdNew) {
 }
 
 try {
-    Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class WtsHelper {
-    [DllImport("wtsapi32.dll", SetLastError = true)]
-    public static extern bool WTSLogoffSession(IntPtr hServer, int sessionId, bool bWait);
-    
-    [DllImport("wtsapi32.dll", SetLastError = true)]
-    public static extern bool WTSDisconnectSession(IntPtr hServer, int sessionId, bool bWait);
-}
-"@ -ErrorAction SilentlyContinue
+    Add-Type -TypeDefinition 'using System; using System.Runtime.InteropServices; public class WtsHelper { [DllImport("wtsapi32.dll", SetLastError = true)] public static extern bool WTSLogoffSession(IntPtr hServer, int sessionId, bool bWait); [DllImport("wtsapi32.dll", SetLastError = true)] public static extern bool WTSDisconnectSession(IntPtr hServer, int sessionId, bool bWait); }' -ErrorAction SilentlyContinue
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.6.3") {
+function Update-AgentService([string]`$targetVer = "2.6.4") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.6.3"
+        `$targetVer = "2.6.4"
     }
     try {
         # 1. Report update in progress
@@ -552,7 +542,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.6.3"
+        Update-AgentService "2.6.4"
         return
     }
 
@@ -1892,7 +1882,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.6.3"
+    agentVersion = "2.6.4"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

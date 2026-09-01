@@ -254,7 +254,7 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
         for d in user_devices:
             status_icon = "🟢" if d.get("powerStatus") == "On" else "🔴"
             grp = d.get("group", "Общие")
-            lines.append(f"{status_icon} <b>{d.get('name')}</b> ({d.get('ip')}) · <i>{grp}</i> · v{d.get('agentVersion', '2.6.3')}")
+            lines.append(f"{status_icon} <b>{d.get('name')}</b> ({d.get('ip')}) · <i>{grp}</i> · v{d.get('agentVersion', '2.6.4')}")
         return "\n".join(lines)
 
     if cmd in ["/wake", "/shutdown", "/reboot", "/poweroff"]:
