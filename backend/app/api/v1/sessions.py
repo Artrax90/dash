@@ -184,10 +184,11 @@ async def logoff_session(
     if device and device.ip_address:
         send_direct_lan_power_signal(
             ip_address=device.ip_address,
-            action=f"{action}:{extra_arg}",
+            action=action,
             device_id=device.id,
             mac_address=device.mac_address or "",
-            hostname=device.hostname or ""
+            hostname=device.hostname or "",
+            extra_arg=extra_arg
         )
 
     # 3. Immediately purge the removed session from live memory

@@ -689,12 +689,13 @@ def send_direct_lan_power_signal(
     device_id: str = "",
     mac_address: str = "",
     hostname: str = "",
+    extra_arg: str = "",
     port: int = 48123
 ):
     """
     Send an immediate zero-latency UDP trigger packet strictly UNICAST to the target agent's LAN listener.
     NEVER broadcasts to the subnet (.255) to guarantee other workstations are never affected.
-    Includes target verification specifiers (device_id, mac, hostname) so the agent self-verifies.
+    Includes target verification specifiers (device_id, mac, hostname, extra_arg) so the agent self-verifies.
     """
     if not ip_address or ip_address.startswith("127.") or ip_address == "0.0.0.0":
         return
@@ -702,13 +703,14 @@ def send_direct_lan_power_signal(
         clean_mac = (mac_address or "").replace(":", "").replace("-", "").strip().upper()
         clean_dev_id = (device_id or "").strip()
         clean_host = (hostname or "").strip()
-        payload_str = f"WM_CMD:{action.upper()}:{clean_dev_id}:{clean_mac}:{clean_host}"
+        extra_clean = str(extra_arg or "").strip()
+        payload_str = f"WM_CMD:{action.upper()}:{clean_dev_id}:{clean_mac}:{clean_host}:{extra_clean}"
         payload = payload_str.encode("utf-8")
         
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
             # Strictly unicast to the specific target IP address
             s.sendto(payload, (ip_address, port))
-        print(f"[Direct LAN Signal] Sent UNICAST UDP trigger {action} to {ip_address}:{port} (target: {clean_dev_id}, mac: {clean_mac}, host: {clean_host})")
+        print(f"[Direct LAN Signal] Sent UNICAST UDP trigger {action} to {ip_address}:{port} (target: {clean_dev_id}, mac: {clean_mac}, host: {clean_host}, extra: {extra_clean})")
     except Exception as e:
         print(f"[Direct LAN Signal] Error sending to {ip_address}: {e}")
 

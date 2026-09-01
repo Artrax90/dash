@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.5.5"
+    agentVersion = "2.5.6"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -443,7 +443,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.5.5'
+`$AgentVersion = '2.5.6'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -454,9 +454,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.5.5") {
+function Update-AgentService([string]`$targetVer = "2.5.6") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.5.5"
+        `$targetVer = "2.5.6"
     }
     try {
         # 1. Report update in progress
@@ -538,7 +538,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.5.5"
+        Update-AgentService "2.5.6"
         return
     }
 
@@ -569,10 +569,14 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
             try { `$targetPid = [int]`$cmdObj.pid } catch {}
         }
         if (`$targetPid -and `$targetPid -gt 0) {
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /PID `$targetPid /T 2>`$null } catch {}
+            try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$targetPid" -ErrorAction SilentlyContinue).Terminate() } catch {}
             try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
-        } else {
-            try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
         }
+        try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM mstsc.exe /T 2>`$null } catch {}
+        try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM msrdc.exe /T 2>`$null } catch {}
+        try { (Get-CimInstance Win32_Process -Filter "Name = 'mstsc.exe' OR Name = 'msrdc.exe'" -ErrorAction SilentlyContinue) | ForEach-Object { `$_.Terminate() } } catch {}
+        try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
         try { Invoke-Heartbeat `$true } catch {}
     }
     elseif (`$act -eq 'LOGOFF' -or `$act -eq 'RESET_SESSION' -or `$act -eq 'RDP_CLEANUP') {
@@ -583,6 +587,9 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (`$targetSessId -ne `$null -and `$targetSessId -ge 0) {
             if (`$targetSessId -ge 100) {
                 # Outgoing RDP session index fallback
+                try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM mstsc.exe /T 2>`$null } catch {}
+                try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM msrdc.exe /T 2>`$null } catch {}
+                try { (Get-CimInstance Win32_Process -Filter "Name = 'mstsc.exe' OR Name = 'msrdc.exe'" -ErrorAction SilentlyContinue) | ForEach-Object { `$_.Terminate() } } catch {}
                 try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
             } else {
                 # Standard Windows terminal session ID
@@ -1749,7 +1756,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.5.5"
+    agentVersion = "2.5.6"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
