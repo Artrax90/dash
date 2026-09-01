@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.5.8"
+    agentVersion = "2.5.9"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -443,7 +443,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.5.8'
+`$AgentVersion = '2.5.9'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -454,9 +454,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.5.8") {
+function Update-AgentService([string]`$targetVer = "2.5.9") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.5.8"
+        `$targetVer = "2.5.9"
     }
     try {
         # 1. Report update in progress
@@ -538,7 +538,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.5.8"
+        Update-AgentService "2.5.9"
         return
     }
 
@@ -584,33 +584,50 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (`$cmdObj -and `$cmdObj.sessionId -ne `$null) {
             try { `$targetSessId = [int]`$cmdObj.sessionId } catch {}
         }
-        if (`$targetSessId -ne `$null -and `$targetSessId -ge 0) {
-            if (`$targetSessId -ge 100) {
-                # Outgoing RDP session index fallback
-                try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM mstsc.exe /T 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM msrdc.exe /T 2>`$null } catch {}
-                try { (Get-CimInstance Win32_Process -Filter "Name = 'mstsc.exe' OR Name = 'msrdc.exe'" -ErrorAction SilentlyContinue) | ForEach-Object { `$_.Terminate() } } catch {}
-                try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
-            } else {
-                # Standard Windows terminal session ID
-                try { & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\logoff.exe" "`$targetSessId" /v 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\reset.exe" session `$targetSessId 2>`$null } catch {}
-                try {
-                    if (`$cmdObj -and `$cmdObj.username) {
-                        `$uNameLower = `$cmdObj.username.Trim().ToLower()
-                        `$qLines = @(quser 2>`$null)
-                        foreach (`$ql in `$qLines) {
-                            if (`$ql.ToLower() -match "^\s*>?`$uNameLower\s+(\S+)?\s+(\d+)") {
-                                `$foundId = `$matches[2]
-                                & "`$env:SystemRoot\System32\logoff.exe" `$foundId 2>`$null
-                                & "`$env:SystemRoot\System32\rwinsta.exe" `$foundId 2>`$null
-                            }
-                        }
-                    }
-                } catch {}
+        `$remHost = `$null
+        if (`$cmdObj -and `$cmdObj.remoteHost) { `$remHost = `$cmdObj.remoteHost }
+        `$uName = `$null
+        if (`$cmdObj -and `$cmdObj.username) { `$uName = `$cmdObj.username.Trim() }
+
+        # 1. If remote host is specified, send remote logoff/rwinsta
+        if (`$remHost) {
+            try { & "`$env:SystemRoot\System32\logoff.exe" /server:`$remHost 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\rwinsta.exe" /server:`$remHost 2>`$null } catch {}
+            if (`$targetSessId -ne `$null -and `$targetSessId -lt 100) {
+                try { & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId /server:`$remHost 2>`$null } catch {}
+                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId /server:`$remHost 2>`$null } catch {}
             }
+        }
+
+        # 2. Local terminal session logoff
+        if (`$targetSessId -ne `$null -and `$targetSessId -lt 100 -and `$targetSessId -ge 0) {
+            try { & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\logoff.exe" "`$targetSessId" /v 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\reset.exe" session `$targetSessId 2>`$null } catch {}
+        }
+
+        # 3. If username is given, find match in quser / qwinsta and logoff
+        if (`$uName) {
+            try {
+                `$uNameLower = `$uName.ToLower()
+                `$qLines = @(quser 2>`$null)
+                foreach (`$ql in `$qLines) {
+                    if (`$ql.ToLower() -match "^\s*>?`$uNameLower\s+(\S+)?\s+(\d+)") {
+                        `$foundId = `$matches[2]
+                        & "`$env:SystemRoot\System32\logoff.exe" `$foundId 2>`$null
+                        & "`$env:SystemRoot\System32\rwinsta.exe" `$foundId 2>`$null
+                    }
+                }
+            } catch {}
+        }
+
+        # 4. If outgoing RDP session or mstsc is running for this target, cleanly close it
+        if (`$targetSessId -ge 100 -or `$remHost) {
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM mstsc.exe /T 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM msrdc.exe /T 2>`$null } catch {}
+            try { (Get-CimInstance Win32_Process -Filter "Name = 'mstsc.exe' OR Name = 'msrdc.exe'" -ErrorAction SilentlyContinue) | ForEach-Object { `$_.Terminate() } } catch {}
+            try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
         }
         try { Invoke-Heartbeat `$true } catch {}
     }
@@ -1756,7 +1773,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.5.8"
+    agentVersion = "2.5.9"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

@@ -970,19 +970,9 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             else:
                 rdp_data = [] if has_rdp_key else None
 
-            print(f"[Heartbeat] Device {device.id}: rdpSessions key present={has_rdp_key}, raw type={type(raw_rdp).__name__}, rdp_data items={len(rdp_data) if rdp_data is not None else 'N/A'}")
             if rdp_data is not None:
-                # Filter out pure local console sessions so rdp_status is active ONLY for real RDP
-                filtered_rdp = []
-                for s in rdp_data:
-                    if isinstance(s, dict):
-                        s_type = str(s.get("type", ""))
-                        s_name = str(s.get("sessionName", ""))
-                        is_local = (s_type == "Локальный сеанс" or s_name == "console") and "Исходящий" not in s_type and "Входящий" not in s_type and "mstsc" not in s_name and "rdp" not in s_name
-                        if not is_local:
-                            filtered_rdp.append(s)
-
-                from backend.app.api.v1.sessions import update_device_sessions
+                from backend.app.api.v1.sessions import is_real_rdp_session, update_device_sessions
+                filtered_rdp = [s for s in rdp_data if isinstance(s, dict) and is_real_rdp_session(s)]
                 update_device_sessions(
                     device_id=device.id,
                     sessions_list=filtered_rdp,

@@ -11,6 +11,26 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 live_device_sessions: Dict[str, List[Dict[str, Any]]] = {}
 
+def is_real_rdp_session(s: dict) -> bool:
+    if not isinstance(s, dict):
+        return False
+    s_type = str(s.get("type") or "").strip()
+    s_name = str(s.get("sessionName") or "").strip().lower()
+    
+    # Outgoing RDP (mstsc process)
+    is_outgoing = "исходящий" in s_type.lower() or s_name.startswith("mstsc") or "mstsc" in s_name
+    # Incoming RDP (rdp-tcp#... or clientIp present)
+    is_incoming = "входящий" in s_type.lower() or "rdp" in s_name or s_name.startswith("rdp-tcp") or bool(s.get("clientIp") and s.get("clientIp") != "-")
+    
+    if is_outgoing or is_incoming:
+        # Extra guard: exclude pure local console even if mislabeled
+        if s_name in ["console", "services", "rdp-tcp", ""] and not is_outgoing and not s_name.startswith("rdp-tcp#"):
+            if not s.get("clientIp") or s.get("clientIp") == "-":
+                return False
+        return True
+        
+    return False
+
 def update_device_sessions(
     device_id: str,
     sessions_list: Any,
@@ -32,10 +52,7 @@ def update_device_sessions(
         if isinstance(s, dict):
             s_dict = dict(s)
             s_dict["deviceId"] = device_id
-            s_type = str(s_dict.get("type", ""))
-            s_name = str(s_dict.get("sessionName", ""))
-            is_local = (s_type == "Локальный сеанс" or s_name == "console") and "Исходящий" not in s_type and "Входящий" not in s_type and "mstsc" not in s_name and "rdp" not in s_name
-            if not is_local:
+            if is_real_rdp_session(s_dict):
                 norm_list.append(s_dict)
 
     keys_to_index = {device_id, device_id.upper(), device_id.lower()}
@@ -172,6 +189,23 @@ async def logoff_session(
     if not resolved_dev_id:
         resolved_dev_id = "PC-DEFAULT"
 
+    # Look up session info for remote target IP and username
+    sess_username = None
+    dest_ip = None
+    for sess_list in live_device_sessions.values():
+        if isinstance(sess_list, list):
+            for s in sess_list:
+                if str(s.get("id")) == str(session_id):
+                    sess_username = s.get("username")
+                    s_name = str(s.get("sessionName", ""))
+                    if "->" in s_name:
+                        dest_ip = s_name.split("->")[-1].strip().split(":")[0].strip()
+                    elif s.get("clientIp"):
+                        dest_ip = str(s.get("clientIp")).strip()
+                    break
+        if sess_username or dest_ip:
+            break
+
     if req and req.isOutgoing is not None:
         is_outgoing_rdp = req.isOutgoing
     else:
@@ -185,7 +219,7 @@ async def logoff_session(
         device_id=resolved_dev_id,
         action=action,
         reason=f"Admin requested {action} for session #{session_id}",
-        extra_data={"sessionId": session_id, "pid": target_pid, "type": target_type}
+        extra_data={"sessionId": session_id, "pid": target_pid, "type": target_type, "username": sess_username, "remoteHost": dest_ip}
     )
 
     # 2. Send instant UNICAST UDP trigger to device LAN agent (0ms latency)
@@ -198,6 +232,27 @@ async def logoff_session(
             hostname=device.hostname or "",
             extra_arg=extra_arg
         )
+
+    # 2.5 If LOGOFF and dest_ip is known, also send LOGOFF to the destination server if managed
+    if action == "LOGOFF" and dest_ip:
+        dest_res = await db.execute(select(Device).where((Device.ip_address == dest_ip) | (Device.hostname == dest_ip)))
+        dest_dev = dest_res.scalar_one_or_none()
+        if dest_dev:
+            queue_device_command(
+                device_id=dest_dev.id,
+                action="LOGOFF",
+                reason=f"Admin requested remote LOGOFF for user {sess_username or ''} from {resolved_dev_id}",
+                extra_data={"sessionId": session_id, "username": sess_username}
+            )
+            if dest_dev.ip_address:
+                send_direct_lan_power_signal(
+                    ip_address=dest_dev.ip_address,
+                    action="LOGOFF",
+                    device_id=dest_dev.id,
+                    mac_address=dest_dev.mac_address or "",
+                    hostname=dest_dev.hostname or "",
+                    extra_arg=str(session_id)
+                )
 
     # 3. Immediately purge the removed session from live memory
     for k, sess_list in list(live_device_sessions.items()):

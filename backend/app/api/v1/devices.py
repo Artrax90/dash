@@ -243,7 +243,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
             except Exception:
                 upd_status = "idle"
 
-    from backend.app.api.v1.sessions import live_device_sessions
+    from backend.app.api.v1.sessions import live_device_sessions, is_real_rdp_session
     raw_sessions = (
         live_device_sessions.get(d.id) or
         live_device_sessions.get(d.id.upper()) or
@@ -254,10 +254,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
         []
     )
-    real_rdp_sessions = [
-        s for s in raw_sessions
-        if not ((str(s.get("type", "")) == "Локальный сеанс" or str(s.get("sessionName", "")) == "console") and "Исходящий" not in str(s.get("type", "")) and "Входящий" not in str(s.get("type", "")) and "mstsc" not in str(s.get("sessionName", "")) and "rdp" not in str(s.get("sessionName", "")))
-    ]
+    real_rdp_sessions = [s for s in raw_sessions if is_real_rdp_session(s)]
     rdp_status_str = f"Активен ({len(real_rdp_sessions)})" if (is_online and len(real_rdp_sessions) > 0) else "Stopped"
 
     return {
@@ -386,7 +383,7 @@ async def get_device_stats(db: AsyncSession = Depends(get_db)):
     problems = sum(1 for d in devices if check_online(d) and (d.health_status.value if hasattr(d.health_status, 'value') else str(d.health_status)) in ["Warning", "Critical"])
     
     # Calculate real active and disconnected sessions
-    from backend.app.api.v1.sessions import live_device_sessions
+    from backend.app.api.v1.sessions import live_device_sessions, is_real_rdp_session
     active_sessions = 0
     disconnected_sessions = 0
     
@@ -407,10 +404,7 @@ async def get_device_stats(db: AsyncSession = Depends(get_db)):
                 []
             )
             for s in sess_list:
-                s_type = str(s.get("type", ""))
-                s_name = str(s.get("sessionName", ""))
-                is_local = (s_type == "Локальный сеанс" or s_name == "console") and "Исходящий" not in s_type and "Входящий" not in s_type and "mstsc" not in s_name and "rdp" not in s_name
-                if is_local:
+                if not is_real_rdp_session(s):
                     continue
                 st = str(s.get("state", "Active")).lower()
                 if "disc" in st or "откл" in st:
