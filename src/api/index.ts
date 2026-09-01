@@ -684,10 +684,10 @@ export const agentsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return {
-      currentVersion: '2.4.9',
+      currentVersion: '2.5.0',
       releaseDate: '2026-09-01',
       minSupportedVersion: '1.0.0',
-      changelog: 'Релиз v2.4.9: Устранение коллизии read-only переменной $PID в PowerShell агенте, поддержка нестандартных портов RDP и парсинг длинных тире (—) в именах сессий',
+      changelog: 'Релиз v2.5.0: Полное восстановление поведения сбора сессий v2.4.0 (все интерактивные и терминальные сеансы quser/qwinsta без отсечения console) + мульти-порт/PID исходящие RDP сессии',
       totalAgents: 0,
       upToDateCount: 0,
       outdatedCount: 0,
@@ -708,7 +708,7 @@ export const agentsApi = {
       status: 'queued',
       deviceId,
       message: `Команда обновления отправлена на ${deviceId}`,
-      targetVersion: '2.4.9'
+      targetVersion: '2.5.0'
     };
   },
   updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {
