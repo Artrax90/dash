@@ -534,7 +534,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.5.9</span>
+            <span>v2.6.0</span>
           </div>
         </div>
       </div>
@@ -608,7 +608,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.5.9</span>
+          <span style={{ color: '#475569' }}>v2.6.0</span>
         </div>
       </div>
     </div>
@@ -2584,7 +2584,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
             style={device.isOutdated ? { borderColor: 'rgba(234,179,8,0.4)', color: 'var(--yellow)', background: 'rgba(234,179,8,0.06)' } : undefined}
             title="Удаленно обновить службу агента по сети (OTA)"
           >
-            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.5.9'})` : 'Обновить агент')}
+            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.6.0'})` : 'Обновить агент')}
           </Button>
           <Button
             primary
@@ -2692,7 +2692,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <strong>v{device.agentVersion || '1.4.2'}</strong>
                   {device.isOutdated ? (
                     <span className="badge" style={{ background: 'rgba(234, 179, 8, 0.15)', color: 'var(--yellow)', fontWeight: 600, fontSize: '10px' }}>
-                      Доступно v{device.latestAgentVersion || '2.5.9'}
+                      Доступно v{device.latestAgentVersion || '2.6.0'}
                     </span>
                   ) : (
                     <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)', fontWeight: 600, fontSize: '10px' }}>
@@ -3251,119 +3251,131 @@ function SessionTable({
   }
 
   return (
-    <div className="session-table">
-      <div className="session-head" style={{ minWidth: '780px', display: 'grid', gridTemplateColumns: '2fr 1.1fr 1fr 0.9fr 1.4fr 190px', alignItems: 'center', gap: '12px' }}>
-        <span>Сессия / Назначение</span>
-        <span>Пользователь</span>
-        <span>{t('common.status')}</span>
-        <span>Простой</span>
-        <span>Время входа</span>
-        <span />
-      </div>
-      {rdpOnlySessions.map((session) => {
-        const isOutgoing = session.type?.includes('Исходящий') || session.sessionName?.toLowerCase().includes('mstsc');
-        const isIncomingRdp = session.type?.includes('Входящий') || session.sessionName?.toLowerCase().includes('rdp-tcp');
+    <div style={{ width: '100%', overflowX: 'auto', padding: '0 16px 14px' }}>
+      <table style={{ width: '100%', minWidth: '700px', borderCollapse: 'collapse', fontSize: '11px' }}>
+        <thead>
+          <tr style={{ borderBottom: '1px solid var(--line)', color: 'var(--muted)', fontSize: '9px', textTransform: 'uppercase', letterSpacing: '0.6px' }}>
+            <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 600 }}>Сессия / Назначение</th>
+            <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 600 }}>Пользователь</th>
+            <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 600 }}>{t('common.status')}</th>
+            <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 600 }}>Простой</th>
+            <th style={{ textAlign: 'left', padding: '8px 10px', fontWeight: 600, whiteSpace: 'nowrap' }}>Время входа</th>
+            <th style={{ textAlign: 'right', padding: '8px 10px', fontWeight: 600, minWidth: '185px' }}>Действия</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rdpOnlySessions.map((session) => {
+            const isOutgoing = session.type?.includes('Исходящий') || session.sessionName?.toLowerCase().includes('mstsc');
+            const isIncomingRdp = session.type?.includes('Входящий') || session.sessionName?.toLowerCase().includes('rdp-tcp');
 
-        // Clean target / destination label
-        let targetLabel = '';
-        if (isOutgoing) {
-          targetLabel = session.sessionName?.replace(/^mstsc\s*->\s*/i, '') || session.clientIp || 'Удаленный узел';
-        } else if (isIncomingRdp) {
-          if (session.clientIp) {
-            targetLabel = `Клиент: ${session.clientIp}`;
-          } else if (session.state === 'Disconnected' || session.state === 'Idle') {
-            targetLabel = 'Входящий RDP (Сеанс отключен)';
-          } else {
-            targetLabel = session.sessionName || 'Входящее RDP-подключение';
-          }
-        } else {
-          targetLabel = session.sessionName || 'RDP Сессия';
-        }
+            // Clean target / destination label
+            let targetLabel = '';
+            if (isOutgoing) {
+              targetLabel = session.sessionName?.replace(/^mstsc\s*->\s*/i, '') || session.clientIp || 'Удаленный узел';
+            } else if (isIncomingRdp) {
+              if (session.clientIp) {
+                targetLabel = `Клиент: ${session.clientIp}`;
+              } else if (session.state === 'Disconnected' || session.state === 'Idle') {
+                targetLabel = 'Входящий RDP (Сеанс отключен)';
+              } else {
+                targetLabel = session.sessionName || 'Входящее RDP-подключение';
+              }
+            } else {
+              targetLabel = session.sessionName || 'RDP Сессия';
+            }
 
-        // Clean idle time (replace "отсутствует", ".", "none", "00:00" with "0 мин")
-        const cleanIdle = (!session.idleTime || session.idleTime === '.' || session.idleTime.toLowerCase() === 'отсутствует' || session.idleTime === '00:00')
-          ? '0 мин'
-          : session.idleTime;
+            // Clean idle time (replace "отсутствует", ".", "none", "00:00" with "0 мин")
+            const cleanIdle = (!session.idleTime || session.idleTime === '.' || session.idleTime.toLowerCase() === 'отсутствует' || session.idleTime === '00:00')
+              ? '0 мин'
+              : session.idleTime;
 
-        return (
-          <div className="session-row" key={session.id} style={{ minWidth: '780px', display: 'grid', gridTemplateColumns: '2fr 1.1fr 1fr 0.9fr 1.4fr 190px', alignItems: 'center', gap: '12px' }}>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
-                {isOutgoing ? (
-                  <ArrowUpRight size={15} style={{ color: '#60a5fa', flexShrink: 0 }} />
-                ) : (
-                  <ArrowDownLeft size={15} style={{ color: '#4ade80', flexShrink: 0 }} />
-                )}
-                <strong>#{session.id}</strong>
-                <span className="badge" style={{
-                  fontSize: '10.5px',
-                  padding: '2px 6px',
-                  borderRadius: '4px',
-                  fontWeight: 600,
-                  background: isOutgoing ? 'rgba(59, 130, 246, 0.15)' : 'rgba(34, 197, 94, 0.15)',
-                  color: isOutgoing ? '#60a5fa' : '#4ade80'
-                }}>
-                  {isOutgoing ? 'Исходящий RDP' : 'Входящий RDP'}
-                </span>
-              </div>
-              <small style={{ display: 'block', fontSize: '11px', color: isOutgoing ? '#93c5fd' : 'var(--muted)', marginTop: '3px', fontFamily: isOutgoing ? 'monospace' : 'inherit', fontWeight: isOutgoing ? 600 : 400 }}>
-                {isOutgoing ? `➜ Назначение: ${targetLabel}` : targetLabel}
-              </small>
-            </div>
-            <div>
-              <strong>{session.username}</strong>
-              {session.clientIp && !isOutgoing && (
-                <small style={{ display: 'block', fontSize: '10.5px', color: 'var(--muted)', fontFamily: 'monospace' }}>
-                  Клиент: {session.clientIp}
-                </small>
-              )}
-            </div>
-            <StatusPill status={session.state} />
-            <span className="muted-text">{cleanIdle}{session.disconnectedSince && ` · ${session.disconnectedSince}`}</span>
-            <span className="muted-text">{session.logonTime}</span>
-            <div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'nowrap', justifyContent: 'flex-end' }}>
-                <button
-                  onClick={() => onResetSession ? onResetSession(session.id, session, true) : onAction(`Закрытие RDP-окна для ${session.username}`)}
-                  className="text-button"
-                  style={{
-                    color: '#3b82f6',
-                    fontWeight: 600,
-                    fontSize: '11.5px',
-                    padding: '3px 7px',
-                    borderRadius: '5px',
-                    background: 'rgba(59, 130, 246, 0.1)',
-                    border: '1px solid rgba(59, 130, 246, 0.25)',
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap'
-                  }}
-                  title="Закрыть процесс RDP-клиента (mstsc.exe) на рабочей станции"
-                >
-                  Закрыть RDP
-                </button>
-                <button
-                  onClick={() => onResetSession ? onResetSession(session.id, session, false) : onAction(`Сброс сессии для ${session.username}`)}
-                  className="text-button"
-                  style={{
-                    color: '#ef4444',
-                    fontWeight: 600,
-                    fontSize: '11.5px',
-                    padding: '3px 7px',
-                    borderRadius: '5px',
-                    background: 'rgba(239, 68, 68, 0.1)',
-                    border: '1px solid rgba(239, 68, 68, 0.25)',
-                    cursor: 'pointer',
-                    whiteSpace: 'nowrap'
-                  }}
-                  title="Сбросить удаленный сеанс пользователя на целевом хосте (logoff)"
-                >
-                  Сбросить сессию
-                </button>
-              </div>
-            </div>
-          </div>
-        );
-      })}
+            return (
+              <tr key={session.id} style={{ borderBottom: '1px solid var(--line)' }}>
+                <td style={{ padding: '10px 10px', verticalAlign: 'middle' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                    {isOutgoing ? (
+                      <ArrowUpRight size={14} style={{ color: '#60a5fa', flexShrink: 0 }} />
+                    ) : (
+                      <ArrowDownLeft size={14} style={{ color: '#4ade80', flexShrink: 0 }} />
+                    )}
+                    <strong>#{session.id}</strong>
+                    <span className="badge" style={{
+                      fontSize: '10px',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                      fontWeight: 600,
+                      background: isOutgoing ? 'rgba(59, 130, 246, 0.15)' : 'rgba(34, 197, 94, 0.15)',
+                      color: isOutgoing ? '#60a5fa' : '#4ade80'
+                    }}>
+                      {isOutgoing ? 'Исходящий RDP' : 'Входящий RDP'}
+                    </span>
+                  </div>
+                  <small style={{ display: 'block', fontSize: '11px', color: isOutgoing ? '#93c5fd' : 'var(--muted)', marginTop: '3px', fontFamily: isOutgoing ? 'monospace' : 'inherit', fontWeight: isOutgoing ? 600 : 400 }}>
+                    {isOutgoing ? `➜ Назначение: ${targetLabel}` : targetLabel}
+                  </small>
+                </td>
+                <td style={{ padding: '10px 10px', verticalAlign: 'middle' }}>
+                  <strong>{session.username}</strong>
+                  {session.clientIp && !isOutgoing && (
+                    <small style={{ display: 'block', fontSize: '10px', color: 'var(--muted)', fontFamily: 'monospace' }}>
+                      Клиент: {session.clientIp}
+                    </small>
+                  )}
+                </td>
+                <td style={{ padding: '10px 10px', verticalAlign: 'middle' }}>
+                  <StatusPill status={session.state} />
+                </td>
+                <td style={{ padding: '10px 10px', verticalAlign: 'middle', color: 'var(--muted)' }}>
+                  {cleanIdle}{session.disconnectedSince && ` · ${session.disconnectedSince}`}
+                </td>
+                <td style={{ padding: '10px 10px', verticalAlign: 'middle', color: 'var(--muted)', whiteSpace: 'nowrap' }}>
+                  {session.logonTime}
+                </td>
+                <td style={{ padding: '10px 10px', verticalAlign: 'middle', textAlign: 'right' }}>
+                  <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', whiteSpace: 'nowrap' }}>
+                    <button
+                      onClick={() => onResetSession ? onResetSession(session.id, session, true) : onAction(`Закрытие RDP-окна для ${session.username}`)}
+                      className="text-button"
+                      style={{
+                        color: '#3b82f6',
+                        fontWeight: 600,
+                        fontSize: '11px',
+                        padding: '4px 8px',
+                        borderRadius: '5px',
+                        background: 'rgba(59, 130, 246, 0.1)',
+                        border: '1px solid rgba(59, 130, 246, 0.25)',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                      title="Закрыть процесс RDP-клиента (mstsc.exe) на рабочей станции"
+                    >
+                      Закрыть RDP
+                    </button>
+                    <button
+                      onClick={() => onResetSession ? onResetSession(session.id, session, false) : onAction(`Сброс сессии для ${session.username}`)}
+                      className="text-button"
+                      style={{
+                        color: '#ef4444',
+                        fontWeight: 600,
+                        fontSize: '11px',
+                        padding: '4px 8px',
+                        borderRadius: '5px',
+                        background: 'rgba(239, 68, 68, 0.1)',
+                        border: '1px solid rgba(239, 68, 68, 0.25)',
+                        cursor: 'pointer',
+                        whiteSpace: 'nowrap'
+                      }}
+                      title="Сбросить удаленный сеанс пользователя на целевом хосте (logoff)"
+                    >
+                      Сбросить сессию
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
     </div>
   );
 }
@@ -3575,7 +3587,7 @@ function DeviceMonitoringTab({
               <span className="device-telemetry-sep">·</span>
               <span>IP: <span className="device-telemetry-chip">{device.ip}</span></span>
               <span className="device-telemetry-sep">·</span>
-              <span>Агент v{device.agentVersion || '2.5.9'}</span>
+              <span>Агент v{device.agentVersion || '2.6.0'}</span>
               <span>Uptime: <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{formatLiveUptime(device.uptime, device.bootTimeIso, device.powerStatus === 'On')}</span></span>
               {device.bootTimeIso && device.powerStatus === 'On' && (
                 <>
@@ -9380,14 +9392,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 onClick={() => setFleetFilter('outdated')}
                 style={{ fontSize: '11px', padding: '4px 10px', color: fleetFilter !== 'outdated' && (versionInfo?.outdatedCount ?? 0) > 0 ? 'var(--yellow)' : undefined }}
               >
-                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.5.9')).length})
+                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.6.0')).length})
               </button>
               <button
                 className={`filter-button ${fleetFilter === 'updated' ? 'primary' : ''}`}
                 onClick={() => setFleetFilter('updated')}
                 style={{ fontSize: '11px', padding: '4px 10px' }}
               >
-                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.5.9')).length})
+                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.6.0')).length})
               </button>
             </div>
             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
@@ -9418,13 +9430,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 ) : (
                   fleetDevices
                     .filter(d => {
-                      const targetVer = versionInfo?.currentVersion || '2.5.9';
+                      const targetVer = versionInfo?.currentVersion || '2.6.0';
                       if (fleetFilter === 'outdated') return (d.agentVersion || '1.4.2') !== targetVer;
                       if (fleetFilter === 'updated') return (d.agentVersion || '1.4.2') === targetVer;
                       return true;
                     })
                     .map(dev => {
-                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.5.9';
+                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.6.0';
                       const curVer = dev.agentVersion || '1.4.2';
                       const isTargetVer = curVer === targetVer;
                       const isUpdating = updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING';
@@ -11461,7 +11473,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.5.9 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.6.0 · © 2026 Сергей Ерёмин
               </span>
             </div>
             <div style={{ flexShrink: 0 }}>

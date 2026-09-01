@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.5.9"
+AGENT_VERSION = "2.6.0"
 
 def execute_power_command(action: str, extra: dict = None):
     act = str(action).upper().strip()
@@ -21,7 +21,7 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.5.9")
+        execute_agent_update(server_base, cfg, "2.6.0")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
@@ -40,18 +40,20 @@ def execute_power_command(action: str, extra: dict = None):
             subprocess.run("systemctl suspend", shell=True)
     elif act in ["LOGOFF", "RESET_SESSION", "RDP_CLEANUP"]:
         sess_id = extra.get("sessionId") if extra else None
+        target_pid = extra.get("pid") if extra else None
+        rem_host = extra.get("remoteHost") if extra else None
         if is_win:
-            if sess_id is not None:
+            if rem_host:
+                subprocess.run(f"logoff /server:{rem_host} 2>nul & rwinsta /server:{rem_host} 2>nul", shell=True)
+            if sess_id is not None and int(sess_id) < 100:
                 subprocess.run(f"logoff {sess_id} 2>nul & rwinsta {sess_id} 2>nul", shell=True)
-            else:
-                subprocess.run("shutdown /l /f", shell=True)
+            if target_pid:
+                subprocess.run(f"taskkill /F /PID {target_pid} 2>nul", shell=True)
+            if (sess_id is not None and int(sess_id) >= 100) or rem_host:
+                subprocess.run("taskkill /F /IM mstsc.exe /T 2>nul & taskkill /F /IM msrdc.exe /T 2>nul", shell=True)
         else:
             if sess_id is not None:
                 subprocess.run(f"loginctl terminate-session {sess_id} 2>/dev/null || pkill -KILL -s {sess_id} 2>/dev/null", shell=True)
-            else:
-                user = get_current_user()
-                if user and user not in ["root", "User"]:
-                    subprocess.run(f"pkill -KILL -u {user}", shell=True)
     elif act in ["LOCK"]:
         if is_win:
             subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
@@ -1442,7 +1444,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.5.9"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.6.0"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:
