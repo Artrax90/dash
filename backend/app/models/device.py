@@ -19,6 +19,7 @@ class AgentStatus(str, enum.Enum):
 
 class RdpStatus(str, enum.Enum):
     RUNNING = "Running"
+    ACTIVE = "Active"
     STOPPED = "Stopped"
     ERROR = "Error"
 

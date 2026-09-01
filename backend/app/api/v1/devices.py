@@ -261,8 +261,19 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "powerStatus": effective_power,
         "agentStatus": effective_agent,
         "rdpStatus": (
-            (lambda s_list: f"Активен ({len(s_list)})" if len(s_list) > 0 else (d.rdp_status.value if hasattr(d.rdp_status, 'value') else str(d.rdp_status)))(
-                (lambda: (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id) or __import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id.upper()) or []))()
+            (lambda s_list: f"Активен ({len(s_list)})" if len(s_list) > 0 else (
+                "Активен" if str(d.rdp_status).lower() in ["active", "running", "активен"] else (d.rdp_status.value if hasattr(d.rdp_status, 'value') else str(d.rdp_status))
+            ))(
+                (lambda: (
+                    __import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id) or
+                    __import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id.upper()) or
+                    __import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.id.lower()) or
+                    (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.hostname) if d.hostname else None) or
+                    (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
+                    (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
+                    (__import__('backend.app.api.v1.sessions', fromlist=['live_device_sessions']).live_device_sessions.get(d.ip_address) if d.ip_address else None) or
+                    []
+                ))()
             )
         ) if is_online else "Closed",
         "healthStatus": effective_health,
@@ -382,7 +393,16 @@ async def get_device_stats(db: AsyncSession = Depends(get_db)):
         did_upper = d.id.upper()
         if did_upper in online_dev_ids and did_upper not in counted_devs:
             counted_devs.add(did_upper)
-            sess_list = live_device_sessions.get(d.id) or live_device_sessions.get(did_upper) or []
+            sess_list = (
+                live_device_sessions.get(d.id) or
+                live_device_sessions.get(did_upper) or
+                live_device_sessions.get(d.id.lower()) or
+                (live_device_sessions.get(d.hostname) if d.hostname else None) or
+                (live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
+                (live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
+                (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
+                []
+            )
             for s in sess_list:
                 st = str(s.get("state", "Active")).lower()
                 if "disc" in st or "откл" in st:

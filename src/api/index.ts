@@ -370,9 +370,10 @@ export const sessionsApi = {
     } catch {}
     return [];
   },
-  logoff: async (sessionId: number): Promise<boolean> => {
+  logoff: async (deviceIdOrSessionId: string | number, sessionId?: number): Promise<boolean> => {
     try {
-      const res = await fetch(`${API_BASE}/sessions/${sessionId}/logoff`, { method: 'POST' });
+      const targetId = (sessionId !== undefined) ? sessionId : deviceIdOrSessionId;
+      const res = await fetch(`${API_BASE}/sessions/${targetId}/logoff`, { method: 'POST' });
       if (res.ok) return true;
     } catch {}
     return true;
@@ -683,10 +684,10 @@ export const agentsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return {
-      currentVersion: '2.4.6',
-      releaseDate: '2026-08-31',
+      currentVersion: '2.4.7',
+      releaseDate: '2026-09-01',
       minSupportedVersion: '1.0.0',
-      changelog: 'Релиз v2.4.6: Поддержка именованных параметров CLI [CmdletBinding()] в установщике и надежная доставка обновлений службы',
+      changelog: 'Релиз v2.4.7: Исправление enum RdpStatus.ACTIVE на сервере, multi-key индексация RDP сессий и точное распознавание входящих/исходящих подключений',
       totalAgents: 0,
       upToDateCount: 0,
       outdatedCount: 0,
@@ -707,7 +708,7 @@ export const agentsApi = {
       status: 'queued',
       deviceId,
       message: `Команда обновления отправлена на ${deviceId}`,
-      targetVersion: '2.4.6'
+      targetVersion: '2.4.7'
     };
   },
   updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {

@@ -831,7 +831,29 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
     if lookup_conds:
         result = await db.execute(select(Device).where(or_(*lookup_conds)))
-        device = result.scalar_one_or_none()
+        device = result.scalars().first()
+
+    if not device and device_id:
+        clean_name = payload.get("hostname") or device_id
+        clean_mac = str(payload.get("mac")).replace("-", ":").upper() if payload.get("mac") else None
+        device = Device(
+            id=device_id,
+            name=clean_name,
+            hostname=payload.get("hostname") or clean_name,
+            ip_address=client_ip,
+            mac_address=clean_mac,
+            os_type=payload.get("osType") or "Windows",
+            os_version=payload.get("osVersion") or "Windows 10",
+            agent_version=rep_ver or settings.LATEST_AGENT_VERSION,
+            power_status=PowerStatus.ON,
+            agent_status=AgentStatus.CONNECTED,
+            health_status=HealthStatus.HEALTHY,
+            group_name="Office",
+            last_seen=datetime.utcnow()
+        )
+        db.add(device)
+        await db.commit()
+        await db.refresh(device)
 
     if device:
         # Check if device just turned on / booted up physically
@@ -937,7 +959,13 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
             if "rdpSessions" in payload and isinstance(payload["rdpSessions"], list):
                 from backend.app.api.v1.sessions import update_device_sessions
-                update_device_sessions(device.id, payload["rdpSessions"], hostname=device.hostname)
+                update_device_sessions(
+                    device_id=device.id,
+                    sessions_list=payload["rdpSessions"],
+                    hostname=device.hostname,
+                    reported_device_id=payload.get("deviceId"),
+                    ip_address=device.ip_address
+                )
                 if len(payload["rdpSessions"]) > 0:
                     device.rdp_status = RdpStatus.ACTIVE
                 else:

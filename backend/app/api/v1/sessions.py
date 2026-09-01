@@ -10,7 +10,13 @@ router = APIRouter(prefix="/sessions", tags=["sessions"])
 
 live_device_sessions: Dict[str, List[Dict[str, Any]]] = {}
 
-def update_device_sessions(device_id: str, sessions_list: List[Dict[str, Any]], hostname: Optional[str] = None):
+def update_device_sessions(
+    device_id: str,
+    sessions_list: List[Dict[str, Any]],
+    hostname: Optional[str] = None,
+    reported_device_id: Optional[str] = None,
+    ip_address: Optional[str] = None
+):
     if not device_id:
         return
     norm_list = []
@@ -19,20 +25,24 @@ def update_device_sessions(device_id: str, sessions_list: List[Dict[str, Any]], 
             s_dict = dict(s)
             s_dict["deviceId"] = device_id
             norm_list.append(s_dict)
-    live_device_sessions[device_id] = norm_list
-    live_device_sessions[device_id.upper()] = norm_list
-    live_device_sessions[device_id.lower()] = norm_list
+
+    keys_to_index = {device_id, device_id.upper(), device_id.lower()}
     if hostname:
-        live_device_sessions[hostname] = norm_list
-        live_device_sessions[hostname.upper()] = norm_list
-        live_device_sessions[hostname.lower()] = norm_list
+        keys_to_index.update({hostname, hostname.upper(), hostname.lower()})
+    if reported_device_id:
+        keys_to_index.update({reported_device_id, reported_device_id.upper(), reported_device_id.lower()})
+    if ip_address:
+        keys_to_index.add(ip_address)
+
+    for k in keys_to_index:
+        live_device_sessions[k] = norm_list
 
 @router.get("")
 async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depends(get_db)):
-    # Direct fast-path lookup if specific deviceId requested
+    # Direct fast-path lookup if specific deviceId requested and non-empty
     if device_id:
         for k in [device_id, device_id.upper(), device_id.lower()]:
-            if k in live_device_sessions:
+            if k in live_device_sessions and live_device_sessions[k]:
                 return live_device_sessions[k]
 
     res = await db.execute(select(Device))
@@ -41,12 +51,23 @@ async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depe
 
     all_sessions = []
     for d in devices:
-        if device_id and (d.id.upper() != device_id.upper() and (d.hostname or "").lower() != device_id.lower()):
-            continue
-        
+        is_target_device = False
+        if device_id:
+            did_clean = device_id.lower()
+            if (
+                d.id.lower() == did_clean or
+                (d.hostname and d.hostname.lower() == did_clean) or
+                (d.ip_address and d.ip_address.lower() == did_clean) or
+                (d.name and d.name.lower() == did_clean)
+            ):
+                is_target_device = True
+            else:
+                continue
+
         # Check if device is online
         p_val = d.power_status.value if hasattr(d.power_status, 'value') else str(d.power_status or '')
-        is_online = (p_val.lower() == "on") and (d.last_seen and (now - d.last_seen).total_seconds() <= 300)
+        sec_since_last_seen = (now - d.last_seen).total_seconds() if d.last_seen else 999999
+        is_online = (p_val.lower() in ["on", "active", "running"]) and (sec_since_last_seen <= 300)
         if not is_online and not device_id:
             continue
 
@@ -54,13 +75,18 @@ async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depe
             live_device_sessions.get(d.id) or
             live_device_sessions.get(d.id.upper()) or
             live_device_sessions.get(d.id.lower()) or
+            (live_device_sessions.get(d.hostname) if d.hostname else None) or
             (live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
             (live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
+            (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
             []
         )
         if reported:
             for s in reported:
                 all_sessions.append(s)
+
+        if device_id and is_target_device:
+            return reported
 
     return all_sessions
 

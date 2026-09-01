@@ -385,7 +385,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.4.4"
+    agentVersion = "2.4.7"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -439,7 +439,7 @@ try {
 `$ServerUrl = '$ServerUrl'
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.4.6'
+`$AgentVersion = '2.4.7'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -450,9 +450,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.4.6") {
+function Update-AgentService([string]`$targetVer = "2.4.7") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.4.6"
+        `$targetVer = "2.4.7"
     }
     try {
         # 1. Report update in progress
@@ -516,7 +516,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.4.6"
+        Update-AgentService "2.4.7"
         return
     }
 
@@ -581,29 +581,15 @@ function Get-LiveRdpSessions() {
                 if (`$expOwner -and `$expOwner.User) { `$primaryUser = `$expOwner.User }
             }
         }
+        if (-not `$primaryUser) { `$primaryUser = `$env:USERNAME }
     } catch {}
 
-    # 1. Incoming sessions via quser (with full path & OEM 866 support)
+    # 1. Incoming sessions via quser (with full path & encoding safety)
     try {
         `$quserExe = Join-Path `$env:SystemRoot "System32\quser.exe"
-        `$quserOut = ""
-        if (Test-Path `$quserExe) {
-            try {
-                `$pinfo = New-Object System.Diagnostics.ProcessStartInfo
-                `$pinfo.FileName = `$quserExe
-                `$pinfo.RedirectStandardOutput = `$true
-                `$pinfo.UseShellExecute = `$false
-                `$pinfo.StandardOutputEncoding = [System.Text.Encoding]::GetEncoding(866)
-                `$p = [System.Diagnostics.Process]::Start(`$pinfo)
-                `$quserOut = `$p.StandardOutput.ReadToEnd()
-                `$p.WaitForExit()
-            } catch {}
-        }
-        if (-not `$quserOut) {
-            `$quserOut = quser 2>&1 | Out-String
-        }
+        `$quserOut = if (Test-Path `$quserExe) { & `$quserExe 2>&1 | Out-String } else { quser 2>&1 | Out-String }
 
-        if (`$quserOut -and `$quserOut -notmatch 'не найден|No User exists') {
+        if (`$quserOut -and `$quserOut -notmatch 'No User exists') {
             `$lines = `$quserOut -split '[\r\n]+' | Where-Object { `$_.Trim() -ne '' }
             if (`$lines.Count -gt 1) {
                 for (`$i = 1; `$i -lt `$lines.Count; `$i++) {
@@ -612,7 +598,7 @@ function Get-LiveRdpSessions() {
                     `$parts = -split `$clean
                     if (`$parts.Count -ge 3) {
                         `$uName = `$parts[0]
-                        if (-not `$primaryUser -and `$uName -notmatch '\$$') { `$primaryUser = `$uName }
+                        if (-not `$primaryUser -and -not `$uName.EndsWith('$')) { `$primaryUser = `$uName }
                         `$sessName = ''
                         `$sessId = 0
                         `$sessState = 'Active'
@@ -633,24 +619,22 @@ function Get-LiveRdpSessions() {
                         }
                         
                         `$stdState = 'Active'
-                        if (`$sessState -match '(?i)Disc|Откл') {
+                        `$firstChar = if (`$sessState.Length -gt 0) { [int][char]`$sessState[0] } else { 0 }
+                        if (`$sessState -match '(?i)Disc' -or `$firstChar -eq 0x041E -or `$firstChar -eq 0x043E) {
                             `$stdState = 'Disconnected'
-                        } elseif (`$idle -match '(?i)^(\.|00:00|none|нет|отсут|0\s*мин)' -or -not `$idle) {
-                            `$idle = '0 мин'
-                            `$stdState = 'Active'
-                        } elseif (`$idle -match '\d+') {
+                        } elseif (`$idle -match '^\d+$') {
                             `$stdState = 'Idle'
                         }
 
-                        `$isRdp = (`$sessName -match '(?i)rdp|tcp' -or `$sessId -gt 0)
+                        `$isRdp = (`$sessName -match '(?i)rdp|tcp')
                         `$sObj = @{
                             id = `$sessId
                             deviceId = `$DeviceId
                             username = `$uName
-                            sessionName = if (`$sessName) { `$sessName } else { 'rdp-tcp#' + `$sessId }
+                            sessionName = if (`$sessName) { `$sessName } else { ('rdp-tcp#' + `$sessId) }
                             type = if (`$isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
                             state = `$stdState
-                            idleTime = if (`$idle -match '(?i)^(\.|none|нет|отсут)') { '0 мин' } else { `$idle }
+                            idleTime = if (`$idle -eq '.' -or `$idle -eq 'none') { '0 мин' } else { `$idle }
                             logonTime = if (`$logon) { `$logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
                         }
                         `$sessions += `$sObj
@@ -661,38 +645,43 @@ function Get-LiveRdpSessions() {
         }
     } catch {}
 
-    # 2. Fallback to qwinsta for any active/disconnected sessions
+    # 2. Fallback to qwinsta for any active/disconnected sessions missed by quser
     try {
         `$qwinstaExe = Join-Path `$env:SystemRoot "System32\qwinsta.exe"
         `$qwinstaRaw = if (Test-Path `$qwinstaExe) { & `$qwinstaExe 2>&1 } else { qwinsta 2>&1 }
         foreach (`$rawLine in `$qwinstaRaw) {
             `$line = `$rawLine.ToString().Trim()
-            if (-not `$line -or `$line.StartsWith('SESSIONNAME') -or `$line.StartsWith('СЕАНС') -or `$line.StartsWith('---')) { continue }
+            if (-not `$line -or `$line.StartsWith('SESSIONNAME') -or `$line.StartsWith('---')) { continue }
             `$clean = `$line.TrimStart('>').Trim()
             `$parts = -split `$clean
-            if (`$parts.Count -ge 2) {
+            if (`$parts.Count -ge 3) {
                 `$sName = `$parts[0]
                 `$uName = ''
                 `$sId = -1
-                `$isRdp = (`$sName -match '(?i)rdp-tcp#|rdp-tcp\b|rdp')
-                `$isConsole = (`$sName -match '(?i)console')
+                `$sState = ''
 
                 if (`$parts.Count -ge 4 -and `$parts[2] -match '^\d+$') {
                     `$uName = `$parts[1]
                     `$sId = [int]`$parts[2]
+                    `$sState = `$parts[3]
                 } elseif (`$parts.Count -ge 3 -and `$parts[1] -match '^\d+$') {
+                    `$uName = `$parts[0]
                     `$sId = [int]`$parts[1]
+                    `$sState = `$parts[2]
                 }
-                
-                if (`$sId -ge 0 -and -not `$seenIds.ContainsKey(`$sId) -and `$uName -ne '' -and `$uName -ne '65536') {
-                    if (-not `$primaryUser -and `$uName -notmatch '\$$') { `$primaryUser = `$uName }
+
+                if (`$sId -gt 0 -and `$sId -ne 65536 -and -not `$seenIds.ContainsKey(`$sId) -and `$uName -ne '' -and `$uName -notmatch '(?i)^(services|console|rdp-tcp|listener)$') {
+                    if (-not `$primaryUser -and -not `$uName.EndsWith('$')) { `$primaryUser = `$uName }
+                    `$isRdp = (`$sName -match '(?i)rdp-tcp#|rdp-tcp\b|rdp')
+                    `$firstChar = if (`$sState.Length -gt 0) { [int][char]`$sState[0] } else { 0 }
+                    `$stdState = if (`$sState -match '(?i)Disc' -or `$firstChar -eq 0x041E -or `$firstChar -eq 0x043E) { 'Disconnected' } else { 'Active' }
                     `$sessions += @{
                         id = `$sId
                         deviceId = `$DeviceId
                         username = `$uName
                         sessionName = `$sName
                         type = if (`$isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
-                        state = 'Active'
+                        state = `$stdState
                         idleTime = '0 мин'
                         logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
                     }
@@ -702,15 +691,15 @@ function Get-LiveRdpSessions() {
         }
     } catch {}
 
-    # 3. Outgoing RDP client connections (mstsc.exe, msrdc.exe, RemoteDesktop.exe processes & connections)
+    # 3. Outgoing RDP client connections (mstsc, msrdc, RemoteDesktop, mRemoteNG, RDCMan)
     try {
         `$rdpProcs = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
-            `$_.Name -match '(?i)^(mstsc|msrdc|RemoteDesktop)\.exe$'
+            `$_.Name -match '(?i)^(mstsc|msrdc|RemoteDesktop|mRemoteNG|RDCMan)\.exe$'
         })
         if (`$rdpProcs.Count -eq 0) {
-            `$rdpProcs = @(Get-Process -Name "mstsc", "msrdc", "RemoteDesktop" -ErrorAction SilentlyContinue)
+            `$rdpProcs = @(Get-Process -Name "mstsc", "msrdc", "RemoteDesktop", "mRemoteNG", "RDCMan" -ErrorAction SilentlyContinue)
         }
-        
+
         `$mstscOwners = @{}
         foreach (`$mp in `$rdpProcs) {
             `$pId = if (`$mp.ProcessId) { `$mp.ProcessId } else { `$mp.Id }
@@ -723,25 +712,31 @@ function Get-LiveRdpSessions() {
             } catch {}
         }
 
-        # Query TCP connections via netstat (universal & reliable across all Windows OS)
+        # Query TCP connections via netstat (universal & resilient across all Windows OS)
         `$allTcp = @()
         try {
             `$netLines = netstat -ano -p tcp | Select-String "ESTABLISHED"
             foreach (`$nl in `$netLines) {
-                `$parts = -split `$nl.Line.Trim()
-                if (`$parts.Count -ge 5) {
-                    `$loc = `$parts[1]
-                    `$rem = `$parts[2]
-                    `$pidNum = [int]`$parts[4]
-                    `$rPort = if (`$rem.Contains(':')) { [int]`$rem.Split(':')[-1] } else { 0 }
-                    `$allTcp += [PSCustomObject]@{
-                        Local = `$loc
-                        Remote = `$rem
-                        RemoteAddress = `$rem.Split(':')[0]
-                        RemotePort = `$rPort
-                        OwningProcess = `$pidNum
+                try {
+                    `$parts = -split `$nl.Line.Trim()
+                    if (`$parts.Count -ge 5) {
+                        `$loc = `$parts[1]
+                        `$rem = `$parts[2]
+                        `$pidNum = [int]`$parts[4]
+                        `$rPort = 0
+                        if (`$rem.Contains(':')) {
+                            `$portStr = `$rem.Split(':')[-1]
+                            if (`$portStr -match '^\d+$') { `$rPort = [int]`$portStr }
+                        }
+                        `$allTcp += [PSCustomObject]@{
+                            Local = `$loc
+                            Remote = `$rem
+                            RemoteAddress = `$rem.Split(':')[0]
+                            RemotePort = `$rPort
+                            OwningProcess = `$pidNum
+                        }
                     }
-                }
+                } catch {}
             }
         } catch {}
 
@@ -763,7 +758,7 @@ function Get-LiveRdpSessions() {
         `$seenTargetKeys = @{}
         `$outIdx = 100
 
-        # Pass 3A: Every established connection from an mstsc/msrdc process or to remote port 3389
+        # Pass 3A: Every established connection from an RDP process or to remote port 3389/3390
         foreach (`$conn in `$allTcp) {
             `$isMstscPid = (`$mstscPids -contains `$conn.OwningProcess)
             `$isPort3389 = (`$conn.RemotePort -ge 3389 -and `$conn.RemotePort -le 3399)
@@ -775,7 +770,7 @@ function Get-LiveRdpSessions() {
                 `$seenTargetKeys[`$targetKey] = `$true
 
                 `$uName = if (`$mstscOwners.ContainsKey(`$conn.OwningProcess)) { `$mstscOwners[`$conn.OwningProcess] } else { `$primaryUser }
-                if (-not `$uName -or `$uName -match '\$$') { `$uName = if (`$primaryUser) { `$primaryUser } else { `$env:USERNAME } }
+                if (-not `$uName -or `$uName.EndsWith('$')) { `$uName = if (`$primaryUser) { `$primaryUser } else { `$env:USERNAME } }
 
                 `$targetLabel = `$remIp + (if (`$conn.RemotePort -ne 3389) { ':' + `$conn.RemotePort } else { '' })
                 `$sessions += @{
@@ -801,16 +796,21 @@ function Get-LiveRdpSessions() {
                 if (`$k.EndsWith(':' + `$pidVal)) { `$foundInTcp = `$true; break }
             }
             if (-not `$foundInTcp) {
-                `$cmdLine = `$mp.CommandLine
+                `$cmdLine = if (`$mp.CommandLine) { `$mp.CommandLine } else { "" }
+                `$winTitle = ""
+                try { `$winTitle = (Get-Process -Id `$pidVal -ErrorAction SilentlyContinue).MainWindowTitle } catch {}
+
                 `$extTarget = ''
-                if (`$cmdLine -match '(?i)/v:([^\s]+)') {
+                if (`$winTitle -and `$winTitle -match '^([0-9a-zA-Z\.\-_:]+)\s*-\s*') {
+                    `$extTarget = `$matches[1]
+                } elseif (`$cmdLine -match '(?i)/v:([^\s]+)') {
                     `$extTarget = `$matches[1].Trim('"', "'")
                 } elseif (`$cmdLine -match '(?i)mstsc\.exe\s+([0-9a-zA-Z\.\-_:]+)') {
                     `$extTarget = `$matches[1].Trim('"', "'")
                 }
-                `$displayTarget = if (`$extTarget) { `$extTarget } else { ('Процесс PID ' + `$pidVal) }
+                `$displayTarget = if (`$extTarget) { `$extTarget } else { ('PID ' + `$pidVal) }
                 `$uName = if (`$mstscOwners.ContainsKey(`$pidVal)) { `$mstscOwners[`$pidVal] } else { `$primaryUser }
-                if (-not `$uName -or `$uName -match '\$$') { `$uName = if (`$primaryUser) { `$primaryUser } else { `$env:USERNAME } }
+                if (-not `$uName -or `$uName.EndsWith('$')) { `$uName = if (`$primaryUser) { `$primaryUser } else { `$env:USERNAME } }
 
                 `$sessions += @{
                     id = `$outIdx
@@ -1371,7 +1371,7 @@ while (`$true) {
     Start-Sleep -Milliseconds 1000
 }
 "@
-    Set-Content -Path $runServiceScript -Value $serviceScriptCode -Encoding UTF8
+    [System.IO.File]::WriteAllText($runServiceScript, $serviceScriptCode, (New-Object System.Text.UTF8Encoding($true)))
 
     # Stop any previous instances
     try {
