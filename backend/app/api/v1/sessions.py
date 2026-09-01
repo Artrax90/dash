@@ -38,10 +38,15 @@ def update_device_sessions(
         live_device_sessions[k] = norm_list
 
 @router.get("")
-async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+async def list_sessions(
+    device_id: Optional[str] = None,
+    deviceId: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    req_dev_id = device_id or deviceId
     # Direct fast-path lookup if specific deviceId requested and non-empty
-    if device_id:
-        for k in [device_id, device_id.upper(), device_id.lower()]:
+    if req_dev_id:
+        for k in [req_dev_id, req_dev_id.upper(), req_dev_id.lower()]:
             if k in live_device_sessions and live_device_sessions[k]:
                 return live_device_sessions[k]
 
@@ -52,8 +57,8 @@ async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depe
     all_sessions = []
     for d in devices:
         is_target_device = False
-        if device_id:
-            did_clean = device_id.lower()
+        if req_dev_id:
+            did_clean = req_dev_id.lower()
             if (
                 d.id.lower() == did_clean or
                 (d.hostname and d.hostname.lower() == did_clean) or
@@ -68,7 +73,7 @@ async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depe
         p_val = d.power_status.value if hasattr(d.power_status, 'value') else str(d.power_status or '')
         sec_since_last_seen = (now - d.last_seen).total_seconds() if d.last_seen else 999999
         is_online = (p_val.lower() in ["on", "active", "running"]) and (sec_since_last_seen <= 300)
-        if not is_online and not device_id:
+        if not is_online and not req_dev_id:
             continue
 
         reported = (
@@ -85,7 +90,7 @@ async def list_sessions(device_id: Optional[str] = None, db: AsyncSession = Depe
             for s in reported:
                 all_sessions.append(s)
 
-        if device_id and is_target_device:
+        if req_dev_id and is_target_device:
             return reported
 
     return all_sessions

@@ -120,6 +120,8 @@ def get_windows_uninstaller_ps1(base_url: str = "") -> str:
 
 @app.get("/install.bat", response_class=PlainTextResponse)
 @app.get("/install-agent.bat", response_class=PlainTextResponse)
+@app.get("/api/v1/install.bat", response_class=PlainTextResponse)
+@app.get("/api/v1/agents/install.bat", response_class=PlainTextResponse)
 async def get_windows_batch_installer(request: Request, token: str = "", server_url: str = "", group: str = ""):
     """
     Serve a robust 1-Click Windows Batch Installer (.bat).
@@ -127,8 +129,7 @@ async def get_windows_batch_installer(request: Request, token: str = "", server_
     """
     import urllib.parse
     base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = base_url.replace("/api/v1", "").rstrip("/")
     
     effective_token = token or "wm_tok_live_7f8a92b3c4d5e6f7"
 
@@ -196,6 +197,11 @@ async def get_windows_installer_full_ps1_endpoint(request: Request, token: str =
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
 
 @app.get("/install.ps1", response_class=PlainTextResponse)
+@app.get("/installer.ps1", response_class=PlainTextResponse)
+@app.get("/api/v1/install.ps1", response_class=PlainTextResponse)
+@app.get("/api/v1/installer.ps1", response_class=PlainTextResponse)
+@app.get("/api/v1/agents/install.ps1", response_class=PlainTextResponse)
+@app.get("/api/v1/agents/installer.ps1", response_class=PlainTextResponse)
 async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", server_url: str = "", group: str = "", download: bool = False):
     """
     Serve dynamic Windows installer script with embedded server URL & token.
@@ -203,8 +209,7 @@ async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", 
     """
     import urllib.parse
     base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = base_url.replace("/api/v1", "").rstrip("/")
     
     effective_token = token or "wm_tok_live_7f8a92b3c4d5e6f7"
     content = get_windows_installer_ps1(base_url, effective_token)

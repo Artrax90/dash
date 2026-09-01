@@ -12,8 +12,9 @@ param(
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
-$ErrorActionPreference = 'Continue'
-if ($ServerUrl) { $ServerUrl = $ServerUrl.TrimEnd('/') }
+if ($ServerUrl) {
+    $ServerUrl = $ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+}
 if (-not $Token) { $Token = "__TOKEN__" }
 
 # Installation directory
@@ -385,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.5.0"
+    agentVersion = "2.5.1"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -437,9 +438,12 @@ try {
     $serviceScriptCode = @"
 `$ErrorActionPreference = 'SilentlyContinue'
 `$ServerUrl = '$ServerUrl'
+if (`$ServerUrl) {
+    `$ServerUrl = `$ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+}
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.5.0'
+`$AgentVersion = '2.5.1'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -450,9 +454,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.5.0") {
+function Update-AgentService([string]`$targetVer = "2.5.1") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.5.0"
+        `$targetVer = "2.5.1"
     }
     try {
         # 1. Report update in progress
@@ -481,10 +485,28 @@ function Update-AgentService([string]`$targetVer = "2.5.0") {
         `$wc = New-Object System.Net.WebClient
         `$wc.Encoding = [System.Text.Encoding]::UTF8
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
-        `$wc.DownloadFile("`$ServerUrl/install.ps1", `$tempInstaller)
+        
+        `$baseHost = `$ServerUrl -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+        `$dlUrls = @(
+            "`$baseHost/install.ps1",
+            "`$baseHost/api/v1/install.ps1",
+            "`$baseHost/api/v1/agents/install.ps1",
+            "`$baseHost/api/v1/agents/installer.ps1",
+            "`$baseHost/installer.ps1"
+        )
+        `$downloadSuccess = `$false
+        foreach (`$u in `$dlUrls) {
+            try {
+                `$wc.DownloadFile(`$u, `$tempInstaller)
+                if ((Test-Path `$tempInstaller) -and (Get-Item `$tempInstaller).Length -gt 500) {
+                    `$downloadSuccess = `$true
+                    break
+                }
+            } catch {}
+        }
 
-        if (Test-Path `$tempInstaller) {
-            `$procArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$tempInstaller, '-ServerUrl', `$ServerUrl, '-Token', '$Token')
+        if (`$downloadSuccess) {
+            `$procArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$tempInstaller, '-ServerUrl', `$baseHost, '-Token', '$Token')
             Start-Process -FilePath "powershell.exe" -ArgumentList `$procArgs -WindowStyle Hidden
             exit
         }
@@ -516,7 +538,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.5.0"
+        Update-AgentService "2.5.1"
         return
     }
 
@@ -1377,9 +1399,14 @@ while (`$true) {
     try {
         & schtasks.exe /end /tn "WorkstationManagerAgent" 2>&1 | Out-Null
         & schtasks.exe /end /tn "WorkstationManagerAgent_User" 2>&1 | Out-Null
-        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*run_service.ps1*" } | ForEach-Object {
+        Get-CimInstance Win32_Process -ErrorAction SilentlyContinue | Where-Object {
+            $_.CommandLine -like "*run_service.ps1*" -or
+            $_.CommandLine -like "*WorkstationManagerAgent*" -or
+            $_.CommandLine -like "*launcher.vbs*"
+        } | ForEach-Object {
             Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
         }
+        Start-Sleep -Milliseconds 800
     } catch {}
 
     # Create launcher.vbs helper for 100% silent execution and path immunity
@@ -1575,8 +1602,65 @@ try {
     }
 } catch {}
 
+function Get-InstallerLiveSessions() {
+    $sess = @()
+    try {
+        $quserExe = Join-Path $env:SystemRoot "System32\quser.exe"
+        $quserOut = if (Test-Path $quserExe) { & $quserExe 2>&1 | Out-String } else { quser 2>&1 | Out-String }
+        if ($quserOut -and $quserOut -notmatch 'No User exists') {
+            $lines = $quserOut -split '[\r\n]+' | Where-Object { $_.Trim() -ne '' }
+            if ($lines.Count -gt 1) {
+                for ($i = 1; $i -lt $lines.Count; $i++) {
+                    $line = $lines[$i]
+                    $clean = $line.TrimStart('>').Trim()
+                    $parts = -split $clean
+                    if ($parts.Count -ge 3) {
+                        $uName = $parts[0]
+                        $sessName = ''
+                        $sessId = 0
+                        $sessState = 'Active'
+                        $idle = '0 мин'
+                        $logon = ''
+                        if ($parts[1] -match '^\d+$') {
+                            $sessId = [int]$parts[1]
+                            $sessState = $parts[2]
+                            if ($parts.Count -ge 4) { $idle = $parts[3] }
+                            if ($parts.Count -ge 5) { $logon = ($parts[4..($parts.Count-1)]) -join ' ' }
+                        } else {
+                            $sessName = $parts[1]
+                            if ($parts.Count -ge 3 -and $parts[2] -match '^\d+$') { $sessId = [int]$parts[2] }
+                            if ($parts.Count -ge 4) { $sessState = $parts[3] }
+                            if ($parts.Count -ge 5) { $idle = $parts[4] }
+                            if ($parts.Count -ge 6) { $logon = ($parts[5..($parts.Count-1)]) -join ' ' }
+                        }
+                        $isRdp = ($sessName -match '(?i)rdp|tcp' -or $sessName.StartsWith('rdp-tcp#'))
+                        $sess += @{
+                            id = $sessId
+                            deviceId = $deviceId
+                            username = $uName
+                            sessionName = if ($sessName) { $sessName } else { if ($isRdp) { ('rdp-tcp#' + $sessId) } else { 'console' } }
+                            type = if ($isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
+                            state = if ($sessState -match '(?i)Disc') { 'Disconnected' } else { 'Active' }
+                            idleTime = if ($idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0 мин' } else { $idle }
+                            logonTime = if ($logon) { $logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
+                            clientIp = ''
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+    return @($sess)
+}
+
+$initRdp = Get-InstallerLiveSessions
 $heartbeatPayload = @{
     deviceId = $deviceId
+    hostname = $hostname
+    ip = $ip
+    ipAddress = $ip
+    mac = $mac
+    macAddress = $mac
     cpu = $initCpu
     ram = $initRam
     disk = $initDisk
@@ -1587,6 +1671,10 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
+    agentVersion = "2.5.1"
+    osType = "Windows"
+    osVersion = $osCaption
+    rdpSessions = $initRdp
     metrics = @{
         cpu = $initCpu
         ram = $initRam

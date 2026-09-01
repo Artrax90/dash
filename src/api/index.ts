@@ -684,10 +684,10 @@ export const agentsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return {
-      currentVersion: '2.5.0',
+      currentVersion: '2.5.1',
       releaseDate: '2026-09-01',
       minSupportedVersion: '1.0.0',
-      changelog: 'Релиз v2.5.0: Полное восстановление поведения сбора сессий v2.4.0 (все интерактивные и терминальные сеансы quser/qwinsta без отсечения console) + мульти-порт/PID исходящие RDP сессии',
+      changelog: 'Релиз v2.5.1: Устранение 404 при OTA-обновлении агента, нормализация базового URL, немедленная передача RDP-сессий при первой инсталляции и поддержка alias-роутов',
       totalAgents: 0,
       upToDateCount: 0,
       outdatedCount: 0,
@@ -708,7 +708,7 @@ export const agentsApi = {
       status: 'queued',
       deviceId,
       message: `Команда обновления отправлена на ${deviceId}`,
-      targetVersion: '2.5.0'
+      targetVersion: '2.5.1'
     };
   },
   updateBulk: async (deviceIds?: string[], updateAllOutdated?: boolean, user?: string): Promise<{ status: string; count: number; message: string; deviceIds?: string[] }> => {
