@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.6.0"
+    agentVersion = "2.6.1"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -443,7 +443,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.6.0'
+`$AgentVersion = '2.6.1'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -454,9 +454,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.6.0") {
+function Update-AgentService([string]`$targetVer = "2.6.1") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.6.0"
+        `$targetVer = "2.6.1"
     }
     try {
         # 1. Report update in progress
@@ -538,7 +538,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.6.0"
+        Update-AgentService "2.6.1"
         return
     }
 
@@ -590,8 +590,11 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (`$cmdObj -and `$cmdObj.pid) {
             try { `$targetPid = [int]`$cmdObj.pid } catch {}
         }
+        `$targetUser = `$null
+        if (`$cmdObj -and `$cmdObj.username) { `$targetUser = `$cmdObj.username.Trim().ToLower() }
+        if (`$cmdObj -and `$cmdObj.user) { `$targetUser = `$cmdObj.user.Trim().ToLower() }
 
-        # 1. If remote host is specified, send remote logoff/rwinsta to that remote server
+        # 1. If remote host is specified, send remote logoff/rwinsta to that remote server via RPC
         if (`$remHost) {
             try { & "`$env:SystemRoot\System32\logoff.exe" /server:`$remHost 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\rwinsta.exe" /server:`$remHost 2>`$null } catch {}
@@ -602,46 +605,33 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         }
 
         # 2. Local terminal session logoff (STRICTLY for incoming RDP sessions, NEVER console!)
-        if (`$targetSessId -ne `$null -and `$targetSessId -lt 100 -and `$targetSessId -ge 0) {
-            `$isConsole = `$false
-            try {
-                `$qwLines = @(qwinsta 2>`$null)
-                foreach (`$line in `$qwLines) {
-                    if (`$line -match "^\s*(\S+)?\s+(\S+)?\s+(\d+)") {
-                        `$sName = `$matches[1]
-                        `$sId = [int]`$matches[3]
-                        if (`$sId -eq `$targetSessId -and `$sName -match "(?i)console") {
-                            `$isConsole = `$true
-                            break
-                        }
+        try {
+            `$qwLines = @(qwinsta 2>`$null)
+            foreach (`$line in `$qwLines) {
+                if (-not `$line -or `$line.Trim() -eq "") { continue }
+                `$clean = `$line.TrimStart('>').Trim()
+                if (`$clean -match "(\d+)\s+(Active|Disc|Conn|Down|Init)") {
+                    `$sId = [int]`$matches[1]
+                    if (`$sId -eq 0 -or `$sId -ge 65535) { continue }
+                    if (`$clean -match "(?i)\bconsole\b") { continue }
+
+                    `$shouldLogoff = `$false
+                    if (`$targetSessId -ne `$null -and `$targetSessId -lt 100 -and `$sId -eq `$targetSessId) {
+                        `$shouldLogoff = `$true
+                    }
+                    if (`$targetUser -and `$clean.ToLower() -match "(?i)\b`$targetUser\b") {
+                        `$shouldLogoff = `$true
+                    }
+
+                    if (`$shouldLogoff) {
+                        & "`$env:SystemRoot\System32\logoff.exe" `$sId 2>`$null
+                        & "`$env:SystemRoot\System32\logoff.exe" "`$sId" /v 2>`$null
+                        & "`$env:SystemRoot\System32\rwinsta.exe" `$sId 2>`$null
+                        & "`$env:SystemRoot\System32\reset.exe" session `$sId 2>`$null
                     }
                 }
-            } catch {}
-
-            if (-not `$isConsole) {
-                try { & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\logoff.exe" "`$targetSessId" /v 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\reset.exe" session `$targetSessId 2>`$null } catch {}
             }
-        }
-
-        # 2b. Remote destination user logoff: only terminate RDP sessions (rdp-tcp#... / disconnected), NEVER console!
-        if (`$targetUser) {
-            try {
-                `$qwLines = @(quser 2>`$null)
-                foreach (`$ql in `$qwLines) {
-                    if (`$ql.ToLower() -match "^\s*>?`$targetUser\s+(\S+)?\s+(\d+)") {
-                        `$sessName = `$matches[1]
-                        `$foundId = [int]`$matches[2]
-                        if (`$sessName -notmatch "(?i)console") {
-                            & "`$env:SystemRoot\System32\logoff.exe" `$foundId 2>`$null
-                            & "`$env:SystemRoot\System32\rwinsta.exe" `$foundId 2>`$null
-                        }
-                    }
-                }
-            } catch {}
-        }
+        } catch {}
 
         # 3. Terminate local mstsc/msrdc client process for outgoing RDP
         if (`$targetPid -and `$targetPid -gt 0) {
@@ -1799,7 +1789,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.6.0"
+    agentVersion = "2.6.1"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

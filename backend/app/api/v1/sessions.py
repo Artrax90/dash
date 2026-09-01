@@ -146,6 +146,10 @@ class LogoffRequest(BaseModel):
     pid: Optional[int] = None
     type: Optional[str] = None
     isOutgoing: Optional[bool] = None
+    username: Optional[str] = None
+    sessionName: Optional[str] = None
+    clientIp: Optional[str] = None
+    remoteHost: Optional[str] = None
 
 @router.post("/{session_id}/logoff")
 async def logoff_session(
@@ -190,21 +194,25 @@ async def logoff_session(
         resolved_dev_id = "PC-DEFAULT"
 
     # Look up session info for remote target IP and username
-    sess_username = None
-    dest_ip = None
-    for sess_list in live_device_sessions.values():
-        if isinstance(sess_list, list):
-            for s in sess_list:
-                if str(s.get("id")) == str(session_id):
-                    sess_username = s.get("username")
-                    s_name = str(s.get("sessionName", ""))
-                    if "->" in s_name:
-                        dest_ip = s_name.split("->")[-1].strip().split(":")[0].strip()
-                    elif s.get("clientIp"):
-                        dest_ip = str(s.get("clientIp")).strip()
-                    break
-        if sess_username or dest_ip:
-            break
+    sess_username = req.username if (req and req.username) else None
+    dest_ip = req.remoteHost if (req and req.remoteHost) else None
+
+    if not sess_username or not dest_ip:
+        for sess_list in live_device_sessions.values():
+            if isinstance(sess_list, list):
+                for s in sess_list:
+                    if str(s.get("id")) == str(session_id):
+                        if not sess_username:
+                            sess_username = s.get("username")
+                        if not dest_ip:
+                            s_name = str(s.get("sessionName", ""))
+                            if "->" in s_name:
+                                dest_ip = s_name.split("->")[-1].strip().split(":")[0].strip()
+                            elif s.get("clientIp"):
+                                dest_ip = str(s.get("clientIp")).strip()
+                        break
+            if sess_username and dest_ip:
+                break
 
     if req and req.isOutgoing is not None:
         is_outgoing_rdp = req.isOutgoing
@@ -242,7 +250,7 @@ async def logoff_session(
                 device_id=dest_dev.id,
                 action="LOGOFF",
                 reason=f"Admin requested remote LOGOFF for user {sess_username or ''} from {resolved_dev_id}",
-                extra_data={"sessionId": session_id, "username": sess_username}
+                extra_data={"sessionId": session_id, "username": sess_username, "remoteHost": dest_ip}
             )
             if dest_dev.ip_address:
                 send_direct_lan_power_signal(
