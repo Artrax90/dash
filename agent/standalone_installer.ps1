@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.6.6"
+    agentVersion = "2.6.7"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -634,7 +634,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.6.6'
+`$AgentVersion = '2.6.7'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -652,9 +652,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.6.6") {
+function Update-AgentService([string]`$targetVer = "2.6.7") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.6.6"
+        `$targetVer = "2.6.7"
     }
     try {
         # 1. Report update in progress
@@ -736,7 +736,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.6.6"
+        Update-AgentService "2.6.7"
         return
     }
 
@@ -832,46 +832,90 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
             }
         } catch {}
 
-        # 2. If remote host is specified, send remote logoff/rwinsta to that remote server via RPC
+        # 2. Remote Server Session Termination via RPC (qwinsta /server:... & logoff /server:... /v)
         if (`$remHost) {
-            try { & "`$env:SystemRoot\System32\logoff.exe" /server:`$remHost 2>`$null } catch {}
-            try { & "`$env:SystemRoot\System32\rwinsta.exe" /server:`$remHost 2>`$null } catch {}
+            try {
+                `$rLines = @(qwinsta /server:`$remHost 2>`$null)
+                foreach (`$rl in `$rLines) {
+                    if (-not `$rl -or `$rl -match "(?i)^SESSIONNAME") { continue }
+                    `$rClean = `$rl.ToString().TrimStart('>').Trim()
+                    if (`$rClean -match "(?i)(rdp-tcp\S*|\S+)?\s+(\S+)?\s+(\d+)\s+(Active|Disc|Conn|Down|Init)") {
+                        `$rSessName = `$matches[1]
+                        `$rUser = `$matches[2]
+                        `$rId = [int]`$matches[3]
+                        if (`$rSessName -and -not `$rUser -and `$rSessName -notmatch "(?i)rdp|console|services|tcp") {
+                            `$rUser = `$rSessName
+                            `$rSessName = ""
+                        }
+                        if (`$rId -gt 0 -and `$rId -lt 65535 -and `$rSessName -notmatch "(?i)console") {
+                            `$shouldLogoffRemote = `$false
+                            if (`$targetUser -and `$rUser -and `$rUser.ToLower() -match "(?i)\b`$targetUser\b") { `$shouldLogoffRemote = `$true }
+                            if (`$targetSessId -and `$targetSessId -lt 100 -and `$targetSessId -gt 0 -and `$rId -eq `$targetSessId) { `$shouldLogoffRemote = `$true }
+                            if (-not `$targetUser -and (-not `$targetSessId -or `$targetSessId -ge 100)) { `$shouldLogoffRemote = `$true }
+
+                            if (`$shouldLogoffRemote) {
+                                try { & "`$env:SystemRoot\System32\logoff.exe" `$rId /server:`$remHost /v 2>`$null } catch {}
+                                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$rId /server:`$remHost /v 2>`$null } catch {}
+                                if (`$rSessName) {
+                                    try { & "`$env:SystemRoot\System32\logoff.exe" `$rSessName /server:`$remHost /v 2>`$null } catch {}
+                                    try { & "`$env:SystemRoot\System32\rwinsta.exe" `$rSessName /server:`$remHost /v 2>`$null } catch {}
+                                }
+                            }
+                        }
+                    }
+                }
+            } catch {}
+
+            # Direct fallback RPC attempts
             if (`$targetSessId -ne `$null -and `$targetSessId -lt 100 -and `$targetSessId -gt 0) {
-                try { & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId /server:`$remHost 2>`$null } catch {}
-                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId /server:`$remHost 2>`$null } catch {}
+                try { & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId /server:`$remHost /v 2>`$null } catch {}
+                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId /server:`$remHost /v 2>`$null } catch {}
             }
+            try { & "`$env:SystemRoot\System32\logoff.exe" /server:`$remHost /v 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\rwinsta.exe" /server:`$remHost /v 2>`$null } catch {}
         }
 
         # 3. Local terminal session logoff (STRICTLY for incoming RDP sessions, NEVER console!)
         `$idsToLogoff = @()
+        `$namesToLogoff = @()
 
-        # 3a. Check QWINSTA
+        # 3a. Check QWINSTA locally
         try {
             `$qwLines = @(qwinsta 2>`$null)
             foreach (`$line in `$qwLines) {
-                if (-not `$line -or `$line.Trim() -eq "") { continue }
-                `$clean = `$line.TrimStart('>').Trim()
-                if (`$clean -match "(\d+)\s+(Active|Disc|Conn|Down|Init)") {
-                    `$sId = [int]`$matches[1]
+                if (-not `$line -or `$line -match "(?i)^SESSIONNAME") { continue }
+                `$clean = `$line.ToString().TrimStart('>').Trim()
+                if (`$clean -match "(?i)(rdp-tcp\S*|\S+)?\s+(\S+)?\s+(\d+)\s+(Active|Disc|Conn|Down|Init)") {
+                    `$lSessName = `$matches[1]
+                    `$lUser = `$matches[2]
+                    `$sId = [int]`$matches[3]
+                    if (`$lSessName -and -not `$lUser -and `$lSessName -notmatch "(?i)rdp|console|services|tcp") {
+                        `$lUser = `$lSessName
+                        `$lSessName = ""
+                    }
                     if (`$sId -eq 0 -or `$sId -ge 65535) { continue }
-                    if (`$clean -match "(?i)\bconsole\b") { continue }
+                    if (`$lSessName -match "(?i)\bconsole\b") { continue }
 
                     `$shouldLogoff = `$false
                     if (`$targetSessId -ne `$null -and `$targetSessId -lt 100 -and `$targetSessId -gt 0 -and `$sId -eq `$targetSessId) {
                         `$shouldLogoff = `$true
                     }
-                    if (`$targetUser -and `$clean.ToLower() -match "(?i)\b`$targetUser\b") {
+                    if (`$targetUser -and `$lUser -and `$lUser.ToLower() -match "(?i)\b`$targetUser\b") {
+                        `$shouldLogoff = `$true
+                    }
+                    if (-not `$targetUser -and (-not `$targetSessId -or `$targetSessId -ge 100)) {
                         `$shouldLogoff = `$true
                     }
 
                     if (`$shouldLogoff) {
                         `$idsToLogoff += `$sId
+                        if (`$lSessName) { `$namesToLogoff += `$lSessName }
                     }
                 }
             }
         } catch {}
 
-        # 3b. Check QUSER
+        # 3b. Check QUSER locally
         try {
             `$quLines = @(quser 2>`$null)
             foreach (`$ql in `$quLines) {
@@ -885,18 +929,22 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
                     if (`$sId -gt 0 -and `$sId -lt 65535 -and `$sName -notmatch "(?i)console") {
                         if ((`$targetUser -and `$u -eq `$targetUser) -or (`$targetSessId -and `$targetSessId -lt 100 -and `$targetSessId -gt 0 -and [int]`$targetSessId -eq `$sId)) {
                             `$idsToLogoff += `$sId
+                            if (`$sName) { `$namesToLogoff += `$sName }
                         }
                     }
                 }
             }
         } catch {}
 
-        # Execute logoff for all matched RDP session IDs via system CLI
+        # Execute logoff for all matched RDP session IDs and names via system CLI
         foreach (`$sId in (`$idsToLogoff | Select-Object -Unique)) {
-            try { & "`$env:SystemRoot\System32\logoff.exe" `$sId 2>`$null } catch {}
-            try { & "`$env:SystemRoot\System32\logoff.exe" "`$sId" /v 2>`$null } catch {}
-            try { & "`$env:SystemRoot\System32\rwinsta.exe" `$sId 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\logoff.exe" `$sId /v 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\rwinsta.exe" `$sId /v 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\reset.exe" session `$sId 2>`$null } catch {}
+        }
+        foreach (`$sName in (`$namesToLogoff | Select-Object -Unique)) {
+            try { & "`$env:SystemRoot\System32\logoff.exe" `$sName /v 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\rwinsta.exe" `$sName /v 2>`$null } catch {}
         }
 
         # 4. Terminate ONLY the specific local mstsc/msrdc client process for this outgoing RDP
@@ -2111,7 +2159,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.6.6"
+    agentVersion = "2.6.7"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
