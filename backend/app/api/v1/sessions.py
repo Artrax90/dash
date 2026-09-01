@@ -135,7 +135,7 @@ async def logoff_session(
     db: AsyncSession = Depends(get_db)
 ):
     from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
-    from backend.app.core.ws import ws_manager
+    from backend.app.ws.manager import ws_manager
     from backend.app.api.v1.devices import format_device_summary
 
     target_dev_id = (req.deviceId if req and req.deviceId else None) or (req.device_id if req and req.device_id else None) or device_id or deviceId
