@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.5.4"
+    agentVersion = "2.5.5"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -443,7 +443,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.5.4'
+`$AgentVersion = '2.5.5'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -454,9 +454,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.5.4") {
+function Update-AgentService([string]`$targetVer = "2.5.5") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.5.4"
+        `$targetVer = "2.5.5"
     }
     try {
         # 1. Report update in progress
@@ -538,7 +538,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.5.4"
+        Update-AgentService "2.5.5"
         return
     }
 
@@ -573,6 +573,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         } else {
             try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
         }
+        try { Invoke-Heartbeat `$true } catch {}
     }
     elseif (`$act -eq 'LOGOFF' -or `$act -eq 'RESET_SESSION' -or `$act -eq 'RDP_CLEANUP') {
         `$targetSessId = `$null
@@ -585,10 +586,26 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
                 try { Stop-Process -Name "mstsc", "msrdc" -Force -ErrorAction SilentlyContinue } catch {}
             } else {
                 # Standard Windows terminal session ID
-                & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId 2>`$null
-                & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId 2>`$null
+                try { & "`$env:SystemRoot\System32\logoff.exe" `$targetSessId 2>`$null } catch {}
+                try { & "`$env:SystemRoot\System32\logoff.exe" "`$targetSessId" /v 2>`$null } catch {}
+                try { & "`$env:SystemRoot\System32\rwinsta.exe" `$targetSessId 2>`$null } catch {}
+                try { & "`$env:SystemRoot\System32\reset.exe" session `$targetSessId 2>`$null } catch {}
+                try {
+                    if (`$cmdObj -and `$cmdObj.username) {
+                        `$uNameLower = `$cmdObj.username.Trim().ToLower()
+                        `$qLines = @(quser 2>`$null)
+                        foreach (`$ql in `$qLines) {
+                            if (`$ql.ToLower() -match "^\s*>?`$uNameLower\s+(\S+)?\s+(\d+)") {
+                                `$foundId = `$matches[2]
+                                & "`$env:SystemRoot\System32\logoff.exe" `$foundId 2>`$null
+                                & "`$env:SystemRoot\System32\rwinsta.exe" `$foundId 2>`$null
+                            }
+                        }
+                    }
+                } catch {}
             }
         }
+        try { Invoke-Heartbeat `$true } catch {}
     }
     elseif (`$act -eq 'LOCK') {
         & "`$env:SystemRoot\System32\rundll32.exe" user32.dll,LockWorkStation
@@ -658,19 +675,21 @@ function Get-LiveRdpSessions() {
                         }
 
                         `$isRdp = (`$sessName -match '(?i)rdp|tcp' -or `$sessName.StartsWith('rdp-tcp#'))
-                        `$sObj = @{
-                            id = `$sessId
-                            deviceId = `$DeviceId
-                            username = `$uName
-                            sessionName = if (`$sessName) { `$sessName } else { if (`$isRdp) { ('rdp-tcp#' + `$sessId) } else { 'console' } }
-                            type = if (`$isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
-                            state = `$stdState
-                            idleTime = if (`$idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0 мин' } else { `$idle }
-                            logonTime = if (`$logon) { `$logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
-                            clientIp = ''
+                        if (`$isRdp) {
+                            `$sObj = @{
+                                id = `$sessId
+                                deviceId = `$DeviceId
+                                username = `$uName
+                                sessionName = if (`$sessName) { `$sessName } else { ('rdp-tcp#' + `$sessId) }
+                                type = 'Входящий RDP'
+                                state = `$stdState
+                                idleTime = if (`$idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0 мин' } else { `$idle }
+                                logonTime = if (`$logon) { `$logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
+                                clientIp = ''
+                            }
+                            `$sessions += `$sObj
+                            `$seenIds[`$sessId] = `$true
                         }
-                        `$sessions += `$sObj
-                        `$seenIds[`$sessId] = `$true
                     }
                 }
             }
@@ -706,20 +725,22 @@ function Get-LiveRdpSessions() {
                     if (`$sId -ge 0 -and `$sId -ne 65536 -and -not `$seenIds.ContainsKey(`$sId) -and `$uName -ne '' -and `$uName -notmatch '(?i)^(services|listener)$') {
                         if (-not `$primaryUser -and -not `$uName.EndsWith('$')) { `$primaryUser = `$uName }
                         `$isRdp = (`$sName -match '(?i)rdp-tcp#|rdp-tcp\b|rdp')
-                        `$firstChar = if (`$sState.Length -gt 0) { [int][char]`$sState[0] } else { 0 }
-                        `$stdState = if (`$sState -match '(?i)Disc' -or `$firstChar -eq 0x041E -or `$firstChar -eq 0x043E) { 'Disconnected' } else { 'Active' }
-                        `$sessions += @{
-                            id = `$sId
-                            deviceId = `$DeviceId
-                            username = `$uName
-                            sessionName = `$sName
-                            type = if (`$isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
-                            state = `$stdState
-                            idleTime = '0 мин'
-                            logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
-                            clientIp = ''
+                        if (`$isRdp) {
+                            `$firstChar = if (`$sState.Length -gt 0) { [int][char]`$sState[0] } else { 0 }
+                            `$stdState = if (`$sState -match '(?i)Disc' -or `$firstChar -eq 0x041E -or `$firstChar -eq 0x043E) { 'Disconnected' } else { 'Active' }
+                            `$sessions += @{
+                                id = `$sId
+                                deviceId = `$DeviceId
+                                username = `$uName
+                                sessionName = `$sName
+                                type = 'Входящий RDP'
+                                state = `$stdState
+                                idleTime = '0 мин'
+                                logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+                                clientIp = ''
+                            }
+                            `$seenIds[`$sId] = `$true
                         }
-                        `$seenIds[`$sId] = `$true
                     }
                 }
             }
@@ -1389,7 +1410,9 @@ while (`$true) {
                         }
 
                         if (`$isTargetMatch -and `$cmdAction) {
-                            Execute-PowerCommand `$cmdAction `$true
+                            `$extraArg = if (`$parts.Length -ge 6) { `$parts[5].Trim() } else { "" }
+                            `$cmdObj = @{ action = `$cmdAction; sessionId = `$extraArg; pid = `$extraArg }
+                            Execute-PowerCommand `$cmdAction `$true `$cmdObj
                         }
                     }
                 }
@@ -1653,18 +1676,20 @@ function Get-InstallerLiveSessions() {
                             if ($parts.Count -ge 6) { $logon = ($parts[5..($parts.Count-1)]) -join ' ' }
                         }
                         $isRdp = ($sessName -match '(?i)rdp|tcp' -or $sessName.StartsWith('rdp-tcp#'))
-                        $sess += @{
-                            id = $sessId
-                            deviceId = $deviceId
-                            username = $uName
-                            sessionName = if ($sessName) { $sessName } else { if ($isRdp) { ('rdp-tcp#' + $sessId) } else { 'console' } }
-                            type = if ($isRdp) { 'Входящий RDP' } else { 'Локальный сеанс' }
-                            state = if ($sessState -match '(?i)Disc') { 'Disconnected' } else { 'Active' }
-                            idleTime = if ($idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0 мин' } else { $idle }
-                            logonTime = if ($logon) { $logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
-                            clientIp = ''
+                        if ($isRdp) {
+                            $sess += @{
+                                id = $sessId
+                                deviceId = $deviceId
+                                username = $uName
+                                sessionName = if ($sessName) { $sessName } else { ('rdp-tcp#' + $sessId) }
+                                type = 'Входящий RDP'
+                                state = if ($sessState -match '(?i)Disc') { 'Disconnected' } else { 'Active' }
+                                idleTime = if ($idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0 мин' } else { $idle }
+                                logonTime = if ($logon) { $logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
+                                clientIp = ''
+                            }
+                            $seenIds[$sessId] = $true
                         }
-                        $seenIds[$sessId] = $true
                     }
                 }
             }
@@ -1724,7 +1749,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.5.4"
+    agentVersion = "2.5.5"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

@@ -534,7 +534,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.5.4</span>
+            <span>v2.5.5</span>
           </div>
         </div>
       </div>
@@ -608,7 +608,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.5.4</span>
+          <span style={{ color: '#475569' }}>v2.5.5</span>
         </div>
       </div>
     </div>
@@ -2580,7 +2580,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
             style={device.isOutdated ? { borderColor: 'rgba(234,179,8,0.4)', color: 'var(--yellow)', background: 'rgba(234,179,8,0.06)' } : undefined}
             title="Удаленно обновить службу агента по сети (OTA)"
           >
-            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.5.4'})` : 'Обновить агент')}
+            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.5.5'})` : 'Обновить агент')}
           </Button>
           <Button
             primary
@@ -2688,7 +2688,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <strong>v{device.agentVersion || '1.4.2'}</strong>
                   {device.isOutdated ? (
                     <span className="badge" style={{ background: 'rgba(234, 179, 8, 0.15)', color: 'var(--yellow)', fontWeight: 600, fontSize: '10px' }}>
-                      Доступно v{device.latestAgentVersion || '2.5.4'}
+                      Доступно v{device.latestAgentVersion || '2.5.5'}
                     </span>
                   ) : (
                     <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)', fontWeight: 600, fontSize: '10px' }}>
@@ -3229,6 +3229,23 @@ function SessionTable({
   onAction: (message: string) => void;
 }) {
   const { t } = useLanguage();
+
+  // Filter only genuine RDP sessions (outgoing mstsc and incoming RDP), hiding physical local console sessions
+  const rdpOnlySessions = sessions.filter(s => {
+    const isOut = s.type?.includes('Исходящий') || s.sessionName?.toLowerCase().includes('mstsc');
+    const isIn = s.type?.includes('Входящий') || s.sessionName?.toLowerCase().includes('rdp');
+    return isOut || isIn;
+  });
+
+  if (rdpOnlySessions.length === 0) {
+    return (
+      <div className="empty-state" style={{ minHeight: '130px' }}>
+        <Monitor size={22} />
+        <div>Нет активных RDP сессий на данной рабочей станции</div>
+      </div>
+    );
+  }
+
   return (
     <div className="session-table">
       <div className="session-head">
@@ -3239,19 +3256,24 @@ function SessionTable({
         <span>Время входа</span>
         <span />
       </div>
-      {sessions.map((session) => {
+      {rdpOnlySessions.map((session) => {
         const isOutgoing = session.type?.includes('Исходящий') || session.sessionName?.toLowerCase().includes('mstsc');
         const isIncomingRdp = session.type?.includes('Входящий') || session.sessionName?.toLowerCase().includes('rdp-tcp');
-        const isLocal = !isOutgoing && !isIncomingRdp;
 
         // Clean target / destination label
         let targetLabel = '';
         if (isOutgoing) {
           targetLabel = session.sessionName?.replace(/^mstsc\s*->\s*/i, '') || session.clientIp || 'Удаленный узел';
         } else if (isIncomingRdp) {
-          targetLabel = session.clientIp ? `Клиент: ${session.clientIp}` : (session.sessionName || 'RDP');
+          if (session.clientIp) {
+            targetLabel = `Клиент: ${session.clientIp}`;
+          } else if (session.state === 'Disconnected' || session.state === 'Idle') {
+            targetLabel = 'Входящий RDP (Сеанс отключен)';
+          } else {
+            targetLabel = session.sessionName || 'Входящее RDP-подключение';
+          }
         } else {
-          targetLabel = 'Локальная консоль (Физический экран ПК)';
+          targetLabel = session.sessionName || 'RDP Сессия';
         }
 
         // Clean idle time (replace "отсутствует", ".", "none", "00:00" with "0 мин")
@@ -3265,10 +3287,8 @@ function SessionTable({
               <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
                 {isOutgoing ? (
                   <ArrowUpRight size={15} style={{ color: '#60a5fa', flexShrink: 0 }} />
-                ) : isIncomingRdp ? (
-                  <ArrowDownLeft size={15} style={{ color: '#4ade80', flexShrink: 0 }} />
                 ) : (
-                  <Monitor size={15} style={{ color: 'var(--muted)', flexShrink: 0 }} />
+                  <ArrowDownLeft size={15} style={{ color: '#4ade80', flexShrink: 0 }} />
                 )}
                 <strong>#{session.id}</strong>
                 <span className="badge" style={{
@@ -3276,10 +3296,10 @@ function SessionTable({
                   padding: '2px 6px',
                   borderRadius: '4px',
                   fontWeight: 600,
-                  background: isOutgoing ? 'rgba(59, 130, 246, 0.15)' : isIncomingRdp ? 'rgba(34, 197, 94, 0.15)' : 'rgba(148, 163, 184, 0.15)',
-                  color: isOutgoing ? '#60a5fa' : isIncomingRdp ? '#4ade80' : 'var(--muted)'
+                  background: isOutgoing ? 'rgba(59, 130, 246, 0.15)' : 'rgba(34, 197, 94, 0.15)',
+                  color: isOutgoing ? '#60a5fa' : '#4ade80'
                 }}>
-                  {isOutgoing ? 'Исходящий RDP' : isIncomingRdp ? 'Входящий RDP' : 'Локальный сеанс'}
+                  {isOutgoing ? 'Исходящий RDP' : 'Входящий RDP'}
                 </span>
               </div>
               <small style={{ display: 'block', fontSize: '11px', color: isOutgoing ? '#93c5fd' : 'var(--muted)', marginTop: '3px', fontFamily: isOutgoing ? 'monospace' : 'inherit', fontWeight: isOutgoing ? 600 : 400 }}>
@@ -3307,7 +3327,7 @@ function SessionTable({
                 >
                   Закрыть RDP
                 </button>
-              ) : isIncomingRdp ? (
+              ) : (
                 <button
                   onClick={() => onResetSession ? onResetSession(session.id, session) : onAction(`Сброс входящей сессии для ${session.username}`)}
                   className="text-button"
@@ -3315,20 +3335,6 @@ function SessionTable({
                   title="Сбросить удаленное подключение пользователя к этому ПК"
                 >
                   Сбросить сессию
-                </button>
-              ) : (
-                <button
-                  onClick={() => {
-                    if (window.confirm(`⚠️ Внимание: Завершение локального сеанса пользователя "${session.username}" приведет к выходу из Windows на самом компьютере. Вы уверены?`)) {
-                      if (onResetSession) onResetSession(session.id, session);
-                      else onAction(`Выход из системы пользователя ${session.username}`);
-                    }
-                  }}
-                  className="text-button"
-                  style={{ color: 'var(--muted)', fontSize: '11.5px' }}
-                  title="Завершить локальный сеанс пользователя (Выход из Windows)"
-                >
-                  Выйти из системы
                 </button>
               )}
             </div>
@@ -3546,7 +3552,7 @@ function DeviceMonitoringTab({
               <span className="device-telemetry-sep">·</span>
               <span>IP: <span className="device-telemetry-chip">{device.ip}</span></span>
               <span className="device-telemetry-sep">·</span>
-              <span>Агент v{device.agentVersion || '2.5.4'}</span>
+              <span>Агент v{device.agentVersion || '2.5.5'}</span>
               <span>Uptime: <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{formatLiveUptime(device.uptime, device.bootTimeIso, device.powerStatus === 'On')}</span></span>
               {device.bootTimeIso && device.powerStatus === 'On' && (
                 <>
@@ -9351,14 +9357,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 onClick={() => setFleetFilter('outdated')}
                 style={{ fontSize: '11px', padding: '4px 10px', color: fleetFilter !== 'outdated' && (versionInfo?.outdatedCount ?? 0) > 0 ? 'var(--yellow)' : undefined }}
               >
-                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.5.4')).length})
+                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.5.5')).length})
               </button>
               <button
                 className={`filter-button ${fleetFilter === 'updated' ? 'primary' : ''}`}
                 onClick={() => setFleetFilter('updated')}
                 style={{ fontSize: '11px', padding: '4px 10px' }}
               >
-                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.5.4')).length})
+                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.5.5')).length})
               </button>
             </div>
             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
@@ -9389,13 +9395,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 ) : (
                   fleetDevices
                     .filter(d => {
-                      const targetVer = versionInfo?.currentVersion || '2.5.4';
+                      const targetVer = versionInfo?.currentVersion || '2.5.5';
                       if (fleetFilter === 'outdated') return (d.agentVersion || '1.4.2') !== targetVer;
                       if (fleetFilter === 'updated') return (d.agentVersion || '1.4.2') === targetVer;
                       return true;
                     })
                     .map(dev => {
-                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.5.4';
+                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.5.5';
                       const curVer = dev.agentVersion || '1.4.2';
                       const isTargetVer = curVer === targetVer;
                       const isUpdating = updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING';
@@ -11432,7 +11438,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.5.4 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.5.5 · © 2026 Сергей Ерёмин
               </span>
             </div>
             <div style={{ flexShrink: 0 }}>

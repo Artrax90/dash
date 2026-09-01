@@ -134,40 +134,77 @@ async def logoff_session(
     req: Optional[LogoffRequest] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    from backend.app.api.v1.agents import queue_device_command
+    from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+    from backend.app.core.ws import ws_manager
+    from backend.app.api.v1.devices import format_device_summary
+
     target_dev_id = (req.deviceId if req and req.deviceId else None) or (req.device_id if req and req.device_id else None) or device_id or deviceId
     target_pid = req.pid if req else None
     target_type = req.type if req else None
 
-    # If target device ID is explicitly provided
+    # Find the target device
+    device = None
     if target_dev_id:
-        target_dev_id_clean = target_dev_id.strip()
-        is_outgoing_rdp = (target_type and "Исходящий" in target_type) or (session_id >= 100)
-        action = "CLOSE_RDP_CLIENT" if is_outgoing_rdp else "LOGOFF"
-        queue_device_command(
-            device_id=target_dev_id_clean,
-            action=action,
-            reason=f"Admin requested {action} for session #{session_id}",
-            extra_data={"sessionId": session_id, "pid": target_pid, "type": target_type}
+        res = await db.execute(select(Device).where((Device.id == target_dev_id.strip()) | (Device.hostname == target_dev_id.strip())))
+        device = res.scalar_one_or_none()
+
+    resolved_dev_id = device.id if device else (target_dev_id.strip() if target_dev_id else None)
+
+    # If target not found in DB directly, try live_device_sessions
+    if not resolved_dev_id:
+        for dev_id, sess_list in list(live_device_sessions.items()):
+            if isinstance(sess_list, list):
+                for s in sess_list:
+                    if str(s.get("id")) == str(session_id):
+                        resolved_dev_id = str(s.get("deviceId", dev_id))
+                        if not target_pid and s.get("pid"):
+                            target_pid = s.get("pid")
+                        if not target_type and s.get("type"):
+                            target_type = s.get("type")
+                        break
+            if resolved_dev_id:
+                break
+
+    if not resolved_dev_id:
+        resolved_dev_id = "PC-DEFAULT"
+
+    is_outgoing_rdp = (target_type and "Исходящий" in target_type) or (session_id >= 100)
+    action = "CLOSE_RDP_CLIENT" if is_outgoing_rdp else "LOGOFF"
+    extra_arg = str(target_pid) if is_outgoing_rdp and target_pid else str(session_id)
+
+    # 1. Queue command for heartbeat fallback
+    queue_device_command(
+        device_id=resolved_dev_id,
+        action=action,
+        reason=f"Admin requested {action} for session #{session_id}",
+        extra_data={"sessionId": session_id, "pid": target_pid, "type": target_type}
+    )
+
+    # 2. Send instant UNICAST UDP trigger to device LAN agent (0ms latency)
+    if device and device.ip_address:
+        send_direct_lan_power_signal(
+            ip_address=device.ip_address,
+            action=f"{action}:{extra_arg}",
+            device_id=device.id,
+            mac_address=device.mac_address or "",
+            hostname=device.hostname or ""
         )
-        return {"status": "success", "message": f"{action} queued for session #{session_id} on {target_dev_id_clean}"}
 
-    # Fallback: search session in live memory
-    for dev_id, sess_list in list(live_device_sessions.items()):
+    # 3. Immediately purge the removed session from live memory
+    for k, sess_list in list(live_device_sessions.items()):
         if isinstance(sess_list, list):
-            for s in sess_list:
-                if str(s.get("id")) == str(session_id):
-                    s_pid = s.get("pid")
-                    s_type = s.get("type", "")
-                    action = "CLOSE_RDP_CLIENT" if "Исходящий" in s_type or session_id >= 100 else "LOGOFF"
-                    queue_device_command(
-                        device_id=dev_id,
-                        action=action,
-                        reason=f"Admin requested {action} for session #{session_id} ({s.get('username')})",
-                        extra_data={"sessionId": session_id, "pid": s_pid, "type": s_type, "username": s.get("username")}
-                    )
-                    return {"status": "success", "message": f"{action} command queued for session #{session_id} on {dev_id}"}
+            live_device_sessions[k] = [s for s in sess_list if str(s.get("id")) != str(session_id)]
 
-    return {"status": "success", "message": f"Logoff command dispatched for session {session_id}"}
+    # 4. Broadcast real-time WebSocket update to all open dashboards
+    if device:
+        await ws_manager.broadcast_event("device.updated", format_device_summary(device))
+
+    return {
+        "status": "success",
+        "action": action,
+        "sessionId": session_id,
+        "message": f"{action} успешно отправлен на {resolved_dev_id}"
+    }
+
 
 
