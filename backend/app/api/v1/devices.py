@@ -244,7 +244,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
                 upd_status = "idle"
 
     from backend.app.api.v1.sessions import live_device_sessions
-    live_sessions = (
+    raw_sessions = (
         live_device_sessions.get(d.id) or
         live_device_sessions.get(d.id.upper()) or
         live_device_sessions.get(d.id.lower()) or
@@ -254,6 +254,11 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
         []
     )
+    real_rdp_sessions = [
+        s for s in raw_sessions
+        if not ((str(s.get("type", "")) == "Локальный сеанс" or str(s.get("sessionName", "")) == "console") and "Исходящий" not in str(s.get("type", "")) and "Входящий" not in str(s.get("type", "")) and "mstsc" not in str(s.get("sessionName", "")) and "rdp" not in str(s.get("sessionName", "")))
+    ]
+    rdp_status_str = f"Активен ({len(real_rdp_sessions)})" if (is_online and len(real_rdp_sessions) > 0) else "Stopped"
 
     return {
         "id": d.id,
@@ -272,12 +277,8 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "currentUser": (d.current_user or "—") if is_online else "—",
         "powerStatus": effective_power,
         "agentStatus": effective_agent,
-        "rdpSessions": live_sessions if is_online else [],
-        "rdpStatus": (
-            f"Активен ({len(live_sessions)})" if len(live_sessions) > 0 else (
-                "Активен" if str(d.rdp_status).lower() in ["active", "running", "активен"] else (d.rdp_status.value if hasattr(d.rdp_status, 'value') else str(d.rdp_status))
-            )
-        ) if is_online else "Closed",
+        "rdpSessions": real_rdp_sessions if is_online else [],
+        "rdpStatus": rdp_status_str if is_online else "Closed",
         "healthStatus": effective_health,
         "cpu": d.cpu_usage if is_online else 0,
         "ram": d.ram_usage if is_online else 0,

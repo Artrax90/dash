@@ -172,7 +172,11 @@ async def logoff_session(
     if not resolved_dev_id:
         resolved_dev_id = "PC-DEFAULT"
 
-    is_outgoing_rdp = (target_type and "Исходящий" in target_type) or (session_id >= 100)
+    if req and req.isOutgoing is not None:
+        is_outgoing_rdp = req.isOutgoing
+    else:
+        is_outgoing_rdp = (target_type and "Исходящий" in target_type) or (session_id >= 100)
+
     action = "CLOSE_RDP_CLIENT" if is_outgoing_rdp else "LOGOFF"
     extra_arg = str(target_pid) if is_outgoing_rdp and target_pid else str(session_id)
 
