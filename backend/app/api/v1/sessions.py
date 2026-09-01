@@ -32,7 +32,11 @@ def update_device_sessions(
         if isinstance(s, dict):
             s_dict = dict(s)
             s_dict["deviceId"] = device_id
-            norm_list.append(s_dict)
+            s_type = str(s_dict.get("type", ""))
+            s_name = str(s_dict.get("sessionName", ""))
+            is_local = (s_type == "Локальный сеанс" or s_name == "console") and "Исходящий" not in s_type and "Входящий" not in s_type and "mstsc" not in s_name and "rdp" not in s_name
+            if not is_local:
+                norm_list.append(s_dict)
 
     keys_to_index = {device_id, device_id.upper(), device_id.lower()}
     if hostname:
@@ -196,8 +200,13 @@ async def logoff_session(
         if isinstance(sess_list, list):
             live_device_sessions[k] = [s for s in sess_list if str(s.get("id")) != str(session_id)]
 
-    # 4. Broadcast real-time WebSocket update to all open dashboards
+    # 4. Update database device model and broadcast real-time WebSocket update
     if device:
+        from backend.app.models.device import RdpStatus
+        remaining = live_device_sessions.get(device.id, [])
+        device.rdp_status = RdpStatus.ACTIVE if len(remaining) > 0 else RdpStatus.STOPPED
+        device.rdp_sessions = remaining
+        await db.commit()
         await ws_manager.broadcast_event("device.updated", format_device_summary(device))
 
     return {

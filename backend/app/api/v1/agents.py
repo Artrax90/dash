@@ -972,18 +972,29 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
             print(f"[Heartbeat] Device {device.id}: rdpSessions key present={has_rdp_key}, raw type={type(raw_rdp).__name__}, rdp_data items={len(rdp_data) if rdp_data is not None else 'N/A'}")
             if rdp_data is not None:
+                # Filter out pure local console sessions so rdp_status is active ONLY for real RDP
+                filtered_rdp = []
+                for s in rdp_data:
+                    if isinstance(s, dict):
+                        s_type = str(s.get("type", ""))
+                        s_name = str(s.get("sessionName", ""))
+                        is_local = (s_type == "Локальный сеанс" or s_name == "console") and "Исходящий" not in s_type and "Входящий" not in s_type and "mstsc" not in s_name and "rdp" not in s_name
+                        if not is_local:
+                            filtered_rdp.append(s)
+
                 from backend.app.api.v1.sessions import update_device_sessions
                 update_device_sessions(
                     device_id=device.id,
-                    sessions_list=rdp_data,
+                    sessions_list=filtered_rdp,
                     hostname=device.hostname,
                     reported_device_id=payload.get("deviceId") or payload.get("id"),
                     ip_address=device.ip_address
                 )
-                if len(rdp_data) > 0:
+                if len(filtered_rdp) > 0:
                     device.rdp_status = RdpStatus.ACTIVE
                 else:
                     device.rdp_status = RdpStatus.STOPPED
+                device.rdp_sessions = filtered_rdp
             else:
                 print(f"[Heartbeat] Device {device.id}: NO rdpSessions in payload! Payload keys: {list(payload.keys())}")
 

@@ -406,6 +406,11 @@ async def get_device_stats(db: AsyncSession = Depends(get_db)):
                 []
             )
             for s in sess_list:
+                s_type = str(s.get("type", ""))
+                s_name = str(s.get("sessionName", ""))
+                is_local = (s_type == "Локальный сеанс" or s_name == "console") and "Исходящий" not in s_type and "Входящий" not in s_type and "mstsc" not in s_name and "rdp" not in s_name
+                if is_local:
+                    continue
                 st = str(s.get("state", "Active")).lower()
                 if "disc" in st or "откл" in st:
                     disconnected_sessions += 1
