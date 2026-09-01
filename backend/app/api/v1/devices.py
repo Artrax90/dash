@@ -343,11 +343,30 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             except Exception:
                 pass
 
-    # 2. Extract MAC address from ARP cache
+    # 2. Extract MAC address from ARP cache / Get-NetNeighbor
     mac = None
 
+    # Strategy 0: Primary on Windows / PowerShell -> Get-NetNeighbor -IPAddress <ip>
+    import shutil
+    ps_bin = shutil.which("powershell") or shutil.which("pwsh") or ("powershell.exe" if os.name == "nt" else None)
+    if ps_bin:
+        try:
+            ps_script = f"Test-Connection -ComputerName {ip} -Count 1 -Quiet | Out-Null; (Get-NetNeighbor -IPAddress {ip} -ErrorAction SilentlyContinue | Where-Object {{ $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }}).LinkLayerAddress | Select-Object -First 1"
+            proc = await asyncio.create_subprocess_exec(
+                ps_bin, "-NoProfile", "-NonInteractive", "-Command", ps_script,
+                stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=3.5)
+            text = out.decode("utf-8", errors="ignore").strip()
+            m = re.search(r'([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})', text)
+            if m:
+                mac = m.group(1).replace("-", ":").upper()
+                is_online = True
+        except Exception as e:
+            print(f"Error executing Get-NetNeighbor: {e}")
+
     # Strategy A: /proc/net/arp (Linux / Docker)
-    if os.path.exists("/proc/net/arp"):
+    if not mac and os.path.exists("/proc/net/arp"):
         try:
             with open("/proc/net/arp", "r") as f:
                 for line in f:
@@ -366,7 +385,7 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
         try:
             cmd = ["ip", "neigh", "show", ip]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.0)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.5)
             text = out.decode("utf-8", errors="ignore")
             m = re.search(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', text)
             if m:
@@ -380,7 +399,7 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
         try:
             cmd = ["arp", "-a", ip] if os.name == "nt" else ["arp", "-n", ip]
             proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.0)
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=1.5)
             text = out.decode("utf-8", errors="ignore")
             m = re.search(r'([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})', text)
             if m:

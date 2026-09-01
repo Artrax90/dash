@@ -534,7 +534,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.8.0</span>
+            <span>v2.8.1</span>
           </div>
         </div>
       </div>
@@ -608,7 +608,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.8.0</span>
+          <span style={{ color: '#475569' }}>v2.8.1</span>
         </div>
       </div>
     </div>
@@ -1838,11 +1838,24 @@ function Devices({
   const [editDevNotes, setEditDevNotes] = useState('');
   const [newTagInput, setNewTagInput] = useState('');
 
+  // Existing fleet groups dynamically computed
+  const existingFleetGroups = useMemo(() => {
+    const set = new Set<string>();
+    items.forEach(d => {
+      getDeviceGroups(d).forEach(g => { if (g && g.trim()) set.add(g.trim()); });
+      if (d.group && d.group.trim()) set.add(d.group.trim());
+    });
+    ['Тонкие клиенты', 'Office', 'Warehouse', 'Management', 'Testing', 'Dev'].forEach(g => set.add(g));
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
+  }, [items]);
+
   // Add Device Modal state (Agent vs Agentless / Thin Client)
   const [addModalTab, setAddModalTab] = useState<'agent' | 'agentless'>('agent');
   const [tcName, setTcName] = useState('');
   const [tcIp, setTcIp] = useState('');
   const [tcGroup, setTcGroup] = useState('Тонкие клиенты');
+  const [tcCustomGroup, setTcCustomGroup] = useState('');
+  const [isCustomTcGroup, setIsCustomTcGroup] = useState(false);
   const [tcMac, setTcMac] = useState('');
   const [tcIsProbing, setTcIsProbing] = useState(false);
   const [tcProbeResult, setTcProbeResult] = useState<{ success: boolean; message: string; online: boolean } | null>(null);
@@ -1885,19 +1898,22 @@ function Devices({
       notify('Укажите MAC-адрес устройства для отправки пакетов Wake-on-LAN');
       return;
     }
+    const finalGroup = isCustomTcGroup ? (tcCustomGroup.trim() || 'Тонкие клиенты') : (tcGroup.trim() || 'Тонкие клиенты');
     setTcIsSaving(true);
     try {
       const res = await devicesApi.createAgentless({
         name: tcName.trim(),
         ip: tcIp.trim(),
         mac: tcMac.trim(),
-        group: tcGroup.trim() || 'Тонкие клиенты'
+        group: finalGroup
       });
       notify(res?.message || `Тонкий клиент «${tcName}» добавлен в систему!`);
       setShowAddModal(false);
       setTcName('');
       setTcIp('');
       setTcMac('');
+      setTcCustomGroup('');
+      setIsCustomTcGroup(false);
       setTcProbeResult(null);
       loadFleet();
     } catch (err: any) {
@@ -2396,13 +2412,40 @@ function Devices({
                   </div>
                   <div>
                     <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Группа</label>
-                    <input
-                      className="text-input"
-                      placeholder="Тонкие клиенты"
-                      value={tcGroup}
-                      onChange={e => setTcGroup(e.target.value)}
-                      style={{ width: '100%' }}
-                    />
+                    {!isCustomTcGroup ? (
+                      <select
+                        className="text-input"
+                        value={tcGroup}
+                        onChange={e => {
+                          if (e.target.value === '__NEW__') {
+                            setIsCustomTcGroup(true);
+                            setTcCustomGroup('');
+                          } else {
+                            setTcGroup(e.target.value);
+                          }
+                        }}
+                        style={{ width: '100%', height: '36px', fontSize: '12px', padding: '0 8px' }}
+                      >
+                        {existingFleetGroups.map(grp => (
+                          <option key={grp} value={grp}>{grp}</option>
+                        ))}
+                        <option value="__NEW__">+ Ввести новую группу...</option>
+                      </select>
+                    ) : (
+                      <div style={{ display: 'flex', gap: '6px' }}>
+                        <input
+                          className="text-input"
+                          placeholder="Новая группа..."
+                          value={tcCustomGroup}
+                          onChange={e => setTcCustomGroup(e.target.value)}
+                          autoFocus
+                          style={{ flex: 1 }}
+                        />
+                        <Button onClick={() => setIsCustomTcGroup(false)} style={{ padding: '0 8px', fontSize: '11px' }}>
+                          К списку
+                        </Button>
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2800,7 +2843,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
             style={device.isOutdated ? { borderColor: 'rgba(234,179,8,0.4)', color: 'var(--yellow)', background: 'rgba(234,179,8,0.06)' } : undefined}
             title="Удаленно обновить службу агента по сети (OTA)"
           >
-            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.8.0'})` : 'Обновить агент')}
+            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.8.1'})` : 'Обновить агент')}
           </Button>
           <Button
             primary
@@ -2908,7 +2951,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <strong>v{device.agentVersion || '1.4.2'}</strong>
                   {device.isOutdated ? (
                     <span className="badge" style={{ background: 'rgba(234, 179, 8, 0.15)', color: 'var(--yellow)', fontWeight: 600, fontSize: '10px' }}>
-                      Доступно v{device.latestAgentVersion || '2.8.0'}
+                      Доступно v{device.latestAgentVersion || '2.8.1'}
                     </span>
                   ) : (
                     <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)', fontWeight: 600, fontSize: '10px' }}>
@@ -3783,7 +3826,7 @@ function DeviceMonitoringTab({
               <span className="device-telemetry-sep">·</span>
               <span>IP: <span className="device-telemetry-chip">{device.ip}</span></span>
               <span className="device-telemetry-sep">·</span>
-              <span>Агент v{device.agentVersion || '2.8.0'}</span>
+              <span>Агент v{device.agentVersion || '2.8.1'}</span>
               <span>Uptime: <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{formatLiveUptime(device.uptime, device.bootTimeIso, device.powerStatus === 'On')}</span></span>
               {device.bootTimeIso && device.powerStatus === 'On' && (
                 <>
@@ -9618,14 +9661,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 onClick={() => setFleetFilter('outdated')}
                 style={{ fontSize: '11px', padding: '4px 10px', color: fleetFilter !== 'outdated' && (versionInfo?.outdatedCount ?? 0) > 0 ? 'var(--yellow)' : undefined }}
               >
-                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.8.0')).length})
+                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.8.1')).length})
               </button>
               <button
                 className={`filter-button ${fleetFilter === 'updated' ? 'primary' : ''}`}
                 onClick={() => setFleetFilter('updated')}
                 style={{ fontSize: '11px', padding: '4px 10px' }}
               >
-                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.8.0')).length})
+                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.8.1')).length})
               </button>
             </div>
             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
@@ -9656,13 +9699,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 ) : (
                   fleetDevices
                     .filter(d => {
-                      const targetVer = versionInfo?.currentVersion || '2.8.0';
+                      const targetVer = versionInfo?.currentVersion || '2.8.1';
                       if (fleetFilter === 'outdated') return (d.agentVersion || '1.4.2') !== targetVer;
                       if (fleetFilter === 'updated') return (d.agentVersion || '1.4.2') === targetVer;
                       return true;
                     })
                     .map(dev => {
-                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.8.0';
+                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.8.1';
                       const curVer = dev.agentVersion || '1.4.2';
                       const isTargetVer = curVer === targetVer;
                       const isUpdating = updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING';
@@ -11699,7 +11742,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.8.0 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.8.1 · © 2026 Сергей Ерёмин
               </span>
             </div>
             <div style={{ flexShrink: 0 }}>
