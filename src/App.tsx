@@ -534,7 +534,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.7.0</span>
+            <span>v2.7.1</span>
           </div>
         </div>
       </div>
@@ -608,7 +608,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.7.0</span>
+          <span style={{ color: '#475569' }}>v2.7.1</span>
         </div>
       </div>
     </div>
@@ -2597,7 +2597,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
             style={device.isOutdated ? { borderColor: 'rgba(234,179,8,0.4)', color: 'var(--yellow)', background: 'rgba(234,179,8,0.06)' } : undefined}
             title="Удаленно обновить службу агента по сети (OTA)"
           >
-            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.7.0'})` : 'Обновить агент')}
+            {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.7.1'})` : 'Обновить агент')}
           </Button>
           <Button
             primary
@@ -2705,7 +2705,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <strong>v{device.agentVersion || '1.4.2'}</strong>
                   {device.isOutdated ? (
                     <span className="badge" style={{ background: 'rgba(234, 179, 8, 0.15)', color: 'var(--yellow)', fontWeight: 600, fontSize: '10px' }}>
-                      Доступно v{device.latestAgentVersion || '2.7.0'}
+                      Доступно v{device.latestAgentVersion || '2.7.1'}
                     </span>
                   ) : (
                     <span className="badge" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)', fontWeight: 600, fontSize: '10px' }}>
@@ -3580,7 +3580,7 @@ function DeviceMonitoringTab({
               <span className="device-telemetry-sep">·</span>
               <span>IP: <span className="device-telemetry-chip">{device.ip}</span></span>
               <span className="device-telemetry-sep">·</span>
-              <span>Агент v{device.agentVersion || '2.7.0'}</span>
+              <span>Агент v{device.agentVersion || '2.7.1'}</span>
               <span>Uptime: <span style={{ color: 'var(--ink)', fontWeight: 500 }}>{formatLiveUptime(device.uptime, device.bootTimeIso, device.powerStatus === 'On')}</span></span>
               {device.bootTimeIso && device.powerStatus === 'On' && (
                 <>
@@ -5071,11 +5071,11 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
   return (
     <>
       <div className="power-grid">
-        <section className="panel power-card">
+        <section className="panel power-card" style={{ display: 'flex', flexDirection: 'column', minHeight: '320px' }}>
           <div className="power-orb"><Power size={25} /></div>
           <h2>Управление питанием рабочей станции</h2>
           <p>Отправка низкоуровневых команд пробуждения через Ethernet (WoL), программной перезагрузки и выключения операционной системы.</p>
-          <div className="power-buttons">
+          <div className="power-buttons" style={{ marginTop: 'auto' }}>
             <Button
               primary
               icon={<Zap size={15} />}
@@ -5095,44 +5095,54 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
           </div>
         </section>
 
-        <section className="panel operation-card">
-          <div className="panel-heading">
-            <div><h2>Журнал команд питания</h2><p>История операций за последние 24 часа</p></div>
-          </div>
-          {devicePowerLogs.length === 0 ? (
-            <div style={{ padding: '32px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: '13px' }}>
-              Команд управления питанием за последние 24 часа не зафиксировано
+        <section className="panel operation-card" style={{ display: 'flex', flexDirection: 'column', height: '320px', overflow: 'hidden' }}>
+          <div className="panel-heading" style={{ borderBottom: '1px solid var(--line)', padding: '16px 20px', flexShrink: 0 }}>
+            <div>
+              <h2 style={{ fontSize: '14px', margin: 0 }}>Журнал команд питания</h2>
+              <p style={{ fontSize: '11px', margin: '3px 0 0', color: 'var(--muted)' }}>История операций за последние 24 часа</p>
             </div>
-          ) : (
-            devicePowerLogs.map(log => (
-              <div key={log.id} className="operation-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '14px 24px' }}>
-                <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px', flex: 1, minWidth: 0 }}>
-                  <div className={log.status === 'ok' ? 'operation-ok' : 'operation-fail'} style={{ marginTop: '2px', flexShrink: 0 }}>
-                    {log.status === 'ok' ? <Check size={13} /> : <AlertTriangle size={13} />}
-                  </div>
-                  <div className="operation-info" style={{ minWidth: 0 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
-                      <strong style={{ fontSize: '13px' }}>{log.action}</strong>
-                      {log.initiator && (
-                        <span style={{
-                          fontSize: '11px',
-                          padding: '2px 8px',
-                          borderRadius: '5px',
-                          backgroundColor: log.source === 'SCHEDULE' ? 'rgba(139, 92, 246, 0.15)' : 'rgba(59, 130, 246, 0.12)',
-                          color: log.source === 'SCHEDULE' ? '#8b5cf6' : 'var(--primary)',
-                          fontWeight: 600
-                        }}>
-                          {log.source === 'SCHEDULE' ? '⏰ ' : '👤 '}{log.initiator}
-                        </span>
-                      )}
-                    </div>
-                    <small style={{ color: 'var(--muted)', fontSize: '12px', marginTop: '3px', display: 'block' }}>{log.detail}</small>
-                  </div>
-                </div>
-                <time style={{ fontSize: '12px', color: 'var(--muted)', whiteSpace: 'nowrap', marginLeft: '24px', flexShrink: 0, paddingRight: '4px' }}>{log.time}</time>
+            {devicePowerLogs.length > 0 && (
+              <span className="badge" style={{ background: 'var(--blue-soft)', color: 'var(--blue)', fontWeight: 600, fontSize: '10px', padding: '3px 8px', borderRadius: '6px' }}>
+                {devicePowerLogs.length} {devicePowerLogs.length === 1 ? 'запись' : devicePowerLogs.length < 5 ? 'записи' : 'записей'}
+              </span>
+            )}
+          </div>
+          <div style={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+            {devicePowerLogs.length === 0 ? (
+              <div style={{ padding: '40px 16px', textAlign: 'center', color: 'var(--muted)', fontSize: '13px' }}>
+                Команд управления питанием за последние 24 часа не зафиксировано
               </div>
-            ))
-          )}
+            ) : (
+              devicePowerLogs.map(log => (
+                <div key={log.id} className="operation-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 18px', borderBottom: '1px solid var(--line)' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', flex: 1, minWidth: 0 }}>
+                    <div className={log.status === 'ok' ? 'operation-ok' : 'operation-fail'} style={{ marginTop: '2px', flexShrink: 0, width: '22px', height: '22px', minWidth: '22px' }}>
+                      {log.status === 'ok' ? <Check size={12} /> : <AlertTriangle size={12} />}
+                    </div>
+                    <div className="operation-info" style={{ minWidth: 0 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                        <strong style={{ fontSize: '12px' }}>{log.action}</strong>
+                        {log.initiator && (
+                          <span style={{
+                            fontSize: '10px',
+                            padding: '1px 6px',
+                            borderRadius: '4px',
+                            backgroundColor: log.source === 'SCHEDULE' ? 'rgba(139, 92, 246, 0.15)' : 'rgba(59, 130, 246, 0.12)',
+                            color: log.source === 'SCHEDULE' ? '#8b5cf6' : 'var(--primary)',
+                            fontWeight: 600
+                          }}>
+                            {log.source === 'SCHEDULE' ? '⏰ ' : '👤 '}{log.initiator}
+                          </span>
+                        )}
+                      </div>
+                      <small style={{ color: 'var(--muted)', fontSize: '11px', marginTop: '2px', display: 'block' }}>{log.detail}</small>
+                    </div>
+                  </div>
+                  <time style={{ fontSize: '11px', color: 'var(--muted)', whiteSpace: 'nowrap', marginLeft: '12px', flexShrink: 0, fontFamily: "'DM Mono', monospace" }}>{log.time}</time>
+                </div>
+              ))
+            )}
+          </div>
         </section>
       </div>
 
@@ -9385,14 +9395,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 onClick={() => setFleetFilter('outdated')}
                 style={{ fontSize: '11px', padding: '4px 10px', color: fleetFilter !== 'outdated' && (versionInfo?.outdatedCount ?? 0) > 0 ? 'var(--yellow)' : undefined }}
               >
-                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.7.0')).length})
+                Требуют обновления ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') !== (versionInfo?.currentVersion || '2.7.1')).length})
               </button>
               <button
                 className={`filter-button ${fleetFilter === 'updated' ? 'primary' : ''}`}
                 onClick={() => setFleetFilter('updated')}
                 style={{ fontSize: '11px', padding: '4px 10px' }}
               >
-                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.7.0')).length})
+                Актуальные ({fleetDevices.filter(d => (d.agentVersion || '1.4.2') === (versionInfo?.currentVersion || '2.7.1')).length})
               </button>
             </div>
             <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
@@ -9423,13 +9433,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                 ) : (
                   fleetDevices
                     .filter(d => {
-                      const targetVer = versionInfo?.currentVersion || '2.7.0';
+                      const targetVer = versionInfo?.currentVersion || '2.7.1';
                       if (fleetFilter === 'outdated') return (d.agentVersion || '1.4.2') !== targetVer;
                       if (fleetFilter === 'updated') return (d.agentVersion || '1.4.2') === targetVer;
                       return true;
                     })
                     .map(dev => {
-                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.7.0';
+                      const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.7.1';
                       const curVer = dev.agentVersion || '1.4.2';
                       const isTargetVer = curVer === targetVer;
                       const isUpdating = updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING';
@@ -11466,7 +11476,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.7.0 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.7.1 · © 2026 Сергей Ерёмин
               </span>
             </div>
             <div style={{ flexShrink: 0 }}>
