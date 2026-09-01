@@ -1,4 +1,4 @@
-[CmdletBinding()]
+﻿[CmdletBinding()]
 param(
     [Parameter(Position=0)]
     [string]$ServerUrl = "__SERVER_URL__",
@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.5.2"
+    agentVersion = "2.5.3"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -443,7 +443,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.5.2'
+`$AgentVersion = '2.5.3'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -454,9 +454,9 @@ if (-not `$createdNew) {
     exit
 }
 
-function Update-AgentService([string]`$targetVer = "2.5.2") {
+function Update-AgentService([string]`$targetVer = "2.5.3") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.5.2"
+        `$targetVer = "2.5.3"
     }
     try {
         # 1. Report update in progress
@@ -538,7 +538,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.5.2"
+        Update-AgentService "2.5.3"
         return
     }
 
@@ -815,8 +815,10 @@ function Get-LiveRdpSessions() {
                     `$remPort = [int]`$conn.RemotePort
                     `$displayTarget = if (`$titleTarget) {
                         `$titleTarget
+                    } elseif (`$remPort -gt 0 -and `$remPort -ne 3389) {
+                        [string]::Concat(`$remIp, ':', `$remPort)
                     } else {
-                        `$remIp + (if (`$remPort -ne 3389 -and `$remPort -gt 0) { ':' + `$remPort } else { '' })
+                        `$remIp
                     }
                     `$sessions += @{
                         id = `$outIdx
@@ -852,10 +854,14 @@ function Get-LiveRdpSessions() {
 
     # 3. Attach incoming client IP for port 3389 connections
     try {
-        `$inConns = @(`$allTcp | Where-Object { `$_.LocalPort -eq 3389 -and `$_.RemoteAddress -notmatch '^(0\.0\.0\.0|127\.0\.0\.1|::1)$' })
+        `$inConns = @(`$allTcp | Where-Object { [int]`$_.LocalPort -eq 3389 -and `$_.RemoteAddress -and `$_.RemoteAddress -notmatch '^(0\.0\.0\.0|127\.0\.0\.1|::1)$' })
         if (`$inConns.Count -gt 0) {
+            `$seenInIps = @{}
             foreach (`$inc in `$inConns) {
                 `$cliIp = `$inc.RemoteAddress
+                if (`$seenInIps.ContainsKey(`$cliIp)) { continue }
+                `$seenInIps[`$cliIp] = `$true
+
                 `$matched = `$false
                 foreach (`$s in `$sessions) {
                     if (`$s.type -eq 'Входящий RDP' -and -not `$s.clientIp) {
@@ -1604,6 +1610,7 @@ try {
 
 function Get-InstallerLiveSessions() {
     $sess = @()
+    $seenIds = @{}
     try {
         $quserExe = Join-Path $env:SystemRoot "System32\quser.exe"
         $quserOut = if (Test-Path $quserExe) { & $quserExe 2>&1 | Out-String } else { quser 2>&1 | Out-String }
@@ -1645,11 +1652,44 @@ function Get-InstallerLiveSessions() {
                             logonTime = if ($logon) { $logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
                             clientIp = ''
                         }
+                        $seenIds[$sessId] = $true
                     }
                 }
             }
         }
     } catch {}
+
+    # Outgoing mstsc
+    try {
+        $mstscProcs = @(Get-Process -Name "mstsc", "msrdc" -ErrorAction SilentlyContinue)
+        if ($mstscProcs.Count -gt 0) {
+            $outIdx = 100
+            foreach ($mp in $mstscProcs) {
+                $pidNum = $mp.Id
+                $title = $mp.MainWindowTitle
+                $target = ''
+                if ($title) {
+                    $split = $title -split '\s+[\u2013\u2014\-]\s+'
+                    if ($split.Count -ge 2 -and $split[0].Trim()) { $target = $split[0].Trim() }
+                }
+                $display = if ($target) { $target } else { "PID $pidNum" }
+                $cleanIp = if ($display -match '^(\d+\.\d+\.\d+\.\d+)') { $matches[1] } else { '' }
+                $sess += @{
+                    id = $outIdx
+                    deviceId = $deviceId
+                    username = if ($env:USERNAME) { $env:USERNAME } else { 'User' }
+                    sessionName = "mstsc -> $display"
+                    type = "Исходящий RDP ($display)"
+                    state = 'Active'
+                    idleTime = '0 мин'
+                    logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
+                    clientIp = $cleanIp
+                }
+                $outIdx++
+            }
+        }
+    } catch {}
+
     return @($sess)
 }
 
@@ -1671,7 +1711,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.5.2"
+    agentVersion = "2.5.3"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
