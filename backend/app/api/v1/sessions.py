@@ -43,55 +43,48 @@ async def list_sessions(
     deviceId: Optional[str] = None,
     db: AsyncSession = Depends(get_db)
 ):
-    req_dev_id = device_id or deviceId
-    # Direct fast-path lookup if specific deviceId requested and non-empty
+    req_dev_id = (device_id or deviceId or "").strip()
+    
+    # 1. Direct fast-path lookup if specific deviceId requested
     if req_dev_id:
         for k in [req_dev_id, req_dev_id.upper(), req_dev_id.lower()]:
             if k in live_device_sessions and live_device_sessions[k]:
                 return live_device_sessions[k]
 
-    res = await db.execute(select(Device))
-    devices = res.scalars().all()
-    now = datetime.utcnow()
-
-    all_sessions = []
-    for d in devices:
-        is_target_device = False
-        if req_dev_id:
-            did_clean = req_dev_id.lower()
+        # Check in DB if not found in memory directly
+        res = await db.execute(select(Device))
+        devices = res.scalars().all()
+        did_clean = req_dev_id.lower()
+        for d in devices:
             if (
                 d.id.lower() == did_clean or
                 (d.hostname and d.hostname.lower() == did_clean) or
                 (d.ip_address and d.ip_address.lower() == did_clean) or
                 (d.name and d.name.lower() == did_clean)
             ):
-                is_target_device = True
-            else:
-                continue
+                reported = (
+                    live_device_sessions.get(d.id) or
+                    live_device_sessions.get(d.id.upper()) or
+                    live_device_sessions.get(d.id.lower()) or
+                    (live_device_sessions.get(d.hostname) if d.hostname else None) or
+                    (live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
+                    (live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
+                    (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
+                    []
+                )
+                return reported
+        return []
 
-        # Check if device is online
-        p_val = d.power_status.value if hasattr(d.power_status, 'value') else str(d.power_status or '')
-        sec_since_last_seen = (now - d.last_seen).total_seconds() if d.last_seen else 999999
-        is_online = (p_val.lower() in ["on", "active", "running"]) and (sec_since_last_seen <= 300)
-        if not is_online and not req_dev_id:
-            continue
-
-        reported = (
-            live_device_sessions.get(d.id) or
-            live_device_sessions.get(d.id.upper()) or
-            live_device_sessions.get(d.id.lower()) or
-            (live_device_sessions.get(d.hostname) if d.hostname else None) or
-            (live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
-            (live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
-            (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
-            []
-        )
-        if reported:
-            for s in reported:
-                all_sessions.append(s)
-
-        if req_dev_id and is_target_device:
-            return reported
+    # 2. Global query: return all unique live sessions
+    seen = set()
+    all_sessions = []
+    for k, sess_list in live_device_sessions.items():
+        if isinstance(sess_list, list):
+            for s in sess_list:
+                s_key = (str(s.get("deviceId")), str(s.get("id")), str(s.get("username")), str(s.get("sessionName")))
+                if s_key not in seen:
+                    seen.add(s_key)
+                    all_sessions.append(s)
 
     return all_sessions
 

@@ -2377,7 +2377,8 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
       hardwareApi.getChanges(deviceId),
     ]).then(([d, s, ch]) => {
       setDevice(d);
-      setSessions(s);
+      const finalSessions = (s && s.length > 0) ? s : (d && d.rdpSessions && d.rdpSessions.length > 0 ? d.rdpSessions : (s || []));
+      setSessions(finalSessions);
       if (d) {
         setSpec(d.hardware);
         setBaseline(d.baseline);
@@ -2401,17 +2402,24 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
           setDevice(d);
           setSpec(d.hardware);
           setBaseline(d.baseline);
+          if (d.rdpSessions && d.rdpSessions.length > 0) {
+            setSessions(d.rdpSessions);
+          }
         }
       }).catch(() => {});
       sessionsApi.list(deviceId).then(s => {
-        if (s) setSessions(s);
+        if (s && s.length > 0) setSessions(s);
       }).catch(() => {});
     }, 3000);
 
     const unsubUpdated = wsClient.on('device.updated', (updatedDev: any) => {
       if (updatedDev && (updatedDev.id === deviceId || updatedDev.deviceId === deviceId)) {
         setDevice(prev => prev ? { ...prev, ...updatedDev } : updatedDev);
-        sessionsApi.list(deviceId).then(s => { if (s) setSessions(s); }).catch(() => {});
+        if (updatedDev.rdpSessions && Array.isArray(updatedDev.rdpSessions) && updatedDev.rdpSessions.length > 0) {
+          setSessions(updatedDev.rdpSessions);
+        } else {
+          sessionsApi.list(deviceId).then(s => { if (s && s.length > 0) setSessions(s); }).catch(() => {});
+        }
       }
     });
 

@@ -957,16 +957,17 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 device_live_processes[device.id.upper()] = payload["processes"]
                 device_live_processes[device.hostname.upper()] = payload["processes"]
 
-            if "rdpSessions" in payload and isinstance(payload["rdpSessions"], list):
+            rdp_data = payload.get("rdpSessions") if "rdpSessions" in payload else (payload.get("rdp_sessions") or payload.get("sessions"))
+            if rdp_data is not None and isinstance(rdp_data, list):
                 from backend.app.api.v1.sessions import update_device_sessions
                 update_device_sessions(
                     device_id=device.id,
-                    sessions_list=payload["rdpSessions"],
+                    sessions_list=rdp_data,
                     hostname=device.hostname,
-                    reported_device_id=payload.get("deviceId"),
+                    reported_device_id=payload.get("deviceId") or payload.get("id"),
                     ip_address=device.ip_address
                 )
-                if len(payload["rdpSessions"]) > 0:
+                if len(rdp_data) > 0:
                     device.rdp_status = RdpStatus.ACTIVE
                 else:
                     device.rdp_status = RdpStatus.STOPPED
