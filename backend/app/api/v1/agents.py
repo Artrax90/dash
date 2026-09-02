@@ -1352,8 +1352,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             except Exception:
                 c_time = now_ts
 
-        # 1. Expire stale commands older than 60 seconds
-        if (now_ts - c_time) > 60:
+        # 1. Expire stale commands older than 300 seconds (5 minutes)
+        if (now_ts - c_time) > 300:
             print(f"[Command Expired] Dropped stale command {c.get('action')} ({cid}) for {device_id} (age: {int(now_ts - c_time)}s)")
             continue
 

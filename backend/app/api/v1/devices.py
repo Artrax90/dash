@@ -1584,21 +1584,22 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
             ip_address=device.ip_address
         )
         device.power_status = PowerStatus.ON
-    elif action in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
-        queue_device_command(device.id, action, force=force, reason=reason)
+    elif action in ["SHUTDOWN", "FORCE_SHUTDOWN", "REBOOT", "RESTART", "SLEEP", "HIBERNATE", "LOGOFF"]:
+        cmd_action = "REBOOT" if action in ["REBOOT", "RESTART"] else action
+        queue_device_command(device.id, cmd_action, force=force, reason=reason)
         if device.hostname and device.hostname != device.id:
-            queue_device_command(device.hostname, action, force=force, reason=reason)
-        device.power_status = PowerStatus.OFF
-        device.agent_status = AgentStatus.DISCONNECTED
-    elif action in ["REBOOT", "RESTART"]:
-        queue_device_command(device.id, "REBOOT", force=force, reason=reason)
-        if device.hostname and device.hostname != device.id:
-            queue_device_command(device.hostname, "REBOOT", force=force, reason=reason)
-        device.power_status = PowerStatus.OFF
-    elif action in ["SLEEP", "HIBERNATE", "LOGOFF"]:
-        queue_device_command(device.id, action, force=force, reason=reason)
-        if device.hostname and device.hostname != device.id:
-            queue_device_command(device.hostname, action, force=force, reason=reason)
+            queue_device_command(device.hostname, cmd_action, force=force, reason=reason)
+        if device.mac_address:
+            clean_m = device.mac_address.replace(":", "").replace("-", "").upper()
+            queue_device_command(clean_m, cmd_action, force=force, reason=reason)
+            queue_device_command(device.mac_address, cmd_action, force=force, reason=reason)
+        if device.ip_address:
+            queue_device_command(device.ip_address, cmd_action, force=force, reason=reason)
+
+        if cmd_action in ["SHUTDOWN", "FORCE_SHUTDOWN", "REBOOT"]:
+            device.power_status = PowerStatus.OFF
+            if cmd_action != "REBOOT":
+                device.agent_status = AgentStatus.DISCONNECTED
 
     target_desc = f"на {device.ip_address}" if device.ip_address else f"на {device.name}"
     detail_msg = f"Команда отправлена по LAN {target_desc}"

@@ -1780,7 +1780,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
         `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/heartbeat")
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
-        `$req.Timeout = 10000
+        `$req.Timeout = 3000
         `$stream = `$req.GetRequestStream()
         `$stream.Write(`$bytes, 0, `$bytes.Length)
         `$stream.Close()
