@@ -257,47 +257,377 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
         d_grps = [str(g).lower() for g in d.get("groups", [])]
         return d_grp in allowed_groups or any(g in allowed_groups for g in d_grps)
 
-    # 4. Command Router
-    if cmd in ["/start", "/help"]:
-        return (
-            f"👋 <b>Workstation Manager Bot</b>\n"
+def build_main_menu(user_name: str, role: str, scope_desc: str) -> Dict[str, Any]:
+    return {
+        "text": (
+            f"👋 <b>Панель управления Workstation Manager</b>\n\n"
             f"👤 Оператор: <b>{user_name}</b>\n"
             f"🔰 Роль: <b>{role}</b>\n"
-            f"🌐 Зона доступа: <b>{scope_desc}</b>\n\n"
-            f"<b>Доступные команды:</b>\n"
-            f"📊 <code>/status</code> — Сводка состояния подконтрольного парка\n"
-            f"🖥 <code>/devices</code> — Список рабочих станций в вашей зоне\n"
-            f"⚡️ <code>/wake &lt;Имя_ПК&gt;</code> — Включить компьютер (Wake-on-LAN)\n"
-            f"🛑 <code>/shutdown &lt;Имя_ПК&gt;</code> — Выключить рабочую станцию\n"
-            f"🔄 <code>/reboot &lt;Имя_ПК&gt;</code> — Перезагрузить компьютер\n"
-            f"🆔 <code>/id</code> — Показать ваш Telegram Chat ID"
-        )
+            f"🌐 Зона ответственности: <b>{scope_desc}</b>\n\n"
+            f"<i>Выберите нужный раздел с помощью кнопок ниже:</i>"
+        ),
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {"text": "📊 Сводка сети", "callback_data": "menu:status"},
+                    {"text": "🖥 Список ПК", "callback_data": "menu:devices:0"}
+                ],
+                [
+                    {"text": "🔄 Обновить меню", "callback_data": "menu:main"}
+                ]
+            ]
+        }
+    }
 
-    if cmd == "/id" or cmd == "/myid":
-        return f"🆔 Ваш Telegram Chat ID: <code>{chat_id}</code>\n👤 Профиль: <b>{user_name}</b> ({role})\n🌐 Зона: <b>{scope_desc}</b>"
-
-    if cmd == "/status":
-        total = len(user_devices)
-        online = sum(1 for d in user_devices if d.get("powerStatus") == "On" or d.get("isOnline") is True)
-        offline = total - online
-        return (
+def build_status_view(user_devices: List[Dict[str, Any]], scope_desc: str) -> Dict[str, Any]:
+    total = len(user_devices)
+    online = sum(1 for d in user_devices if d.get("powerStatus") == "On" or d.get("isOnline") is True)
+    offline = total - online
+    return {
+        "text": (
             f"📊 <b>Сводка состояния парка ПК</b>\n"
             f"🌐 Зона ответственности: <b>{scope_desc}</b>\n\n"
             f"🖥 Всего станций: <b>{total}</b>\n"
             f"🟢 В сети (Онлайн): <b>{online}</b>\n"
             f"🔴 Выключено: <b>{offline}</b>"
+        ),
+        "reply_markup": {
+            "inline_keyboard": [
+                [
+                    {"text": "🖥 Список ПК", "callback_data": "menu:devices:0"},
+                    {"text": "🔄 Обновить", "callback_data": "menu:status"}
+                ],
+                [
+                    {"text": "⬅️ Главное меню", "callback_data": "menu:main"}
+                ]
+            ]
+        }
+    }
+
+def build_devices_view(user_devices: List[Dict[str, Any]], scope_desc: str, page: int = 0) -> Dict[str, Any]:
+    if not user_devices:
+        return {
+            "text": f"🖥 В вашей зоне ответственности (<b>{scope_desc}</b>) пока нет зарегистрированных ПК.",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "⬅️ Главное меню", "callback_data": "menu:main"}]]
+            }
+        }
+    PAGE_SIZE = 8
+    total_pages = max(1, (len(user_devices) + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(page, total_pages - 1))
+    start_idx = page * PAGE_SIZE
+    page_devs = user_devices[start_idx:start_idx + PAGE_SIZE]
+
+    keyboard = []
+    row = []
+    for d in page_devs:
+        is_on = (d.get("powerStatus") == "On" or d.get("isOnline") is True)
+        icon = "🟢" if is_on else "🔴"
+        btn_text = f"{icon} {d.get('name')}"
+        row.append({"text": btn_text, "callback_data": f"dev:{d.get('id')}"})
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    nav_row = []
+    if page > 0:
+        nav_row.append({"text": "◀️ Назад", "callback_data": f"menu:devices:{page - 1}"})
+    nav_row.append({"text": f"📄 {page + 1}/{total_pages}", "callback_data": f"menu:devices:{page}"})
+    if page < total_pages - 1:
+        nav_row.append({"text": "Вперёд ▶️", "callback_data": f"menu:devices:{page + 1}"})
+    keyboard.append(nav_row)
+
+    keyboard.append([
+        {"text": "🔄 Обновить", "callback_data": f"menu:devices:{page}"},
+        {"text": "⬅️ Главное меню", "callback_data": "menu:main"}
+    ])
+
+    return {
+        "text": f"🖥 <b>Список рабочих станций</b> ({scope_desc}):\n<i>Нажмите на нужную станцию для управления:</i>",
+        "reply_markup": {"inline_keyboard": keyboard}
+    }
+
+def build_device_card(target_dev: Dict[str, Any], can_manage: bool, role: str) -> Dict[str, Any]:
+    dev_id = target_dev.get("id")
+    is_on = (target_dev.get("powerStatus") == "On" or target_dev.get("isOnline") is True)
+    icon = "🟢" if is_on else "🔴"
+    status_text = "В сети (Онлайн)" if is_on else "Выключен (Офлайн)"
+
+    text = (
+        f"🖥 <b>Рабочая станция: {target_dev.get('name')}</b>\n\n"
+        f"📌 <b>ID:</b> <code>{dev_id}</code>\n"
+        f"📶 <b>Статус:</b> {icon} <b>{status_text}</b>\n"
+        f"🌐 <b>IP-адрес:</b> <code>{target_dev.get('ip') or '—'}</code>\n"
+        f"🏷 <b>MAC-адрес:</b> <code>{target_dev.get('mac') or '—'}</code>\n"
+        f"📁 <b>Группа:</b> <i>{target_dev.get('group')}</i>\n"
+        f"⚙️ <b>Версия агента:</b> <code>v{target_dev.get('agentVersion')}</code>"
+    )
+
+    keyboard = []
+    if can_manage and role != "Наблюдатель":
+        ctrl_row = []
+        if not is_on:
+            ctrl_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"confirm:wake:{dev_id}"})
+        else:
+            ctrl_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"})
+            ctrl_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"})
+        if ctrl_row:
+            keyboard.append(ctrl_row)
+
+    keyboard.append([
+        {"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}"},
+        {"text": "📋 К списку ПК", "callback_data": "menu:devices:0"}
+    ])
+    keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main"}])
+
+    return {"text": text, "reply_markup": {"inline_keyboard": keyboard}}
+
+def build_confirm_view(target_dev: Dict[str, Any], action: str) -> Dict[str, Any]:
+    dev_id = target_dev.get("id")
+    act_name = "ВЫКЛЮЧЕНИЕ" if action == "shutdown" else ("ПЕРЕЗАГРУЗКУ" if action == "reboot" else "ВКЛЮЧЕНИЕ (WoL)")
+    act_icon = "🛑" if action == "shutdown" else ("🔄" if action == "reboot" else "⚡️")
+
+    text = (
+        f"⚠️ <b>Подтверждение действия</b>\n\n"
+        f"Вы действительно хотите выполнить {act_icon} <b>{act_name}</b>\n"
+        f"для станции <b>{target_dev.get('name')}</b> (<code>{target_dev.get('ip')}</code>)?"
+    )
+    keyboard = [
+        [
+            {"text": f"{act_icon} Да, выполнить", "callback_data": f"do:{action}:{dev_id}"},
+            {"text": "❌ Отмена", "callback_data": f"dev:{dev_id}"}
+        ]
+    ]
+    return {"text": text, "reply_markup": {"inline_keyboard": keyboard}}
+
+def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[str, Any] = None) -> Dict[str, Any]:
+    chat_id = str(chat_id_str).strip()
+    data = (data_str or "").strip()
+    users = load_users()
+    from_username = str(from_user.get("username", "") if from_user else "").replace("@", "").strip().lower()
+
+    def matches_telegram_user(u: Dict[str, Any]) -> bool:
+        tg_val = str(u.get("telegramChatId", "")).strip()
+        if not tg_val:
+            return False
+        if tg_val == chat_id:
+            return True
+        clean_stored = tg_val.replace("@", "").strip().lower()
+        if from_username and clean_stored == from_username:
+            return True
+        return False
+
+    matched_user = next((u for u in users if matches_telegram_user(u)), None)
+    if not matched_user or not matched_user.get("enabled", True):
+        return {"text": "⛔️ <b>Доступ запрещен.</b> Учетная запись не привязана или заблокирована.", "alert": "Доступ запрещен"}
+
+    user_name = matched_user.get("displayName", matched_user.get("username", "Оператор"))
+    role = matched_user.get("role", "Дежурный оператор")
+    scope = matched_user.get("scope", "Все устройства")
+    allowed_groups = [g.lower() for g in matched_user.get("allowedGroups", [])]
+    is_global_scope = (scope == "Все устройства") or (not allowed_groups)
+
+    all_devs = load_devices()
+    if is_global_scope:
+        user_devices = all_devs
+        scope_desc = "Все устройства"
+    else:
+        user_devices = [
+            d for d in all_devs
+            if str(d.get("group", "")).lower() in allowed_groups
+            or any(str(g).lower() in allowed_groups for g in d.get("groups", []))
+        ]
+        scope_desc = f"Группы: {', '.join(matched_user.get('allowedGroups', []))}"
+
+    def can_manage_device(d: Dict[str, Any]) -> bool:
+        if is_global_scope:
+            return True
+        d_grp = str(d.get("group", "")).lower()
+        d_grps = [str(g).lower() for g in d.get("groups", [])]
+        return d_grp in allowed_groups or any(g in allowed_groups for g in d_grps)
+
+    tg_tag = f"@{from_user.get('username')}" if from_user and from_user.get("username") else f"ID:{chat_id}"
+    operator_label = f"{user_name} ({tg_tag})"
+
+    if data == "menu:main":
+        res = build_main_menu(user_name, role, scope_desc)
+        res["alert"] = "Главное меню"
+        return res
+
+    if data == "menu:status":
+        res = build_status_view(user_devices, scope_desc)
+        res["alert"] = "Сводка обновлена"
+        return res
+
+    if data.startswith("menu:devices"):
+        parts = data.split(":")
+        page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
+        res = build_devices_view(user_devices, scope_desc, page)
+        res["alert"] = f"Страница {page + 1}"
+        return res
+
+    if data.startswith("dev:"):
+        dev_id = data.split(":", 1)[1]
+        target = next((d for d in all_devs if d.get("id") == dev_id or d.get("name") == dev_id), None)
+        if not target:
+            return {"text": f"❌ Устройство <code>{dev_id}</code> не найдено.", "alert": "Устройство не найдено"}
+        res = build_device_card(target, can_manage_device(target), role)
+        res["alert"] = f"Статус: {target.get('name')}"
+        return res
+
+    if data.startswith("confirm:"):
+        _, action, dev_id = data.split(":", 2)
+        target = next((d for d in all_devs if d.get("id") == dev_id or d.get("name") == dev_id), None)
+        if not target:
+            return {"text": "❌ Устройство не найдено.", "alert": "Устройство не найдено"}
+        return build_confirm_view(target, action)
+
+    if data.startswith("do:"):
+        _, action, dev_id = data.split(":", 2)
+        target = next((d for d in all_devs if d.get("id") == dev_id or d.get("name") == dev_id), None)
+        if not target:
+            return {"text": "❌ Устройство не найдено.", "alert": "Устройство не найдено"}
+        if not can_manage_device(target):
+            return {"text": "🚫 Ограничение доступа по зоне ответственности (Scope).", "alert": "Нет прав для этой группы!"}
+        if role == "Наблюдатель" and action != "wake":
+            return {"text": "🚫 Роль «Наблюдатель» имеет доступ только для чтения.", "alert": "Отказ: роль Наблюдатель"}
+
+        from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+        act_name = "Включение (WoL)" if action == "wake" else ("Выключение" if action == "shutdown" else "Перезагрузка")
+        act_icon = "⚡️" if action == "wake" else ("🛑" if action == "shutdown" else "🔄")
+
+        if action == "wake":
+            mac = target.get("mac", "")
+            if not mac:
+                return {"text": f"❌ У устройства {target.get('name')} нет MAC-адреса.", "alert": "Ошибка: нет MAC"}
+            send_wol_packet(mac)
+            record_audit(operator_label, "WAKE", dev_id, "SUCCESS", "Magic Packet (WoL) отправлен через Telegram инлайн-кнопку")
+        elif action in ["shutdown", "poweroff"]:
+            ip = target.get("ip", "")
+            if ip:
+                send_direct_lan_power_signal(ip_address=ip, action="SHUTDOWN", device_id=dev_id, mac_address=target.get("mac", ""), hostname=target.get("hostname", ""))
+            queue_device_command(dev_id, "SHUTDOWN", force=True, reason=f"Telegram inline by {operator_label}")
+            if target.get("hostname") and target.get("hostname") != dev_id:
+                queue_device_command(target.get("hostname"), "SHUTDOWN", force=True, reason=f"Telegram inline by {operator_label}")
+            record_audit(operator_label, "SHUTDOWN", dev_id, "SUCCESS", "Команда выключения отправлена через Telegram инлайн-кнопку")
+        elif action in ["reboot", "restart"]:
+            ip = target.get("ip", "")
+            if ip:
+                send_direct_lan_power_signal(ip_address=ip, action="REBOOT", device_id=dev_id, mac_address=target.get("mac", ""), hostname=target.get("hostname", ""))
+            queue_device_command(dev_id, "REBOOT", force=True, reason=f"Telegram inline by {operator_label}")
+            if target.get("hostname") and target.get("hostname") != dev_id:
+                queue_device_command(target.get("hostname"), "REBOOT", force=True, reason=f"Telegram inline by {operator_label}")
+            record_audit(operator_label, "REBOOT", dev_id, "SUCCESS", "Команда перезагрузки отправлена через Telegram инлайн-кнопку")
+
+        return {
+            "text": (
+                f"✅ <b>Команда успешно отправлена!</b>\n\n"
+                f"{act_icon} Действие: <b>{act_name}</b>\n"
+                f"🖥 Станция: <b>{target.get('name')}</b> (<code>{target.get('ip')}</code>)\n"
+                f"👤 Оператор: <b>{user_name}</b>\n\n"
+                f"<i>Сигнал мгновенно передан целевому компьютеру.</i>"
+            ),
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "🖥 К компьютеру", "callback_data": f"dev:{dev_id}"},
+                        {"text": "📋 К списку ПК", "callback_data": "menu:devices:0"}
+                    ]
+                ]
+            },
+            "alert": f"{act_name} выполнено!"
+        }
+
+    return {"text": "❓ Неизвестное действие.", "alert": "Неизвестное действие"}
+
+def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, Any] = None) -> Any:
+    chat_id = str(chat_id_str).strip()
+    cmd_raw = (text or "").strip()
+    parts = cmd_raw.split()
+    cmd = parts[0].lower() if parts else ""
+    arg = parts[1] if len(parts) > 1 else ""
+
+    users = load_users()
+    from_username = str(from_user.get("username", "") if from_user else "").replace("@", "").strip().lower()
+
+    def matches_telegram_user(u: Dict[str, Any]) -> bool:
+        tg_val = str(u.get("telegramChatId", "")).strip()
+        if not tg_val:
+            return False
+        if tg_val == chat_id:
+            return True
+        clean_stored = tg_val.replace("@", "").strip().lower()
+        if from_username and clean_stored == from_username:
+            return True
+        return False
+
+    matched_user = next((u for u in users if matches_telegram_user(u)), None)
+
+    # 1. Unregistered user handling
+    if not matched_user:
+        if cmd in ["/start", "/id", "/myid", "/help"]:
+            username_part = f" @{from_user.get('username')}" if from_user and from_user.get("username") else ""
+            return (
+                f"👋 <b>Добро пожаловать в Workstation Manager!</b>\n\n"
+                f"🆔 Ваш Telegram Chat ID: <code>{chat_id}</code>{username_part}\n\n"
+                f"<i>Передайте этот идентификатор администратору для привязки к вашей учетной записи и получения доступа к управлению.</i>"
+            )
+        return (
+            f"⛔️ <b>Доступ запрещен.</b>\n"
+            f"Ваш Telegram Chat ID (<code>{chat_id}</code>) не привязан ни к одной учетной записи оператора.\n\n"
+            f"Напишите команду <code>/id</code> для получения вашего идентификатора."
         )
 
+    # 2. Check enabled status
+    if not matched_user.get("enabled", True):
+        return "🚫 <b>Учетная запись заблокирована</b> администратором. Обратитесь в IT-отдел."
+
+    # 3. User attributes and scopes
+    user_name = matched_user.get("displayName", matched_user.get("username", "Оператор"))
+    role = matched_user.get("role", "Дежурный оператор")
+    scope = matched_user.get("scope", "Все устройства")
+    allowed_groups = [g.lower() for g in matched_user.get("allowedGroups", [])]
+    is_global_scope = (scope == "Все устройства") or (not allowed_groups)
+
+    # Filter devices according to Scope
+    all_devs = load_devices()
+    if is_global_scope:
+        user_devices = all_devs
+        scope_desc = "Все устройства"
+    else:
+        user_devices = [
+            d for d in all_devs
+            if str(d.get("group", "")).lower() in allowed_groups
+            or any(str(g).lower() in allowed_groups for g in d.get("groups", []))
+        ]
+        scope_desc = f"Группы: {', '.join(matched_user.get('allowedGroups', []))}"
+
+    def can_manage_device(d: Dict[str, Any]) -> bool:
+        if is_global_scope:
+            return True
+        d_grp = str(d.get("group", "")).lower()
+        d_grps = [str(g).lower() for g in d.get("groups", [])]
+        return d_grp in allowed_groups or any(g in allowed_groups for g in d_grps)
+
+    # 4. Command Router with Rich Inline Menus
+    if cmd in ["/start", "/help", "/menu"]:
+        return build_main_menu(user_name, role, scope_desc)
+
+    if cmd in ["/id", "/myid"]:
+        return {
+            "text": f"🆔 Ваш Telegram Chat ID: <code>{chat_id}</code>\n👤 Профиль: <b>{user_name}</b> ({role})\n🌐 Зона: <b>{scope_desc}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "⬅️ Главное меню", "callback_data": "menu:main"}]]
+            }
+        }
+
+    if cmd == "/status":
+        return build_status_view(user_devices, scope_desc)
+
     if cmd == "/devices":
-        if not user_devices:
-            return f"🖥 В вашей зоне ответственности (<b>{scope_desc}</b>) пока нет зарегистрированных ПК."
-        lines = [f"🖥 <b>Список рабочих станций ({scope_desc}):</b>\n"]
-        for d in user_devices:
-            is_on = (d.get("powerStatus") == "On" or d.get("isOnline") is True)
-            status_icon = "🟢" if is_on else "🔴"
-            grp = d.get("group", "Общие")
-            lines.append(f"{status_icon} <b>{d.get('name')}</b> ({d.get('ip')}) · <i>{grp}</i> · v{d.get('agentVersion', '2.9.1')}")
-        return "\n".join(lines)
+        return build_devices_view(user_devices, scope_desc, 0)
 
     if cmd in ["/wake", "/shutdown", "/reboot", "/poweroff"]:
         if not arg:
@@ -338,7 +668,12 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
                 return f"❌ У устройства <b>{target_dev.get('name')}</b> не указан MAC-адрес для Wake-on-LAN."
             send_wol_packet(mac)
             record_audit(operator_label, "WAKE", target_dev.get("id"), "SUCCESS", f"Magic Packet (WoL) отправлен через Telegram-бота")
-            return f"⚡️ <b>Magic Packet (WoL) успешно отправлен</b> на <b>{target_dev.get('name')}</b> (MAC: <code>{mac}</code>)!"
+            return {
+                "text": f"⚡️ <b>Magic Packet (WoL) успешно отправлен</b> на <b>{target_dev.get('name')}</b> (MAC: <code>{mac}</code>)!",
+                "reply_markup": {
+                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}"}]]
+                }
+            }
 
         if cmd in ["/shutdown", "/poweroff"]:
             ip = target_dev.get("ip", "")
@@ -357,7 +692,12 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
                 if target_dev.get("hostname") and target_dev.get("hostname") != dev_id:
                     queue_device_command(target_dev.get("hostname"), "SHUTDOWN", force=True, reason=f"Telegram command by {operator_label}")
             record_audit(operator_label, "SHUTDOWN", dev_id, "SUCCESS", f"Команда выключения инициирована через Telegram-бота")
-            return f"🛑 <b>Команда выключения отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip})."
+            return {
+                "text": f"🛑 <b>Команда выключения отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip}).",
+                "reply_markup": {
+                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}"}]]
+                }
+            }
 
         if cmd == "/reboot":
             ip = target_dev.get("ip", "")
@@ -376,9 +716,14 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
                 if target_dev.get("hostname") and target_dev.get("hostname") != dev_id:
                     queue_device_command(target_dev.get("hostname"), "REBOOT", force=True, reason=f"Telegram command by {operator_label}")
             record_audit(operator_label, "REBOOT", dev_id, "SUCCESS", f"Команда перезагрузки инициирована через Telegram-бота")
-            return f"🔄 <b>Команда перезагрузки отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip})."
+            return {
+                "text": f"🔄 <b>Команда перезагрузки отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip}).",
+                "reply_markup": {
+                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}"}]]
+                }
+            }
 
-    return f"❓ Неизвестная команда <code>{cmd}</code>. Напишите <code>/help</code> для списка доступных команд."
+    return f"❓ Неизвестная команда <code>{cmd}</code>. Напишите <code>/help</code> или <code>/menu</code> для открытия меню."
 
 class TelegramConfigPayload(BaseModel):
     botToken: str = ""
@@ -491,7 +836,8 @@ async def test_telegram_proxy(payload: TestProxyPayload):
 
 @router.post("/process-command")
 async def handle_process_command(payload: ProcessCommandPayload):
-    resp_text = process_telegram_command(payload.chatId, payload.text, {"username": payload.username})
+    resp_data = process_telegram_command(payload.chatId, payload.text, {"username": payload.username})
+    resp_text = resp_data.get("text", "") if isinstance(resp_data, dict) else str(resp_data)
     return {"reply": resp_text}
 
 @router.post("/webhook")
@@ -507,7 +853,9 @@ async def telegram_webhook(request: Request):
         text = message.get("text", "")
         from_user = message.get("from", {})
 
-        reply_text = process_telegram_command(chat_id, text, from_user)
+        reply_data = process_telegram_command(chat_id, text, from_user)
+        reply_text = reply_data.get("text", "") if isinstance(reply_data, dict) else str(reply_data)
+        reply_markup = reply_data.get("reply_markup") if isinstance(reply_data, dict) else None
 
         # Send response via Telegram Bot API if token is configured
         cfg = load_config()
@@ -515,7 +863,10 @@ async def telegram_webhook(request: Request):
             try:
                 async with get_httpx_client(cfg, timeout=6.0) as client:
                     url = f"https://api.telegram.org/bot{cfg['botToken']}/sendMessage"
-                    await client.post(url, json={"chat_id": chat_id, "text": reply_text, "parse_mode": "HTML"})
+                    post_payload = {"chat_id": chat_id, "text": reply_text, "parse_mode": "HTML"}
+                    if reply_markup:
+                        post_payload["reply_markup"] = reply_markup
+                    await client.post(url, json=post_payload)
             except Exception:
                 pass
 

@@ -8,7 +8,8 @@ from backend.app.api.v1.telegram import (
     load_config,
     save_config,
     get_httpx_client,
-    process_telegram_command
+    process_telegram_command,
+    process_telegram_callback
 )
 
 class TelegramBotService:
@@ -16,6 +17,7 @@ class TelegramBotService:
     Background service for Telegram Bot long-polling (getUpdates).
     Works seamlessly in isolated networks, behind NAT and SOCKS5/HTTP proxies
     without requiring public IP addresses, domain names, or incoming ports.
+    Supports rich inline keyboard navigation, real-time command dispatch, and callbacks.
     """
     def __init__(self):
         self.is_running = False
@@ -53,14 +55,14 @@ class TelegramBotService:
                             await client.get(del_url, params={"drop_pending_updates": False})
                             self._webhook_cleared = True
                             print(f"[Telegram Bot] Webhook cleared. Ready to poll updates.")
-                    except Exception as wh_err:
+                    except Exception:
                         self._webhook_cleared = True
 
-                # Long-poll getUpdates
+                # Long-poll getUpdates including callback queries
                 params = {
                     "offset": self.last_update_id + 1 if self.last_update_id else 0,
                     "timeout": 15,
-                    "allowed_updates": ["message", "edited_message"]
+                    "allowed_updates": ["message", "edited_message", "callback_query"]
                 }
                 poll_url = f"https://api.telegram.org/bot{bot_token}/getUpdates"
 
@@ -76,6 +78,50 @@ class TelegramBotService:
                             if u_id > self.last_update_id:
                                 self.last_update_id = u_id
 
+                            # Case A: Inline button click (callback_query)
+                            cb = update.get("callback_query")
+                            if cb:
+                                cb_id = cb.get("id")
+                                cb_data = cb.get("data", "")
+                                from_user = cb.get("from", {})
+                                msg = cb.get("message", {})
+                                chat = msg.get("chat", {})
+                                chat_id = str(chat.get("id", ""))
+                                message_id = msg.get("message_id")
+
+                                print(f"[Telegram Bot] Inline click '{cb_data}' from {chat_id} (@{from_user.get('username', '')})")
+                                cb_result = process_telegram_callback(chat_id, cb_data, from_user)
+
+                                # 1. Answer callback query (stops spinner / displays toast notification)
+                                if cb_id:
+                                    try:
+                                        ans_url = f"https://api.telegram.org/bot{bot_token}/answerCallbackQuery"
+                                        ans_payload = {
+                                            "callback_query_id": cb_id,
+                                            "text": cb_result.get("alert", "")
+                                        }
+                                        await client.post(ans_url, json=ans_payload)
+                                    except Exception:
+                                        pass
+
+                                # 2. Edit existing message with updated card or view
+                                if message_id and cb_result.get("text"):
+                                    try:
+                                        edit_url = f"https://api.telegram.org/bot{bot_token}/editMessageText"
+                                        edit_payload = {
+                                            "chat_id": chat_id,
+                                            "message_id": message_id,
+                                            "text": cb_result["text"],
+                                            "parse_mode": "HTML"
+                                        }
+                                        if cb_result.get("reply_markup"):
+                                            edit_payload["reply_markup"] = cb_result["reply_markup"]
+                                        await client.post(edit_url, json=edit_payload)
+                                    except Exception:
+                                        pass
+                                continue
+
+                            # Case B: Regular text message
                             msg = update.get("message") or update.get("edited_message")
                             if not msg:
                                 continue
@@ -91,17 +137,26 @@ class TelegramBotService:
                             u_name = from_user.get("username", "")
                             print(f"[Telegram Bot] Received '{text}' from chat {chat_id} (user: {u_name})")
 
-                            # Dispatch through RBAC and device controller
-                            reply_text = process_telegram_command(chat_id, text, from_user)
+                            # Dispatch through command router
+                            reply_data = process_telegram_command(chat_id, text, from_user)
 
-                            if reply_text:
+                            if reply_data:
                                 try:
                                     send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-                                    send_payload = {
-                                        "chat_id": chat_id,
-                                        "text": reply_text,
-                                        "parse_mode": "HTML"
-                                    }
+                                    if isinstance(reply_data, dict):
+                                        send_payload = {
+                                            "chat_id": chat_id,
+                                            "text": reply_data.get("text", ""),
+                                            "parse_mode": "HTML"
+                                        }
+                                        if reply_data.get("reply_markup"):
+                                            send_payload["reply_markup"] = reply_data["reply_markup"]
+                                    else:
+                                        send_payload = {
+                                            "chat_id": chat_id,
+                                            "text": str(reply_data),
+                                            "parse_mode": "HTML"
+                                        }
                                     await client.post(send_url, json=send_payload)
                                 except Exception as send_err:
                                     print(f"[Telegram Bot] Failed to send reply to {chat_id}: {send_err}")
