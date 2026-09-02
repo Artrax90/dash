@@ -1,5 +1,5 @@
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete
@@ -486,16 +486,25 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
 
 @router.api_route("/report-mac", methods=["GET", "POST"])
 async def report_device_mac(
+    request: Request,
     ip: Optional[str] = Query(None),
-    mac: Optional[str] = Query(None),
-    payload: Optional[Dict[str, Any]] = None
+    mac: Optional[str] = Query(None)
 ):
     """
     Allows local PowerShell (or agents) to directly report a MAC address for an IP.
     Instantly updates fleet ARP cache and pushes via WebSocket to open modal.
     """
-    target_ip = ip or (payload.get("ip") if payload else "")
-    target_mac = mac or (payload.get("mac") if payload else "")
+    target_ip = ip
+    target_mac = mac
+    if request.method == "POST":
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                target_ip = target_ip or body.get("ip")
+                target_mac = target_mac or body.get("mac")
+        except Exception:
+            pass
+
     if not target_ip or not target_mac:
         raise HTTPException(status_code=400, detail="Укажите параметры ip и mac")
 
