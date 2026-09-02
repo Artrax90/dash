@@ -1480,6 +1480,16 @@ async def sync_device_state(device_id: str, request: Request, db: AsyncSession =
             mac_address=device.mac_address,
             hostname=device.hostname
         )
+        # If device is running an older agent version (which lacks SYNC), also dispatch UPDATE_AGENT
+        # so it hot-reloads to the latest version and fires an immediate startup heartbeat!
+        if (device.agent_version or "") != settings.LATEST_AGENT_VERSION:
+            send_direct_lan_power_signal(
+                ip_address=target_ip,
+                action="UPDATE_AGENT",
+                device_id=device.id,
+                mac_address=device.mac_address,
+                hostname=device.hostname
+            )
 
     # 2. Also broadcast trigger on subnet for robustness
     try:

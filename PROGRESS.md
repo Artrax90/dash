@@ -257,11 +257,15 @@
 
 | **2026-09-02 14:05** | Agent | [`src/App.tsx`](file:///d:/antigravity/dash/src/App.tsx), [`src/api/index.ts`](file:///d:/antigravity/dash/src/api/index.ts), [`backend/app/api/v1/devices.py`](file:///d:/antigravity/dash/backend/app/api/v1/devices.py), [`backend/app/api/v1/agents.py`](file:///d:/antigravity/dash/backend/app/api/v1/agents.py), [`agent/standalone_installer.ps1`](file:///d:/antigravity/dash/agent/standalone_installer.ps1), [`agent/agent_standalone.py`](file:///d:/antigravity/dash/agent/agent_standalone.py) | **Кнопка «Синхронизировать» (Zero-Latency Sync) и исправление NameError alerts_db**: 1. **Исправление ошибки 500 в `/agents/inventory`**: в `backend/app/api/v1/agents.py` импортированы `alerts_db` и `alert_engine` на уровне модуля, что полностью устранило `NameError: name 'alerts_db' is not defined` при подключении/извлечении флешек. 2. **Кнопка мгновенной синхронизации в карточке ПК**: в шапку детального просмотра устройства рядом с кнопкой «Обновить агент» добавлена кнопка `[🔄 Синхронизировать]`; бэкенд `POST /api/v1/devices/{device_id}/sync` отправляет UNICAST Direct LAN UDP сигнал `WM_CMD:SYNC` на порт 48123, ставит `SYNC` в гарантированную очередь команд агента и выполняет быстрый сокет-пинг; агент (PowerShell и Python) при получении сигнала немедленно шлет `Invoke-Heartbeat $true` и обновляет инвентарь с нулевой задержкой, а интерфейс автоматически подтягивает свежие данные. |
 
+| **2026-09-02 14:22** | Full Stack / Agent v2.9.2 Release | [`agent/standalone_installer.ps1`](file:///d:/antigravity/dash/agent/standalone_installer.ps1), [`agent/agent_standalone.py`](file:///d:/antigravity/dash/agent/agent_standalone.py), [`backend/app/core/config.py`](file:///d:/antigravity/dash/backend/app/core/config.py), [`backend/app/api/v1/devices.py`](file:///d:/antigravity/dash/backend/app/api/v1/devices.py), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Релиз агента v2.9.2, авто-обновление старых агентов при синхронизации и аппаратная детекция шины USB в PowerShell**: 1. **Диагностика отсутствия реакции на «Синхронизировать»**: рабочая станция была установлена на версии v2.9.1, где служба еще не знала команду `SYNC` в функции `Execute-PowerCommand` и не вызывала `Invoke-Heartbeat` по UDP-триггеру; 2. **Авто-переход устаревших агентов на v2.9.2 при синхронизации**: в эндпоинт `POST /{device_id}/sync` добавлена авто-отправка триггера `UPDATE_AGENT`, если на ПК установлена устаревшая версия агента. Старый агент сразу подтягивает скрипт v2.9.2 по OTA и шлет немедленный Heartbeat на старте службы; 3. **Аппаратные поля дисков**: в сборщик дисков PowerShell (`liveDisks`) добавлены поля `busType`, `interfaceType`, `mediaType`, `pnpDeviceId` для точной классификации флешек; 4. **Синхронизация версии v2.9.2**: версия 2.9.2 зафиксирована во всей системе. |
+
 ---
 
 ## 🔜 Следующие шаги
-1. Проверить работу кнопки «Синхронизировать» на экране ПК.
-2. Проверить отсутствие ошибок 500 в логах бэкенда при подключении/извлечении USB флешек.
+1. Выполнить `git pull` на сервере.
+2. В веб-интерфейсе в карточке ПК нажать «Обновить агент» (или «Синхронизировать») для бесшовного обновления службы до v2.9.2.
+3. Проверить мгновенное появление алертов в вебе и Telegram при вставке флешки и нажатии «Синхронизировать».
+
 
 
 

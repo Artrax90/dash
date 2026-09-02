@@ -690,7 +690,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.1'
+`$AgentVersion = '2.9.2'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
@@ -709,9 +709,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.1") {
+function Update-AgentService([string]`$targetVer = "2.9.2") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.1"
+        `$targetVer = "2.9.2"
     }
     try {
         # 1. Report update in progress
@@ -1450,6 +1450,10 @@ function Get-LiveHardwareSpec() {
                     serialNumber = if (`$d.SerialNumber) { `$d.SerialNumber.Trim() } else { "DISK-SN-`$dIdx" }
                     capacityGb = `$dSizeGb
                     type = if (`$d.Model -match "SSD|NVMe") { "NVMe SSD" } else { "HDD" }
+                    busType = if (`$d.InterfaceType) { `$d.InterfaceType.Trim() } else { if (`$d.PNPDeviceID -match "USB") { "USB" } else { "" } }
+                    interfaceType = if (`$d.InterfaceType) { `$d.InterfaceType.Trim() } else { "" }
+                    mediaType = if (`$d.MediaType) { `$d.MediaType.Trim() } else { "" }
+                    pnpDeviceId = if (`$d.PNPDeviceID) { `$d.PNPDeviceID.Trim() } else { "" }
                 }
                 `$dIdx++
             }

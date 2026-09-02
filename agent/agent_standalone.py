@@ -21,7 +21,7 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.9.1")
+        execute_agent_update(server_base, cfg, "2.9.2")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
