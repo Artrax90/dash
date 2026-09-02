@@ -104,6 +104,40 @@ else:
             "docs": "/docs"
         }
 
+def resolve_request_base_url(request: Request, server_url: str = "") -> str:
+    import socket
+    if server_url and server_url.strip():
+        return server_url.strip().rstrip("/").replace("/api/v1", "").rstrip("/")
+
+    host_header = request.headers.get("x-forwarded-host") or request.headers.get("host") or ""
+    scheme = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+
+    # 1. If explicit Host header is given and is not localhost/127.0.0.1, use it
+    if host_header and not host_header.startswith("localhost") and not host_header.startswith("127.0.0.1"):
+        return f"{scheme}://{host_header}".replace("/api/v1", "").rstrip("/")
+
+    # 2. Check request.base_url
+    raw_base = str(request.base_url).rstrip("/")
+    if raw_base and "localhost" not in raw_base and "127.0.0.1" not in raw_base:
+        return raw_base.replace("/api/v1", "").rstrip("/")
+
+    # 3. If base_url evaluated to localhost (common in Docker without Host header proxy):
+    # Detect the real server LAN IP communicating with the client
+    client_ip = request.client.host if request.client else ""
+    if client_ip and not client_ip.startswith("127."):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((client_ip, 80))
+            real_ip = s.getsockname()[0]
+            s.close()
+            if real_ip and real_ip not in ["127.0.0.1", "0.0.0.0"]:
+                port = getattr(settings, "PORT", 2301) or 2301
+                return f"http://{real_ip}:{port}"
+        except Exception:
+            pass
+
+    return raw_base.replace("/api/v1", "").rstrip("/")
+
 def get_windows_installer_ps1(base_url: str, token: str) -> str:
     template_path = os.path.join(os.path.dirname(__file__), "..", "..", "agent", "standalone_installer.ps1")
     if not os.path.exists(template_path):
@@ -130,9 +164,7 @@ async def get_windows_batch_installer(request: Request, token: str = "", server_
     Double-clicking this file executes the PowerShell collector in-place with guaranteed output and pause.
     """
     import urllib.parse
-    base_url = server_url or str(request.base_url).rstrip("/")
-    base_url = base_url.replace("/api/v1", "").rstrip("/")
-    
+    base_url = resolve_request_base_url(request, server_url)
     effective_token = token or "wm_tok_live_7f8a92b3c4d5e6f7"
 
     # Auto-detect group from tokens_store if not supplied
@@ -191,9 +223,7 @@ async def get_windows_installer_full_ps1_endpoint(request: Request, token: str =
     """
     Serve raw, complete Windows installer script for direct execution.
     """
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
     clean_token = token.split("_0123")[0] if token else "wm_tok_live_7f8a92b3c4d5e6f7"
     content = get_windows_installer_ps1(base_url, clean_token)
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
@@ -210,9 +240,7 @@ async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", 
     Allows one-liner: irm "http://<server>:2301/install.ps1?token=XYZ" | iex
     """
     import urllib.parse
-    base_url = server_url or str(request.base_url).rstrip("/")
-    base_url = base_url.replace("/api/v1", "").rstrip("/")
-    
+    base_url = resolve_request_base_url(request, server_url)
     effective_token = token or "wm_tok_live_7f8a92b3c4d5e6f7"
     content = get_windows_installer_ps1(base_url, effective_token)
 
@@ -252,9 +280,7 @@ async def get_windows_service_script_endpoint(request: Request, server_url: str 
     """
     Serve pure, lightweight Windows Agent Service runtime script for instant OTA update.
     """
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
     content = get_windows_agent_service_ps1(base_url, deviceId, mac)
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
 
@@ -264,9 +290,7 @@ async def get_windows_uninstaller_ps1_endpoint(request: Request, server_url: str
     Serve pure Windows uninstaller script.
     Allows one-liner: irm "http://<server>:2301/uninstall.ps1" | iex
     """
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
     content = get_windows_uninstaller_ps1(base_url)
     headers = {}
     if download:

@@ -1,12 +1,19 @@
 ﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
-if (-not $ServerUrl -or $ServerUrl -eq "__SERVER_URL__") { $ServerUrl = "__SERVER_URL__" }
-if (-not $Token -or $Token -eq "__TOKEN__") { $Token = "__TOKEN__" }
+$ServerUrl = "__SERVER_URL__"
+$Token = "__TOKEN__"
 
 if ($args) {
     for ($i = 0; $i -lt $args.Count; $i++) {
         if ($args[$i] -eq '-ServerUrl' -and ($i + 1) -lt $args.Count) { $ServerUrl = $args[$i + 1] }
         if ($args[$i] -eq '-Token' -and ($i + 1) -lt $args.Count) { $Token = $args[$i + 1] }
     }
+}
+
+if ([string]::IsNullOrWhiteSpace($ServerUrl) -or $ServerUrl.StartsWith("__SERVER")) {
+    $ServerUrl = "http://localhost:2301"
+}
+if ([string]::IsNullOrWhiteSpace($Token) -or $Token.StartsWith("__TOKEN")) {
+    $Token = "wm_tok_live_7f8a92b3c4d5e6f7"
 }
 
 # ==============================================================================
