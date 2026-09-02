@@ -265,11 +265,15 @@
 
 | **2026-09-02 15:28** | Backend / Fix | [`backend/app/models/alert.py`](file:///d:/antigravity/dash/backend/app/models/alert.py), [`backend/app/services/alert_engine.py`](file:///d:/antigravity/dash/backend/app/services/alert_engine.py), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Устранение ошибки импорта `cannot import name 'Alert' from 'backend.app.models.alert'`**: 1. **Диагностика**: классы в `models/alert.py` называются `AlertModel` и `AlertPolicyModel`; при вызове `trigger_device_online` происходила попытка импорта `from backend.app.models.alert import Alert as AlertModel`, что приводило к `ImportError`; 2. **Исправление**: в `alert_engine.py` импорты исправлены на `AlertModel, AlertPolicyModel`, а в `models/alert.py` добавлены обратные псевдонимы `Alert = AlertModel`, `AlertPolicy = AlertPolicyModel` для гарантированной совместимости; 3. Протестировано компиляцией в Python. |
 
+| **2026-09-02 15:40** | Backend / Fix | [`backend/app/services/alert_engine.py`](file:///d:/antigravity/dash/backend/app/services/alert_engine.py), [`backend/app/core/ws.py`](file:///d:/antigravity/dash/backend/app/core/ws.py), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Устранение ошибки импорта `No module named 'backend.app.core.ws'`**: 1. **Диагностика**: менеджер WebSocket-соединений расположен в `backend.app.ws.manager`, однако в `alert_engine.py` импортировался несуществующий путь `backend.app.core.ws`; 2. **Исправление**: путь импорта в `alert_engine.py` исправлен на `from backend.app.ws.manager import ws_manager`, а также создан вспомогательный файл-мост `backend/app/core/ws.py` для 100% обратной совместимости; 3. Протестировано компиляцией в Python. |
+
 ---
 
 ## 🔜 Следующие шаги
 1. Выполнить `git pull` на сервере.
-2. Проверить работу алертов выключения и включения ПК.
+2. Перезапустить бэкенд (`docker restart <container>` или `docker compose restart`).
+3. Проверить работу алертов выключения и включения ПК.
+
 
 
 

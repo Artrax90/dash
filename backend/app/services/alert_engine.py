@@ -181,7 +181,7 @@ class AlertEngine:
         try:
             from backend.app.models.alert import AlertModel, AlertPolicyModel
             from backend.app.api.v1.alerts import alerts_db
-            from backend.app.core.ws import ws_manager
+            from backend.app.ws.manager import ws_manager
             from sqlalchemy import select
             
             # Deduplication: do not create multiple open OFFLINE alerts for the same device
@@ -255,7 +255,7 @@ class AlertEngine:
         try:
             from backend.app.models.alert import AlertModel, AlertPolicyModel
             from backend.app.api.v1.alerts import alerts_db
-            from backend.app.core.ws import ws_manager
+            from backend.app.ws.manager import ws_manager
             from sqlalchemy import select
             
             now_utc = datetime.utcnow()
