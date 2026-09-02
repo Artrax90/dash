@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.8.2"
+    agentVersion = "2.8.3"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -687,7 +687,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.8.2'
+`$AgentVersion = '2.8.3'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -705,9 +705,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.8.2") {
+function Update-AgentService([string]`$targetVer = "2.8.3") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.8.2"
+        `$targetVer = "2.8.3"
     }
     try {
         # 1. Report update in progress
@@ -789,7 +789,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.8.2"
+        Update-AgentService "2.8.3"
         return
     }
 
@@ -1860,7 +1860,17 @@ while (`$true) {
                                             mac = `$fMac.Replace('-', ':').ToUpper()
                                             reportedBy = `$DeviceId
                                         }
-                                        Invoke-ApiPost "`$ServerUrl/api/v1/agents/probe-result" `$pRes -silent `$true
+                                        `$pJson = `$pRes | ConvertTo-Json -Compress
+                                        `$pBytes = [System.Text.Encoding]::UTF8.GetBytes(`$pJson)
+                                        `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/probe-result")
+                                        `$pReq.Method = 'POST'
+                                        `$pReq.ContentType = 'application/json; charset=utf-8'
+                                        `$pReq.Timeout = 4000
+                                        `$pStream = `$pReq.GetRequestStream()
+                                        `$pStream.Write(`$pBytes, 0, `$pBytes.Length)
+                                        `$pStream.Close()
+                                        `$pResp = `$pReq.GetResponse()
+                                        `$pResp.Close()
                                     }
                                 } catch {}
                             }
@@ -2230,7 +2240,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.8.2"
+    agentVersion = "2.8.3"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

@@ -317,6 +317,9 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
     if not ip:
         raise HTTPException(status_code=400, detail="Укажите корректный IP-адрес")
 
+    mac = None
+    is_online = False
+
     from backend.app.api.v1.agents import fleet_arp_cache
 
     # Strategy 0: Check fleet neighbor cache populated by active Windows agents
