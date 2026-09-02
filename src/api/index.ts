@@ -101,7 +101,7 @@ export const devicesApi = {
     }
     return wait(devices.find((device) => device.id === id));
   },
-  probe: async (ip: string): Promise<{ success: boolean; online: boolean; ip: string; mac?: string; hostname?: string; message: string }> => {
+  probe: async (ip: string): Promise<{ success: boolean; online: boolean; ip: string; mac?: string; hostname?: string; message: string; suggestedCommand?: string }> => {
     const res = await fetch(`${API_BASE}/devices/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

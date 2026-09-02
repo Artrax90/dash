@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.8.3"
+    agentVersion = "2.8.4"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -687,7 +687,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.8.3'
+`$AgentVersion = '2.8.4'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -705,9 +705,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.8.3") {
+function Update-AgentService([string]`$targetVer = "2.8.4") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.8.3"
+        `$targetVer = "2.8.4"
     }
     try {
         # 1. Report update in progress
@@ -789,7 +789,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.8.3"
+        Update-AgentService "2.8.4"
         return
     }
 
@@ -1803,6 +1803,32 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                 foreach (`$cmd in `$respObj.pendingCommands) {
                     if (`$cmd.action -match 'UPDATE') {
                         Update-AgentService (`$cmd.targetVersion)
+                    } elseif (`$cmd.action -eq 'PROBE_IP' -or `$cmd.action -eq 'PROBE_NEIGHBOR') {
+                        `$targetProbeIp = if (`$cmd.targetIp) { `$cmd.targetIp } else { `$cmd.ip }
+                        if (`$targetProbeIp) {
+                            try {
+                                Test-Connection -ComputerName `$targetProbeIp -Count 1 -Quiet | Out-Null
+                                `$fMac = (Get-NetNeighbor -IPAddress `$targetProbeIp -ErrorAction SilentlyContinue | Where-Object { `$_.LinkLayerAddress -and `$_.LinkLayerAddress -ne '00-00-00-00-00-00' }).LinkLayerAddress | Select-Object -First 1
+                                if (`$fMac) {
+                                    `$pRes = @{
+                                        ip = `$targetProbeIp
+                                        mac = `$fMac.Replace('-', ':').ToUpper()
+                                        reportedBy = `$DeviceId
+                                    }
+                                    `$pJson = `$pRes | ConvertTo-Json -Compress
+                                    `$pBytes = [System.Text.Encoding]::UTF8.GetBytes(`$pJson)
+                                    `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/probe-result")
+                                    `$pReq.Method = 'POST'
+                                    `$pReq.ContentType = 'application/json; charset=utf-8'
+                                    `$pReq.Timeout = 4000
+                                    `$pStream = `$pReq.GetRequestStream()
+                                    `$pStream.Write(`$pBytes, 0, `$pBytes.Length)
+                                    `$pStream.Close()
+                                    `$pResp = `$pReq.GetResponse()
+                                    `$pResp.Close()
+                                }
+                            } catch {}
+                        }
                     } else {
                         Execute-PowerCommand `$cmd.action `$false `$cmd
                     }
@@ -2240,7 +2266,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.8.3"
+    agentVersion = "2.8.4"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

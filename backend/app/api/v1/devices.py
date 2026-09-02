@@ -414,7 +414,8 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
                 except Exception:
                     pass
             
-            # Send directly to all registered device IPs
+            # Send directly to all registered device IPs and queue in pending_device_commands
+            from backend.app.api.v1.agents import pending_device_commands
             dev_res = await db.execute(select(Device).where(Device.ip_address.isnot(None)))
             for dev_row in dev_res.scalars().all():
                 if dev_row.ip_address and not dev_row.ip_address.startswith("127."):
@@ -422,11 +423,18 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
                         probe_sock.sendto(probe_msg, (dev_row.ip_address, 48123))
                     except Exception:
                         pass
+                if dev_row.id:
+                    pending_device_commands[dev_row.id].append({
+                        "id": f"probe-{int(time.time()*1000)}",
+                        "action": "PROBE_IP",
+                        "targetIp": ip,
+                        "createdTimestamp": time.time()
+                    })
             probe_sock.close()
 
             # Await fast agent response in fleet_arp_cache
-            for _ in range(12):
-                await asyncio.sleep(0.12)
+            for _ in range(15):
+                await asyncio.sleep(0.1)
                 c_info = fleet_arp_cache.get(ip)
                 if c_info and isinstance(c_info, dict) and c_info.get("mac"):
                     mac = c_info.get("mac")
@@ -453,6 +461,7 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
 
     clean_mac = re.sub(r'[^A-F0-9]', '', (mac or '').upper())
     formatted_mac = ":".join([clean_mac[i:i+2] for i in range(0, len(clean_mac), 2)]) if len(clean_mac) == 12 else mac
+    suggested_cmd = f"(Get-NetNeighbor -IPAddress {ip}).LinkLayerAddress | Set-Clipboard"
 
     if formatted_mac:
         return {
@@ -461,7 +470,8 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             "ip": ip,
             "mac": formatted_mac,
             "hostname": hostname,
-            "message": f"Устройство обнаружено в сети! MAC-адрес: {formatted_mac}"
+            "message": f"Устройство обнаружено в сети! MAC-адрес: {formatted_mac}",
+            "suggestedCommand": suggested_cmd
         }
     else:
         return {
@@ -470,8 +480,52 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             "ip": ip,
             "mac": None,
             "hostname": hostname,
-            "message": "Устройство не ответило в ARP-таблице (выключено или в другом сегменте). Введите MAC-адрес вручную."
+            "message": "Устройство не ответило в ARP-таблице (сервер в Docker или устройство выключено).",
+            "suggestedCommand": suggested_cmd
         }
+
+@router.api_route("/report-mac", methods=["GET", "POST"])
+async def report_device_mac(
+    ip: Optional[str] = Query(None),
+    mac: Optional[str] = Query(None),
+    payload: Optional[Dict[str, Any]] = None
+):
+    """
+    Allows local PowerShell (or agents) to directly report a MAC address for an IP.
+    Instantly updates fleet ARP cache and pushes via WebSocket to open modal.
+    """
+    target_ip = ip or (payload.get("ip") if payload else "")
+    target_mac = mac or (payload.get("mac") if payload else "")
+    if not target_ip or not target_mac:
+        raise HTTPException(status_code=400, detail="Укажите параметры ip и mac")
+
+    clean_ip = str(target_ip).strip()
+    clean_mac = re.sub(r'[^A-F0-9]', '', str(target_mac).upper())
+    formatted_mac = ":".join([clean_mac[i:i+2] for i in range(0, len(clean_mac), 2)]) if len(clean_mac) == 12 else str(target_mac).strip().upper()
+
+    from backend.app.api.v1.agents import fleet_arp_cache
+    fleet_arp_cache[clean_ip] = {
+        "mac": formatted_mac,
+        "timestamp": time.time(),
+        "reportedBy": "PowerShell Quick Report"
+    }
+
+    try:
+        from backend.app.api.v1.websocket import ws_manager
+        await ws_manager.broadcast_event("device.probed", {
+            "ip": clean_ip,
+            "mac": formatted_mac,
+            "success": True
+        })
+    except Exception:
+        pass
+
+    return {
+        "success": True,
+        "ip": clean_ip,
+        "mac": formatted_mac,
+        "message": f"MAC-адрес {formatted_mac} сохранен для {clean_ip}"
+    }
 
 @router.post("/agentless")
 async def create_agentless_device(payload: AgentlessDeviceCreateSchema, db: AsyncSession = Depends(get_db)):
