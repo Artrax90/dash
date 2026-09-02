@@ -21,8 +21,8 @@ import re
 import socket
 import asyncio
 import subprocess
-from datetime import datetime, timezone
 from backend.app.core.config import settings
+from backend.app.api.v1.agents import fleet_arp_cache
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -200,10 +200,13 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     timeout_threshold = max(75, dev_interval * 2 + 15)
     
     if is_agentless:
+        c_info = fleet_arp_cache.get(d.ip_address) if d.ip_address else None
+        fleet_recent = bool(c_info and isinstance(c_info, dict) and (time.time() - c_info.get("timestamp", 0)) < 600)
         is_online = (
             d.power_status == PowerStatus.ON or 
             str(d.power_status).lower() in ["on", "powerstatus.on"] or
-            (sec_since_last_seen <= 300)
+            (sec_since_last_seen <= 300) or
+            fleet_recent
         )
     else:
         is_online = (sec_since_last_seen <= timeout_threshold)

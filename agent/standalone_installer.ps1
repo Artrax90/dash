@@ -1,10 +1,13 @@
-[CmdletBinding()]
-param(
-    [Parameter(Position=0)]
-    [string]$ServerUrl = "__SERVER_URL__",
-    [Parameter(Position=1)]
-    [string]$Token = "__TOKEN__"
-)
+# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+if (-not $ServerUrl -or $ServerUrl -eq "__SERVER_URL__") { $ServerUrl = "__SERVER_URL__" }
+if (-not $Token -or $Token -eq "__TOKEN__") { $Token = "__TOKEN__" }
+
+if ($args) {
+    for ($i = 0; $i -lt $args.Count; $i++) {
+        if ($args[$i] -eq '-ServerUrl' -and ($i + 1) -lt $args.Count) { $ServerUrl = $args[$i + 1] }
+        if ($args[$i] -eq '-Token' -and ($i + 1) -lt $args.Count) { $Token = $args[$i + 1] }
+    }
+}
 
 # ==============================================================================
 # Workstation Manager - Clean Standalone Installer Script (PowerShell Core)
@@ -386,7 +389,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.8.8"
+    agentVersion = "2.8.9"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -687,7 +690,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.8.8'
+`$AgentVersion = '2.8.9'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
@@ -706,9 +709,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.8.8") {
+function Update-AgentService([string]`$targetVer = "2.8.9") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.8.8"
+        `$targetVer = "2.8.9"
     }
     try {
         # 1. Report update in progress
@@ -794,7 +797,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.8.8"
+        Update-AgentService "2.8.9"
         return
     }
 
@@ -2278,7 +2281,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.8.8"
+    agentVersion = "2.8.9"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

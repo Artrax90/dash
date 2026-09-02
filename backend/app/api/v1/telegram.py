@@ -113,7 +113,7 @@ def load_devices() -> List[Dict[str, Any]]:
                         "group": grps[0] if grps else "Office",
                         "groups": grps,
                         "powerStatus": r["power_status"] or "On",
-                        "agentVersion": r["agent_version"] or "2.5.3",
+                        "agentVersion": r["agent_version"] or "2.8.9",
                         "lastSeen": r["last_seen"]
                     })
                 if devs:

@@ -183,7 +183,7 @@ class SchedulerService:
                             # 4. Host Kernel ARP table (/proc/net/arp)
                             if dev.ip_address:
                                 ping_ok = False
-                                from backend.app.api.v1.devices import fleet_arp_cache
+                                from backend.app.api.v1.agents import fleet_arp_cache
                                 
                                 # Layer 1: Fleet ARP Cache
                                 c_info = fleet_arp_cache.get(dev.ip_address)
