@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -154,11 +154,21 @@ class LogoffRequest(BaseModel):
 @router.post("/{session_id}/logoff")
 async def logoff_session(
     session_id: int,
+    request: Request,
     device_id: Optional[str] = None,
     deviceId: Optional[str] = None,
     req: Optional[LogoffRequest] = None,
     db: AsyncSession = Depends(get_db)
 ):
+    raw_role = request.headers.get("X-User-Role") or ""
+    import urllib.parse
+    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+    if user_role in ["Наблюдатель", "Observer"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения и не может завершать сессии."
+        )
+
     from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
     from backend.app.ws.manager import ws_manager
     from backend.app.api.v1.devices import format_device_summary

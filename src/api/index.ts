@@ -71,6 +71,15 @@ export function getAuthHeaders(): Record<string, string> {
   };
   try {
     if (typeof window !== 'undefined') {
+      const saved = localStorage.getItem('wm_user_session');
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        if (parsed) {
+          if (parsed.username) headers['X-Username'] = parsed.username;
+          if (parsed.role) headers['X-User-Role'] = encodeURIComponent(parsed.role);
+          if (parsed.id) headers['X-User-Id'] = parsed.id;
+        }
+      }
       const token = localStorage.getItem('wm_token');
       if (token) {
         headers['Authorization'] = `Bearer ${token}`;
@@ -85,8 +94,29 @@ const wait = async <T,>(value: T, ms = 50): Promise<T> => new Promise((resolve) 
 export const devicesApi = {
   list: async (): Promise<Device[]> => {
     try {
-      const res = await fetch(`${API_BASE}/devices`);
-      if (res.ok) return await res.json();
+      const res = await fetch(`${API_BASE}/devices`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) {
+        const data: Device[] = await res.json();
+        try {
+          if (typeof window !== 'undefined') {
+            const saved = localStorage.getItem('wm_user_session');
+            if (saved) {
+              const u = JSON.parse(saved);
+              if (u && u.scope !== 'Все устройства' && Array.isArray(u.allowedGroups) && u.allowedGroups.length > 0 && u.role !== 'Суперадминистратор' && u.role !== 'SuperAdmin') {
+                const allowed = u.allowedGroups.map((g: string) => g.toLowerCase().trim());
+                return data.filter(d => {
+                  const dGrp = (d.group || '').toLowerCase().trim();
+                  const dGrps = Array.isArray(d.groups) ? d.groups.map((g: any) => String(g).toLowerCase().trim()) : [];
+                  return allowed.includes(dGrp) || dGrps.some(g => allowed.includes(g));
+                });
+              }
+            }
+          }
+        } catch {}
+        return data;
+      }
     } catch {
       // fallback to in-memory
     }
@@ -826,7 +856,9 @@ export const groupsApi = {
 export const rolesApi = {
   list: async (): Promise<CustomRole[]> => {
     try {
-      const res = await fetch(`${API_BASE}/roles`);
+      const res = await fetch(`${API_BASE}/roles`, {
+        headers: getAuthHeaders()
+      });
       if (res.ok) return await res.json();
     } catch {
       // fallback
@@ -837,7 +869,7 @@ export const rolesApi = {
     try {
       const res = await fetch(`${API_BASE}/roles`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(role)
       });
       if (res.ok) return await res.json();
@@ -854,7 +886,7 @@ export const rolesApi = {
     try {
       const res = await fetch(`${API_BASE}/roles/${encodeURIComponent(nameOrId)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(payload)
       });
       if (res.ok) return await res.json();
@@ -871,7 +903,9 @@ export const rolesApi = {
 export const usersApi = {
   list: async (): Promise<ManagedUser[]> => {
     try {
-      const res = await fetch(`${API_BASE}/users`);
+      const res = await fetch(`${API_BASE}/users`, {
+        headers: getAuthHeaders()
+      });
       if (res.ok) return await res.json();
     } catch {
       // fallback
@@ -881,7 +915,7 @@ export const usersApi = {
   create: async (payload: Partial<ManagedUser> & { password?: string }): Promise<ManagedUser> => {
     const res = await fetch(`${API_BASE}/users`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(payload)
     });
     if (!res.ok) {
@@ -893,7 +927,7 @@ export const usersApi = {
   update: async (id: string, payload: Partial<ManagedUser> & { newPassword?: string }): Promise<ManagedUser> => {
     const res = await fetch(`${API_BASE}/users/${encodeURIComponent(id)}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: getAuthHeaders(),
       body: JSON.stringify(payload)
     });
     if (!res.ok) {
@@ -904,7 +938,8 @@ export const usersApi = {
   },
   delete: async (id: string): Promise<boolean> => {
     const res = await fetch(`${API_BASE}/users/${encodeURIComponent(id)}`, {
-      method: 'DELETE'
+      method: 'DELETE',
+      headers: getAuthHeaders()
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Ошибка удаления пользователя' }));

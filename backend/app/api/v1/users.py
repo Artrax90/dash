@@ -3,7 +3,7 @@ import os
 import hashlib
 import secrets
 from datetime import datetime, timezone
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel
 from backend.app.core.config import settings
@@ -11,6 +11,41 @@ from backend.app.core.config import settings
 router = APIRouter(prefix="/users", tags=["users"])
 
 USERS_FILE = os.path.join(settings.DATA_DIR, "users.json")
+
+def get_current_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
+    x_username = request.headers.get("X-Username")
+    x_user_id = request.headers.get("X-User-Id")
+    users = load_users()
+    if not users:
+        return None
+    if x_username:
+        u = next((usr for usr in users if usr.get("username", "").lower() == x_username.strip().lower()), None)
+        if u and u.get("enabled", True):
+            return u
+    if x_user_id:
+        u = next((usr for usr in users if usr.get("id") == x_user_id), None)
+        if u and u.get("enabled", True):
+            return u
+    raw_role = request.headers.get("X-User-Role")
+    if raw_role:
+        import urllib.parse
+        role_dec = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+        u = next((usr for usr in users if usr.get("role") == role_dec and usr.get("enabled", True)), None)
+        if u:
+            return u
+    return None
+
+def require_superadmin(request: Request) -> Dict[str, Any]:
+    users = load_users()
+    if not users:
+        return {"role": "Суперадминистратор", "username": "system"}
+    user = get_current_user_from_request(request)
+    if not user or user.get("role") not in ["Суперадминистратор", "SuperAdmin"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: управление учетными записями разрешено только Суперадминистратору системы."
+        )
+    return user
 
 def hash_password(password: str, salt: str = None) -> tuple[str, str]:
     if not salt:
@@ -158,12 +193,14 @@ async def setup_initial_admin(payload: InitialAdminSetupPayload):
     }
 
 @router.get("")
-async def list_users():
+async def list_users(request: Request):
+    require_superadmin(request)
     users = load_users()
     return [sanitize_user(u) for u in users]
 
 @router.post("")
-async def create_user(payload: UserCreatePayload):
+async def create_user(payload: UserCreatePayload, request: Request):
+    require_superadmin(request)
     users = load_users()
     
     # Check if username already exists
@@ -198,10 +235,18 @@ async def create_user(payload: UserCreatePayload):
     return sanitize_user(new_user)
 
 @router.put("/{user_id}")
-async def update_user(user_id: str, payload: UserUpdatePayload):
+async def update_user(user_id: str, payload: UserUpdatePayload, request: Request):
+    require_superadmin(request)
     users = load_users()
     for u in users:
         if u["id"] == user_id or u.get("username") == user_id:
+            # Prevent demoting or disabling the only Superadmin
+            if u.get("role") == "Суперадминистратор":
+                if (payload.role is not None and payload.role != "Суперадминистратор") or (payload.enabled is False):
+                    other_superadmins = [other for other in users if other.get("role") == "Суперадминистратор" and other["id"] != u["id"] and other.get("enabled", True)]
+                    if not other_superadmins:
+                        raise HTTPException(status_code=400, detail="Нельзя заблокировать или понизить роль единственного активного Суперадминистратора")
+
             if payload.username is not None:
                 clean_username = payload.username.strip().lower()
                 # Ensure no other user has this username
@@ -231,7 +276,8 @@ async def update_user(user_id: str, payload: UserUpdatePayload):
     raise HTTPException(status_code=404, detail="User not found")
 
 @router.delete("/{user_id}")
-async def delete_user(user_id: str):
+async def delete_user(user_id: str, request: Request):
+    require_superadmin(request)
     users = load_users()
     target = next((u for u in users if u["id"] == user_id or u.get("username") == user_id), None)
     if not target:

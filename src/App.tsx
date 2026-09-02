@@ -732,7 +732,10 @@ function App() {
   const selectedGroup = route.selectedGroup;
   const deviceFilter = route.deviceFilter || {};
 
-  const navigation: { label: Page; name: string; icon: typeof LayoutDashboard; group?: string }[] = [
+  const isSuperAdmin = currentUser?.role === 'Суперадминистратор' || currentUser?.role === 'SuperAdmin';
+  const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
+
+  const rawNavigation: { label: Page; name: string; icon: typeof LayoutDashboard; group?: string; adminOnly?: boolean }[] = [
     { label: 'Dashboard', name: t('nav.dashboard'), icon: LayoutDashboard },
     { label: 'Devices', name: t('nav.devices'), icon: Monitor },
     { label: 'Groups', name: t('nav.groups'), icon: Database },
@@ -740,18 +743,29 @@ function App() {
     { label: 'Monitoring', name: t('nav.monitoring'), icon: Activity, group: t('nav.operations') },
     { label: 'Alerts', name: t('nav.alerts'), icon: Bell },
     { label: 'Hardware', name: t('nav.hardware') || 'Аппаратный эталон', icon: Cpu },
-    { label: 'Users', name: t('nav.users'), icon: UsersIcon, group: t('nav.administration') },
-    { label: 'Roles', name: t('nav.roles'), icon: ShieldCheck },
     { label: 'Agents', name: t('nav.agents'), icon: Server },
-    { label: 'Telegram', name: t('nav.telegram'), icon: Send },
-    { label: 'Audit Log', name: t('nav.audit'), icon: Terminal },
-    { label: 'Settings', name: t('nav.settings'), icon: Settings },
+    { label: 'Users', name: t('nav.users'), icon: UsersIcon, group: t('nav.administration'), adminOnly: true },
+    { label: 'Roles', name: t('nav.roles'), icon: ShieldCheck, adminOnly: true },
+    { label: 'Telegram', name: t('nav.telegram'), icon: Send, adminOnly: true },
+    { label: 'Audit Log', name: t('nav.audit'), icon: Terminal, adminOnly: true },
+    { label: 'Settings', name: t('nav.settings'), icon: Settings, adminOnly: true },
   ];
+
+  const navigation = isSuperAdmin ? rawNavigation : rawNavigation.filter(item => !item.adminOnly);
 
   const notify = (message: string) => {
     setToast(message);
     window.setTimeout(() => setToast(''), 3200);
   };
+
+  useEffect(() => {
+    if (!currentUser) return;
+    const adminPages: Page[] = ['Users', 'Roles', 'Telegram', 'Audit Log', 'Settings'];
+    if (!isSuperAdmin && adminPages.includes(route.page)) {
+      navigateTo({ page: 'Dashboard' });
+      notify('Доступ ограничен: данный раздел доступен только Суперадминистратору.');
+    }
+  }, [route.page, isSuperAdmin, currentUser]);
 
   const openDevice = (id: string) => {
     navigateTo({ page: 'Device detail', selectedDevice: id });
@@ -906,11 +920,11 @@ function App() {
             {page === 'Alerts' && <Alerts onDevice={openDevice} notify={notify} />}
             {page === 'Hardware' && <HardwarePage onDevice={openDevice} onNavigate={handleNavigate} notify={notify} />}
             {page === 'Schedules' && <Schedules notify={notify} />}
-            {page === 'Users' && <UsersPage notify={notify} />}
-            {page === 'Roles' && <Roles notify={notify} />}
+            {page === 'Users' && (isSuperAdmin ? <UsersPage notify={notify} currentUser={currentUser} /> : null)}
+            {page === 'Roles' && (isSuperAdmin ? <Roles notify={notify} /> : null)}
             {page === 'Agents' && <AgentsDownloads notify={notify} />}
-            {page === 'Telegram' && <TelegramPage notify={notify} />}
-            {page === 'Audit Log' && <AuditLog />}
+            {page === 'Telegram' && (isSuperAdmin ? <TelegramPage notify={notify} /> : null)}
+            {page === 'Audit Log' && (isSuperAdmin ? <AuditLog /> : null)}
             {page === 'Groups' && (
               <Groups
                 onNavigate={handleNavigate}
@@ -920,13 +934,13 @@ function App() {
                 onSelectGroup={(gName) => navigateTo({ page: 'Groups', selectedGroup: gName || undefined })}
               />
             )}
-            {page === 'Settings' && (
+            {page === 'Settings' && (isSuperAdmin ? (
               <SettingsPage
                 workspaceName={workspaceName}
                 onSaveWorkspaceName={handleUpdateWorkspaceName}
                 notify={notify}
               />
-            )}
+            ) : null)}
           </ErrorBoundary>
         </div>
       </main>
@@ -8349,7 +8363,7 @@ function Schedules({ notify }: { notify: (message: string) => void }) {
 // ----------------------------------------------------
 // 11. USERS & ROLES
 // ----------------------------------------------------
-function UsersPage({ notify }: { notify: (message: string) => void }) {
+function UsersPage({ notify, currentUser }: { notify: (message: string) => void; currentUser?: ManagedUser | null }) {
   const { t } = useLanguage();
   const [items, setItems] = useState<ManagedUser[]>([]);
   const [availableGroups, setAvailableGroups] = useState<string[]>(['Office', 'Warehouse', 'Management', 'Testing', 'Dev']);
@@ -8466,6 +8480,12 @@ function UsersPage({ notify }: { notify: (message: string) => void }) {
 
   const handleSaveEdit = async () => {
     if (!editingUser) return;
+    if (editingUser.role === 'Суперадминистратор' && (editingUser.id === currentUser?.id || editingUser.username === currentUser?.username)) {
+      if (editRole !== 'Суперадминистратор' || !editEnabled) {
+        notify('Нельзя заблокировать свою учетную запись или понизить роль Суперадминистратора');
+        return;
+      }
+    }
     try {
       const scopeStr = editScopeType === 'ALL' || editAllowedGroups.length === 0
         ? 'Все устройства'
@@ -8497,6 +8517,10 @@ function UsersPage({ notify }: { notify: (message: string) => void }) {
   const handleToggleUser = async (id: string) => {
     const target = items.find(u => u.id === id);
     if (!target) return;
+    if (target.id === currentUser?.id || target.username === currentUser?.username) {
+      notify('Нельзя заблокировать собственную учетную запись');
+      return;
+    }
     try {
       const nextStatus = !target.enabled;
       await usersApi.update(id, { enabled: nextStatus });
@@ -8510,6 +8534,10 @@ function UsersPage({ notify }: { notify: (message: string) => void }) {
   const handleDeleteUser = async (id: string) => {
     const target = items.find(u => u.id === id);
     if (!target) return;
+    if (target.id === currentUser?.id || target.username === currentUser?.username) {
+      notify('Нельзя удалить собственную учетную запись');
+      return;
+    }
     if (target.role === 'Суперадминистратор' && items.filter(u => u.role === 'Суперадминистратор').length <= 1) {
       notify('Нельзя удалить единственного Суперадминистратора');
       return;

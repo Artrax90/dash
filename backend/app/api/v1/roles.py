@@ -1,9 +1,10 @@
 import json
 import os
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from typing import Dict, Any, List
 from pydantic import BaseModel
 from backend.app.core.config import settings
+from backend.app.api.v1.users import require_superadmin
 
 router = APIRouter(prefix="/roles", tags=["roles"])
 
@@ -91,7 +92,8 @@ async def list_roles():
     return load_roles()
 
 @router.post("")
-async def create_role(payload: Dict[str, Any]):
+async def create_role(payload: Dict[str, Any], request: Request):
+    require_superadmin(request)
     roles = load_roles()
     new_role = {
         "id": f"ROLE-{len(roles) + 1:02d}",
@@ -109,7 +111,8 @@ async def create_role(payload: Dict[str, Any]):
     return new_role
 
 @router.put("/{role_id_or_name}")
-async def update_role(role_id_or_name: str, payload: Dict[str, Any]):
+async def update_role(role_id_or_name: str, payload: Dict[str, Any], request: Request):
+    require_superadmin(request)
     roles = load_roles()
     for r in roles:
         if r["id"] == role_id_or_name or r["name"] == role_id_or_name:

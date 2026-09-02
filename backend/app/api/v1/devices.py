@@ -1328,6 +1328,16 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
     source = payload.get("source", "MANUAL")
     reason = payload.get("reason", f"Command by {initiator}")
 
+    # Role check: Observer cannot execute power actions
+    raw_role = request.headers.get("X-User-Role") or ""
+    import urllib.parse
+    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+    if user_role in ["Наблюдатель", "Observer"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения и не может отправлять команды управления питанием."
+        )
+
     result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
     device = result.scalar_one_or_none()
     if not device:
@@ -1405,7 +1415,16 @@ async def toggle_maintenance(device_id: str, db: AsyncSession = Depends(get_db))
     return {"deviceId": device_id, "maintenance": True}
 
 @router.delete("/{device_id}")
-async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    raw_role = request.headers.get("X-User-Role") or ""
+    import urllib.parse
+    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+    if user_role and user_role not in ["Суперадминистратор", "SuperAdmin", "Администратор парка"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: удаление рабочих станций разрешено только администраторам."
+        )
+
     result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
     device = result.scalar_one_or_none()
     if not device:
@@ -1425,10 +1444,18 @@ async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.post("/bulk")
 async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: Request, db: AsyncSession = Depends(get_db)):
+    raw_role = request.headers.get("X-User-Role") or ""
+    import urllib.parse
+    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+    if user_role in ["Наблюдатель", "Observer"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения."
+        )
+
     action = payload.action.upper()
     device_ids = payload.deviceIds
     raw_user = payload.user or payload.initiator or request.headers.get("X-User-Name") or "Оператор"
-    import urllib.parse
     initiator = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
     from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
 
