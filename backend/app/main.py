@@ -183,8 +183,8 @@ exit /b
     }
     return PlainTextResponse(bat_content, media_type="application/x-bat", headers=headers)
 
-@app.get("/install_full.ps1", response_class=PlainTextResponse)
-@app.get("/install-full.ps1", response_class=PlainTextResponse)
+@app.get("/install_full.ps1")
+@app.get("/install-full.ps1")
 async def get_windows_installer_full_ps1_endpoint(request: Request, token: str = "", server_url: str = ""):
     """
     Serve raw, complete Windows installer script for direct execution.
@@ -194,14 +194,14 @@ async def get_windows_installer_full_ps1_endpoint(request: Request, token: str =
         base_url = base_url[:-1]
     clean_token = token.split("_0123")[0] if token else "wm_tok_live_7f8a92b3c4d5e6f7"
     content = get_windows_installer_ps1(base_url, clean_token)
-    return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+    return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8")
 
-@app.get("/install.ps1", response_class=PlainTextResponse)
-@app.get("/installer.ps1", response_class=PlainTextResponse)
-@app.get("/api/v1/install.ps1", response_class=PlainTextResponse)
-@app.get("/api/v1/installer.ps1", response_class=PlainTextResponse)
-@app.get("/api/v1/agents/install.ps1", response_class=PlainTextResponse)
-@app.get("/api/v1/agents/installer.ps1", response_class=PlainTextResponse)
+@app.get("/install.ps1")
+@app.get("/installer.ps1")
+@app.get("/api/v1/install.ps1")
+@app.get("/api/v1/installer.ps1")
+@app.get("/api/v1/agents/install.ps1")
+@app.get("/api/v1/agents/installer.ps1")
 async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", server_url: str = "", group: str = "", download: bool = False):
     """
     Serve dynamic Windows installer script with embedded server URL & token.
@@ -220,7 +220,8 @@ async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", 
         group_suffix = f"-{safe_group}" if safe_group else ""
         filename = f"Install-Agent{group_suffix}.ps1"
         encoded_fn = urllib.parse.quote(filename)
-    return PlainTextResponse(content, media_type="text/plain; charset=utf-8", headers=headers)
+        headers["Content-Disposition"] = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_fn}'
+    return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers=headers)
 
 def get_windows_agent_service_ps1(base_url: str, device_id: str = "", mac: str = "") -> str:
     template_path = os.path.join(os.path.dirname(__file__), "..", "..", "agent", "standalone_installer.ps1")
@@ -243,8 +244,8 @@ def get_windows_agent_service_ps1(base_url: str, device_id: str = "", mac: str =
         return code_part
     return content
 
-@app.get("/agent.ps1", response_class=PlainTextResponse)
-@app.get("/api/v1/agents/service-script", response_class=PlainTextResponse)
+@app.get("/agent.ps1")
+@app.get("/api/v1/agents/service-script")
 async def get_windows_service_script_endpoint(request: Request, server_url: str = "", deviceId: str = "", mac: str = ""):
     """
     Serve pure, lightweight Windows Agent Service runtime script for instant OTA update.
@@ -253,9 +254,9 @@ async def get_windows_service_script_endpoint(request: Request, server_url: str 
     if base_url.endswith("/"):
         base_url = base_url[:-1]
     content = get_windows_agent_service_ps1(base_url, deviceId, mac)
-    return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+    return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8")
 
-@app.get("/uninstall.ps1", response_class=PlainTextResponse)
+@app.get("/uninstall.ps1")
 async def get_windows_uninstaller_ps1_endpoint(request: Request, server_url: str = "", download: bool = False):
     """
     Serve pure Windows uninstaller script.
@@ -268,7 +269,7 @@ async def get_windows_uninstaller_ps1_endpoint(request: Request, server_url: str
     headers = {}
     if download:
         headers["Content-Disposition"] = 'attachment; filename="Uninstall-Agent.ps1"'
-    return PlainTextResponse(content, media_type="text/plain; charset=utf-8", headers=headers)
+    return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers=headers)
 
 @app.get("/uninstall.bat", response_class=PlainTextResponse)
 @app.get("/uninstall-agent.bat", response_class=PlainTextResponse)

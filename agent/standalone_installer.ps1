@@ -1,4 +1,4 @@
-﻿[CmdletBinding()]
+[CmdletBinding()]
 param(
     [Parameter(Position=0)]
     [string]$ServerUrl = "__SERVER_URL__",
@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.8.7"
+    agentVersion = "2.8.8"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -687,7 +687,8 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.8.7'
+`$AgentVersion = '2.8.8'
+`$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -705,9 +706,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.8.7") {
+function Update-AgentService([string]`$targetVer = "2.8.8") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.8.7"
+        `$targetVer = "2.8.8"
     }
     try {
         # 1. Report update in progress
@@ -723,7 +724,7 @@ function Update-AgentService([string]`$targetVer = "2.8.7") {
         `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
-        `$req.Timeout = 10000
+        `$req.Timeout = 5000
         `$stream = `$req.GetRequestStream()
         `$stream.Write(`$bytes, 0, `$bytes.Length)
         `$stream.Close()
@@ -749,20 +750,24 @@ function Update-AgentService([string]`$targetVer = "2.8.7") {
         foreach (`$u in `$dlUrls) {
             try {
                 `$wc.DownloadFile(`$u, `$tempInstaller)
-                if ((Test-Path `$tempInstaller) -and (Get-Item `$tempInstaller).Length -gt 500) {
-                    `$downloadSuccess = `$true
-                    break
+                if ((Test-Path `$tempInstaller) -and (Get-Item `$tempInstaller).Length -gt 1000) {
+                    # Pre-validate AST syntax of downloaded installer before exiting!
+                    `$astErr = `$null
+                    [System.Management.Automation.Language.Parser]::ParseFile(`$tempInstaller, [ref]`$null, [ref]`$astErr) | Out-Null
+                    if (-not `$astErr -or `$astErr.Count -eq 0) {
+                        `$downloadSuccess = `$true
+                        break
+                    }
                 }
             } catch {}
         }
 
         if (`$downloadSuccess) {
-            `$procArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$tempInstaller, '-ServerUrl', `$baseHost, '-Token', '$Token')
+            `$procArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$tempInstaller, '-ServerUrl', `$baseHost, '-Token', `$Token)
             Start-Process -FilePath "powershell.exe" -ArgumentList `$procArgs -WindowStyle Hidden
             exit
         }
     } catch {
-        try {
             `$failPayload = @{
                 deviceId = `$DeviceId
                 status = 'FAILED'
@@ -789,7 +794,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.8.7"
+        Update-AgentService "2.8.8"
         return
     }
 
@@ -1775,7 +1780,14 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                     `$_.IPAddress -notlike '127.*' -and 
                     `$_.IPAddress -notlike '169.254.*' -and 
                     `$_.State -ne 'Unreachable'
-                } | Select-Object -Property @{N='ip';E={`$_.IPAddress}}, @{N='mac';E={`$_.LinkLayerAddress.Replace('-', ':').ToUpper()}}
+                } | ForEach-Object {
+                    if (`$_.IPAddress -and `$_.LinkLayerAddress) {
+                        @{
+                            ip = `$_.IPAddress.ToString()
+                            mac = `$_.LinkLayerAddress.ToString().Replace('-', ':').ToUpper()
+                        }
+                    }
+                }
             } catch { @() })
         }
 
@@ -2266,7 +2278,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.8.7"
+    agentVersion = "2.8.8"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

@@ -200,7 +200,11 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     timeout_threshold = max(75, dev_interval * 2 + 15)
     
     if is_agentless:
-        is_online = (d.power_status == PowerStatus.ON or str(d.power_status).lower() in ["on", "powerstatus.on"])
+        is_online = (
+            d.power_status == PowerStatus.ON or 
+            str(d.power_status).lower() in ["on", "powerstatus.on"] or
+            (sec_since_last_seen <= 300)
+        )
     else:
         is_online = (sec_since_last_seen <= timeout_threshold)
     
@@ -462,6 +466,30 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
     clean_mac = re.sub(r'[^A-F0-9]', '', (mac or '').upper())
     formatted_mac = ":".join([clean_mac[i:i+2] for i in range(0, len(clean_mac), 2)]) if len(clean_mac) == 12 else mac
     suggested_cmd = f"(Get-NetNeighbor -IPAddress {ip}).LinkLayerAddress | Set-Clipboard"
+
+    # If device is confirmed online or found, sync DB record immediately so UI flips to Online
+    if is_online or formatted_mac:
+        try:
+            lookup_dev_conds = []
+            if ip:
+                lookup_dev_conds.append(Device.ip_address == ip)
+            if formatted_mac:
+                lookup_dev_conds.append(Device.mac_address == formatted_mac)
+            if lookup_dev_conds:
+                db_res = await db.execute(select(Device).where(or_(*lookup_dev_conds)))
+                found_dev = db_res.scalars().first()
+                if found_dev:
+                    if is_online:
+                        found_dev.power_status = PowerStatus.ON
+                        found_dev.agent_status = AgentStatus.CONNECTED
+                    found_dev.last_seen = datetime.utcnow()
+                    if formatted_mac and (not found_dev.mac_address or found_dev.mac_address == "00:00:00:00:00:00"):
+                        found_dev.mac_address = formatted_mac
+                    await db.commit()
+                    await db.refresh(found_dev)
+                    await ws_manager.broadcast_event("device.updated", format_device_summary(found_dev))
+        except Exception as upd_err:
+            print(f"[Probe] Error updating device online state in DB: {upd_err}")
 
     if formatted_mac:
         return {
