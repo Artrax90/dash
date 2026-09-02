@@ -179,57 +179,32 @@ class SchedulerService:
                         )
                         if is_agentless:
                             # Thin clients have no background agent.
-                            # Determine reachability through multiple layers:
-                            # 1. Fleet ARP Cache (Windows agents on LAN reporting neighbor table)
-                            # 2. Fast ICMP ping (2.0s timeout)
-                            # 3. Common TCP ports (RDP 3389, HTTP 80, HTTPS 443, SSH 22, Web 8080, VNC 5900, Print 9100)
-                            # 4. Host Kernel ARP table (/proc/net/arp)
+                            # Determine reachability through active network probing:
+                            # 1. Fast ICMP Ping (1.2s timeout)
+                            # 2. Common TCP ports (RDP 3389, HTTP 80, HTTPS 443, SSH 22, Web 8080, VNC 5900)
                             if dev.ip_address:
                                 ping_ok = False
-                                from backend.app.api.v1.agents import fleet_arp_cache
                                 
-                                # Layer 1: Fleet ARP Cache
-                                c_info = fleet_arp_cache.get(dev.ip_address)
-                                if c_info and isinstance(c_info, dict) and c_info.get("mac"):
-                                    ts = c_info.get("timestamp", 0)
-                                    import time
-                                    if (time.time() - ts) < 600:
-                                        ping_ok = True
+                                # Layer 1: Fast ICMP Ping
+                                try:
+                                    ping_cmd = ["ping", "-n", "1", "-w", "600", dev.ip_address] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", dev.ip_address]
+                                    proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                                    rc = await asyncio.wait_for(proc.wait(), timeout=1.4)
+                                    ping_ok = (rc == 0)
+                                except Exception:
+                                    pass
 
-                                # Layer 2: ICMP Ping
+                                # Layer 2: Common TCP ports if ICMP is blocked
                                 if not ping_ok:
-                                    try:
-                                        ping_cmd = ["ping", "-n", "1", "-w", "800", dev.ip_address] if os.name == "nt" else ["ping", "-c", "1", "-W", "2", dev.ip_address]
-                                        proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                                        rc = await asyncio.wait_for(proc.wait(), timeout=2.2)
-                                        ping_ok = (rc == 0)
-                                    except Exception:
-                                        pass
-
-                                # Layer 3: Common TCP ports
-                                if not ping_ok:
-                                    for p in [3389, 80, 443, 22, 8080, 5900, 8008, 9100, 161]:
+                                    for p in [3389, 80, 443, 22, 8080, 5900]:
                                         try:
-                                            _, writer = await asyncio.wait_for(asyncio.open_connection(dev.ip_address, p), timeout=0.35)
+                                            _, writer = await asyncio.wait_for(asyncio.open_connection(dev.ip_address, p), timeout=0.3)
                                             writer.close()
                                             await writer.wait_closed()
                                             ping_ok = True
                                             break
                                         except Exception:
                                             pass
-
-                                # Layer 4: Check Linux Kernel ARP table
-                                if not ping_ok and os.path.exists("/proc/net/arp"):
-                                    try:
-                                        with open("/proc/net/arp", "r") as f:
-                                            for line in f:
-                                                parts = line.split()
-                                                if len(parts) >= 4 and parts[0] == dev.ip_address:
-                                                    if parts[3] not in ["00:00:00:00:00:00", "00-00-00-00-00-00"]:
-                                                        ping_ok = True
-                                                        break
-                                    except Exception:
-                                        pass
 
                                 if ping_ok:
                                     dev.last_seen = now_utc
@@ -241,8 +216,8 @@ class SchedulerService:
                                     status_changed = True
                                 else:
                                     sec_since_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
-                                    # Don't drop to OFF unless unreachable for > 10 minutes (600s)
-                                    if dev.power_status == PowerStatus.ON and sec_since_seen > 600:
+                                    # Fast offline switch: if unreachable for > 30 seconds, mark device as OFF
+                                    if dev.power_status == PowerStatus.ON and sec_since_seen > 30:
                                         dev.power_status = PowerStatus.OFF
                                         dev.agent_status = AgentStatus.DISCONNECTED
                                         status_changed = True

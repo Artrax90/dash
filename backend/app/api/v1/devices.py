@@ -200,14 +200,10 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     timeout_threshold = max(75, dev_interval * 2 + 15)
     
     if is_agentless:
-        c_info = fleet_arp_cache.get(d.ip_address) if d.ip_address else None
-        fleet_recent = bool(c_info and isinstance(c_info, dict) and (time.time() - c_info.get("timestamp", 0)) < 600)
-        is_online = (
-            d.power_status == PowerStatus.ON or 
-            str(d.power_status).lower() in ["on", "powerstatus.on"] or
-            (sec_since_last_seen <= 300) or
-            fleet_recent
-        )
+        if d.power_status == PowerStatus.OFF or str(d.power_status).lower() in ["off", "powerstatus.off"]:
+            is_online = False
+        else:
+            is_online = (sec_since_last_seen <= 45)
     else:
         is_online = (sec_since_last_seen <= timeout_threshold)
     
@@ -329,22 +325,32 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
 
     from backend.app.api.v1.agents import fleet_arp_cache
 
-    # Strategy 0: Check fleet neighbor cache populated by active Windows agents
+    # 1. Active Reachability Probe (ICMP Ping)
+    try:
+        ping_cmd = ["ping", "-n", "1", "-w", "600", ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", ip]
+        proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+        rc = await asyncio.wait_for(proc.wait(), timeout=1.2)
+        if rc == 0:
+            is_online = True
+    except Exception:
+        pass
+
+    # 2. If ICMP blocked, test common TCP ports (3389 RDP, 80 HTTP, 443 HTTPS, 22 SSH, 8080 Web, 5900 VNC)
+    if not is_online:
+        for p in [3389, 80, 443, 22, 8080, 5900]:
+            try:
+                _, writer = await asyncio.wait_for(asyncio.open_connection(ip, p), timeout=0.3)
+                writer.close()
+                await writer.wait_closed()
+                is_online = True
+                break
+            except Exception:
+                pass
+
+    # Strategy 0: Check fleet neighbor cache for MAC address resolution
     cached_info = fleet_arp_cache.get(ip)
     if cached_info and isinstance(cached_info, dict) and cached_info.get("mac"):
         mac = cached_info.get("mac")
-        is_online = True
-
-    # 1. Trigger local network activity
-    if not mac:
-        try:
-            ping_cmd = ["ping", "-n", "1", "-w", "500", ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", ip]
-            proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-            rc = await asyncio.wait_for(proc.wait(), timeout=1.0)
-            if rc == 0:
-                is_online = True
-        except Exception:
-            pass
 
     # Strategy 1: Local PowerShell Get-NetNeighbor (Windows / Local Host)
     if not mac:
@@ -352,17 +358,16 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
         ps_bin = shutil.which("powershell") or shutil.which("pwsh") or ("powershell.exe" if os.name == "nt" else None)
         if ps_bin:
             try:
-                ps_script = f"Test-Connection -ComputerName {ip} -Count 1 -Quiet | Out-Null; (Get-NetNeighbor -IPAddress {ip} -ErrorAction SilentlyContinue | Where-Object {{ $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }}).LinkLayerAddress | Select-Object -First 1"
+                ps_script = f"(Get-NetNeighbor -IPAddress {ip} -ErrorAction SilentlyContinue | Where-Object {{ $_.LinkLayerAddress -and $_.LinkLayerAddress -ne '00-00-00-00-00-00' }}).LinkLayerAddress | Select-Object -First 1"
                 proc = await asyncio.create_subprocess_exec(
                     ps_bin, "-NoProfile", "-NonInteractive", "-Command", ps_script,
                     stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
                 )
-                out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.5)
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=2.0)
                 text = out.decode("utf-8", errors="ignore").strip()
                 m = re.search(r'([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})', text)
                 if m:
                     mac = m.group(1).replace("-", ":").upper()
-                    is_online = True
             except Exception as e:
                 print(f"Error executing Get-NetNeighbor: {e}")
 
@@ -376,7 +381,6 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
                         candidate = parts[3]
                         if candidate and candidate != "00:00:00:00:00:00" and len(candidate.replace(":", "").replace("-", "")) == 12:
                             mac = candidate.replace("-", ":").upper()
-                            is_online = True
                             break
         except Exception as e:
             print(f"Error reading /proc/net/arp: {e}")
@@ -390,7 +394,6 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             m = re.search(r'([0-9a-fA-F]{2}(?::[0-9a-fA-F]{2}){5})', text)
             if m:
                 mac = m.group(1).upper()
-                is_online = True
         except Exception:
             pass
 
@@ -403,7 +406,6 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             m = re.search(r'([0-9a-fA-F]{2}(?:[:-][0-9a-fA-F]{2}){5})', text)
             if m:
                 mac = m.group(1).replace("-", ":").upper()
-                is_online = True
         except Exception:
             pass
 
@@ -414,14 +416,12 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             probe_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
             probe_msg = f"WM_CMD:PROBE_IP:{ip}".encode("utf-8")
             
-            # Send to LAN broadcast addresses
             for b_ip in ["255.255.255.255", "192.168.1.255", "192.168.0.255", "10.0.0.255", "172.16.255.255"]:
                 try:
                     probe_sock.sendto(probe_msg, (b_ip, 48123))
                 except Exception:
                     pass
             
-            # Send directly to all registered device IPs and queue in pending_device_commands
             from backend.app.api.v1.agents import pending_device_commands
             dev_res = await db.execute(select(Device).where(Device.ip_address.isnot(None)))
             for dev_row in dev_res.scalars().all():
@@ -439,13 +439,11 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
                     })
             probe_sock.close()
 
-            # Await fast agent response in fleet_arp_cache
-            for _ in range(15):
+            for _ in range(12):
                 await asyncio.sleep(0.1)
                 c_info = fleet_arp_cache.get(ip)
                 if c_info and isinstance(c_info, dict) and c_info.get("mac"):
                     mac = c_info.get("mac")
-                    is_online = True
                     break
         except Exception as e:
             print(f"Error in Agent Relay UDP probe: {e}")
@@ -470,38 +468,45 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
     formatted_mac = ":".join([clean_mac[i:i+2] for i in range(0, len(clean_mac), 2)]) if len(clean_mac) == 12 else mac
     suggested_cmd = f"(Get-NetNeighbor -IPAddress {ip}).LinkLayerAddress | Set-Clipboard"
 
-    # If device is confirmed online or found, sync DB record immediately so UI flips to Online
-    if is_online or formatted_mac:
-        try:
-            lookup_dev_conds = []
-            if ip:
-                lookup_dev_conds.append(Device.ip_address == ip)
-            if formatted_mac:
-                lookup_dev_conds.append(Device.mac_address == formatted_mac)
-            if lookup_dev_conds:
-                db_res = await db.execute(select(Device).where(or_(*lookup_dev_conds)))
-                found_dev = db_res.scalars().first()
-                if found_dev:
-                    if is_online:
-                        found_dev.power_status = PowerStatus.ON
-                        found_dev.agent_status = AgentStatus.CONNECTED
+    # Sync DB record immediately: set ON if ping responded, or OFF if ping failed
+    try:
+        lookup_dev_conds = []
+        if ip:
+            lookup_dev_conds.append(Device.ip_address == ip)
+        if formatted_mac:
+            lookup_dev_conds.append(Device.mac_address == formatted_mac)
+        if lookup_dev_conds:
+            db_res = await db.execute(select(Device).where(or_(*lookup_dev_conds)))
+            found_dev = db_res.scalars().first()
+            if found_dev:
+                if is_online:
+                    found_dev.power_status = PowerStatus.ON
+                    found_dev.agent_status = AgentStatus.CONNECTED
                     found_dev.last_seen = datetime.utcnow()
-                    if formatted_mac and (not found_dev.mac_address or found_dev.mac_address == "00:00:00:00:00:00"):
-                        found_dev.mac_address = formatted_mac
-                    await db.commit()
-                    await db.refresh(found_dev)
-                    await ws_manager.broadcast_event("device.updated", format_device_summary(found_dev))
-        except Exception as upd_err:
-            print(f"[Probe] Error updating device online state in DB: {upd_err}")
+                else:
+                    found_dev.power_status = PowerStatus.OFF
+                    found_dev.agent_status = AgentStatus.DISCONNECTED
+                    if ip in fleet_arp_cache:
+                        del fleet_arp_cache[ip]
 
-    if formatted_mac:
+                if formatted_mac and (not found_dev.mac_address or found_dev.mac_address == "00:00:00:00:00:00"):
+                    found_dev.mac_address = formatted_mac
+                await db.commit()
+                await db.refresh(found_dev)
+                await ws_manager.broadcast_event("device.updated", format_device_summary(found_dev))
+    except Exception as upd_err:
+        print(f"[Probe] Error updating device online state in DB: {upd_err}")
+
+    status_msg = f"Устройство доступно в сети (Online). MAC: {formatted_mac}" if is_online else f"Устройство не отвечает на запросы (Offline). MAC: {formatted_mac or 'не определен'}"
+
+    if formatted_mac or is_online:
         return {
             "success": True,
             "online": is_online,
             "ip": ip,
             "mac": formatted_mac,
             "hostname": hostname,
-            "message": f"Устройство обнаружено в сети! MAC-адрес: {formatted_mac}",
+            "message": status_msg,
             "suggestedCommand": suggested_cmd
         }
     else:
@@ -511,8 +516,7 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             "ip": ip,
             "mac": None,
             "hostname": hostname,
-            "message": "Устройство не ответило в ARP-таблице (сервер в Docker или устройство выключено).",
-            "suggestedCommand": suggested_cmd
+            "message": status_msg,
         }
 
 @router.api_route("/report-mac", methods=["GET", "POST"])
