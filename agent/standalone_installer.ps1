@@ -759,13 +759,9 @@ function Update-AgentService([string]`$targetVer = "2.9.2") {
                     try { `$global:agentMutex.Dispose() } catch {}
                 }
 
-                # Start updated service
+                # Start updated service with 2-second detached delay to guarantee clean mutex release
                 `$launcherVbs = Join-Path '$InstallDir' "launcher.vbs"
-                if (Test-Path `$launcherVbs) {
-                    Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$launcherVbs`"" -WindowStyle Hidden
-                } else {
-                    Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$servicePath`"") -WindowStyle Hidden
-                }
+                Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command', "Start-Sleep -Seconds 2; if (Test-Path `'$launcherVbs`') { Start-Process -FilePath `"`$env:SystemRoot\System32\wscript.exe`" -ArgumentList `'`"$launcherVbs`"`' -WindowStyle Hidden } else { Start-Process -FilePath powershell.exe -ArgumentList @(`'-NoProfile`', `'-WindowStyle`', `'Hidden`', `'-ExecutionPolicy`', `'Bypass`', `'-File`', `'`"$servicePath`"`') -WindowStyle Hidden }") -WindowStyle Hidden
                 exit 0
             }
         }
@@ -776,7 +772,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.9.1"
+        Update-AgentService "2.9.2"
         return
     }
 
@@ -1836,11 +1832,6 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                         Execute-PowerCommand `$cmd.action `$false `$cmd
                     }
                 }
-            }
-            # Auto update check: if server announces newer version, auto-trigger update!
-            if (`$respObj -and `$respObj.latestVersion -and (`$respObj.latestVersion -ne `$AgentVersion)) {
-                Update-AgentService (`$respObj.latestVersion)
-                return `$true
             }
             return `$true
         }

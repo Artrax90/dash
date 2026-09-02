@@ -202,8 +202,8 @@ class AlertEngine:
                 return
                 
             # Anti-flapping: ignore transient blips if device was marked ONLINE < 60s ago
-            # unless it is an explicit shutdown event from the OS
-            is_explicit = any(k in reason.upper() for k in ["ЗАВЕРШЕНИЕ", "SHUTDOWN", "ВЫКЛЮЧЕН ЛОКАЛЬНО"])
+            # unless it is an explicit shutdown event from the OS or watchdog timeout
+            is_explicit = any(k in reason.upper() for k in ["ЗАВЕРШЕНИЕ", "SHUTDOWN", "ВЫКЛЮЧЕН", "ПРЕРВАНА", "НЕТ СИГНАЛОВ"])
             if not is_explicit and tracker.get("last_online_time", 0) > 0 and (now_ts - tracker.get("last_online_time", 0) < 60):
                 return
                 
@@ -236,6 +236,10 @@ class AlertEngine:
                 created_at=now_utc
             )
             session.add(alert_obj)
+            try:
+                await session.commit()
+            except Exception as c_err:
+                print(f"[AlertEngine Commit Error] {c_err}")
             
             alert_dict = {
                 "id": alert_id,
@@ -324,6 +328,10 @@ class AlertEngine:
                     "state": "Resolved",
                     "resolvedAt": now_utc.isoformat() + "Z"
                 })
+            try:
+                await session.commit()
+            except Exception as c_err:
+                print(f"[AlertEngine Resolve Commit Error] {c_err}")
                 
             for a in alerts_db:
                 if a.get("deviceId") == device.id and a.get("type") in ["OFFLINE", "AGENT_DISCONNECTED"] and a.get("state") == "Open":
