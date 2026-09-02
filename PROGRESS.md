@@ -261,12 +261,15 @@
 
 | **2026-09-02 15:05** | Backend & Alerts | [`backend/app/services/alert_engine.py`](file:///d:/antigravity/dash/backend/app/services/alert_engine.py), [`backend/app/services/scheduler_service.py`](file:///d:/antigravity/dash/backend/app/services/scheduler_service.py), [`backend/app/api/v1/agents.py`](file:///d:/antigravity/dash/backend/app/api/v1/agents.py), [`backend/app/api/v1/telegram.py`](file:///d:/antigravity/dash/backend/app/api/v1/telegram.py), [`agent/standalone_installer.ps1`](file:///d:/antigravity/dash/agent/standalone_installer.ps1), [`src/App.tsx`](file:///d:/antigravity/dash/src/App.tsx), [`data/telegram_config.json`](file:///d:/antigravity/dash/data/telegram_config.json) | **Исправление отставания времени (-3 ч) в Telegram и внедрение алертов при выключении ПК (Offline / Shutdown)**: 1. **Коррекция часового пояса в Telegram**: устранена причина отставания времени на 3 часа (сервер в Docker отдавал UTC вместо UTC+3). В `alert_engine.py` и `telegram_config.json` добавлена поддержка таймзоны (`Europe/Moscow` / UTC+3 через `ZoneInfo`), а в интерфейсе `TelegramPage` добавлен выпадающий список выбора часового пояса уведомлений. 2. **Алертинг при выключении ПК (`OFFLINE`)**: в `scheduler_service.py` и `alert_engine.py` реализован механизм `trigger_device_offline`: при пропуске Heartbeat > 25 сек выполняется активная сокет-проба портов (48123, 445, 135, 3389) — если ПК выключен, сервер мгновенно переводит его в `OFF`, создает `AlertModel (OFFLINE)`, отправляет алерт в Telegram (`🔌 ПОТЕРЯ СВЯЗИ / ПК ВЫКЛЮЧЕН`) и пушит в Web UI. 3. **Мгновенный сигнал при завершении Windows**: в службу Windows-агента (`standalone_installer.ps1`) добавлен блок `finally`, который при выключении ОС отправляет моментальный HTTP POST `/api/v1/agents/power-event` с действием `SHUTDOWN`. 4. **Восстановление связи (`ONLINE`)**: при включении ПК и первом Heartbeat автоматически закрывается алерт `OFFLINE` (`state: Resolved`) и рассылается уведомление `🟢 СВЯЗЬ ВОССТАНОВЛЕНА / ПК ВКЛЮЧЕН`. |
 
+| **2026-09-02 15:09** | Linux Agent | [`agent/agent_standalone.py`](file:///d:/antigravity/dash/agent/agent_standalone.py), [`agent/install_linux.sh`](file:///d:/antigravity/dash/agent/install_linux.sh), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Синхронизация выключения для Linux-агента (systemd SIGTERM / SIGINT)**: 1. **Перехват сигналов завершения Linux**: в `agent_standalone.py` проверена и усилена обработка сигналов `signal.SIGTERM` и `signal.SIGINT` — при штатном завершении работы Linux (`systemctl stop`, `shutdown`, `reboot`) агент моментально шлет `POST /api/v1/agents/power-event` с действием `SHUTDOWN`, `deviceId` и `hostname`; 2. **Связка с сервером**: серверный обработчик `/power-event` сразу запускает `alert_engine.trigger_device_offline()`, отправляя алерт потери связи в веб и Telegram; 3. **Таймаут остановки systemd**: служба настроена с `TimeoutStopSec=5`, что дает агенту запас времени на гарантированную отправку сигнала до отключения сетевого стека; 4. Версия инсталлера в `install_linux.sh` синхронизирована до v2.9.2. |
+
 ---
 
 ## 🔜 Следующие шаги
 1. Выполнить `git pull` на сервере.
-2. Проверить, что время в сообщениях Telegram совпадает с реальным местным временем (15:xx).
-3. Проверить отправку алерта `🔌 ПОТЕРЯ СВЯЗИ / ПК ВЫКЛЮЧЕН` при выключении ПК и `🟢 СВЯЗЬ ВОССТАНОВЛЕНА` при его включении.
+2. Проверить отправку алерта `🔌 ПОТЕРЯ СВЯЗИ / ПК ВЫКЛЮЧЕН` при выключении как Windows, так и Linux станций.
+3. Проверить, что время в сообщениях Telegram совпадает с реальным местным временем.
+
 
 
 

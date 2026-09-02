@@ -1364,11 +1364,12 @@ def main():
         print("\n[*] Detected system shutdown / termination signal. Reporting to server...")
         try:
             http_post(f"{server_base}/agents/power-event", {
-                "deviceId": cfg["device_id"],
+                "deviceId": cfg.get("device_id", ""),
+                "hostname": socket.gethostname(),
                 "action": "SHUTDOWN",
-                "initiator": "Локальный пользователь (Завершение работы ОС)",
+                "initiator": "Локальный пользователь (systemd / Завершение ОС)",
                 "source": "LOCAL",
-                "details": "Локальное выключение через ОС"
+                "details": "Остановка службы systemd / Завершение работы Linux"
             })
         except Exception:
             pass
