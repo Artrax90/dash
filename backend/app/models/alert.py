@@ -61,3 +61,7 @@ class RdpSessionModel(Base):
     disconnected_since = Column(DateTime, nullable=True)
 
     device = relationship("Device", back_populates="sessions")
+
+# Backward compatibility aliases
+Alert = AlertModel
+AlertPolicy = AlertPolicyModel

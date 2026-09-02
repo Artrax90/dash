@@ -263,12 +263,14 @@
 
 | **2026-09-02 15:09** | Linux Agent | [`agent/agent_standalone.py`](file:///d:/antigravity/dash/agent/agent_standalone.py), [`agent/install_linux.sh`](file:///d:/antigravity/dash/agent/install_linux.sh), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Синхронизация выключения для Linux-агента (systemd SIGTERM / SIGINT)**: 1. **Перехват сигналов завершения Linux**: в `agent_standalone.py` проверена и усилена обработка сигналов `signal.SIGTERM` и `signal.SIGINT` — при штатном завершении работы Linux (`systemctl stop`, `shutdown`, `reboot`) агент моментально шлет `POST /api/v1/agents/power-event` с действием `SHUTDOWN`, `deviceId` и `hostname`; 2. **Связка с сервером**: серверный обработчик `/power-event` сразу запускает `alert_engine.trigger_device_offline()`, отправляя алерт потери связи в веб и Telegram; 3. **Таймаут остановки systemd**: служба настроена с `TimeoutStopSec=5`, что дает агенту запас времени на гарантированную отправку сигнала до отключения сетевого стека; 4. Версия инсталлера в `install_linux.sh` синхронизирована до v2.9.2. |
 
+| **2026-09-02 15:28** | Backend / Fix | [`backend/app/models/alert.py`](file:///d:/antigravity/dash/backend/app/models/alert.py), [`backend/app/services/alert_engine.py`](file:///d:/antigravity/dash/backend/app/services/alert_engine.py), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Устранение ошибки импорта `cannot import name 'Alert' from 'backend.app.models.alert'`**: 1. **Диагностика**: классы в `models/alert.py` называются `AlertModel` и `AlertPolicyModel`; при вызове `trigger_device_online` происходила попытка импорта `from backend.app.models.alert import Alert as AlertModel`, что приводило к `ImportError`; 2. **Исправление**: в `alert_engine.py` импорты исправлены на `AlertModel, AlertPolicyModel`, а в `models/alert.py` добавлены обратные псевдонимы `Alert = AlertModel`, `AlertPolicy = AlertPolicyModel` для гарантированной совместимости; 3. Протестировано компиляцией в Python. |
+
 ---
 
 ## 🔜 Следующие шаги
 1. Выполнить `git pull` на сервере.
-2. Проверить отправку алерта `🔌 ПОТЕРЯ СВЯЗИ / ПК ВЫКЛЮЧЕН` при выключении как Windows, так и Linux станций.
-3. Проверить, что время в сообщениях Telegram совпадает с реальным местным временем.
+2. Проверить работу алертов выключения и включения ПК.
+
 
 
 

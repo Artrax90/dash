@@ -179,7 +179,7 @@ class AlertEngine:
         Record and dispatch device OFFLINE alert to DB, Telegram, and WebSocket.
         """
         try:
-            from backend.app.models.alert import Alert as AlertModel, AlertPolicy as AlertPolicyModel
+            from backend.app.models.alert import AlertModel, AlertPolicyModel
             from backend.app.api.v1.alerts import alerts_db
             from backend.app.core.ws import ws_manager
             from sqlalchemy import select
@@ -253,7 +253,7 @@ class AlertEngine:
         Auto-resolve open OFFLINE alerts, dispatch ONLINE alert if policy enables it.
         """
         try:
-            from backend.app.models.alert import Alert as AlertModel, AlertPolicy as AlertPolicyModel
+            from backend.app.models.alert import AlertModel, AlertPolicyModel
             from backend.app.api.v1.alerts import alerts_db
             from backend.app.core.ws import ws_manager
             from sqlalchemy import select
