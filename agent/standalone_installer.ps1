@@ -389,7 +389,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.8.9"
+    agentVersion = "2.9.0"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -690,7 +690,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.8.9'
+`$AgentVersion = '2.9.0'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
@@ -709,9 +709,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.8.9") {
+function Update-AgentService([string]`$targetVer = "2.9.0") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.8.9"
+        `$targetVer = "2.9.0"
     }
     try {
         # 1. Report update in progress
@@ -720,14 +720,14 @@ function Update-AgentService([string]`$targetVer = "2.8.9") {
             status = 'UPDATING'
             previousVersion = `$AgentVersion
             targetVersion = `$targetVer
-            details = "Начало загрузки и применения обновления v`$targetVer"
+            details = "Загрузка обновления службы v`$targetVer"
         }
         `$json = `$updPayload | ConvertTo-Json -Depth 3 -Compress
         `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
         `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
-        `$req.Timeout = 5000
+        `$req.Timeout = 4000
         `$stream = `$req.GetRequestStream()
         `$stream.Write(`$bytes, 0, `$bytes.Length)
         `$stream.Close()
@@ -736,60 +736,39 @@ function Update-AgentService([string]`$targetVer = "2.8.9") {
     } catch {}
 
     try {
-        `$tempInstaller = Join-Path `$env:TEMP "wm_update_`$targetVer.ps1"
         `$wc = New-Object System.Net.WebClient
         `$wc.Encoding = [System.Text.Encoding]::UTF8
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
         
         `$baseHost = `$ServerUrl -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
-        `$dlUrls = @(
-            "`$baseHost/install.ps1",
-            "`$baseHost/api/v1/install.ps1",
-            "`$baseHost/api/v1/agents/install.ps1",
-            "`$baseHost/api/v1/agents/installer.ps1",
-            "`$baseHost/installer.ps1"
-        )
-        `$downloadSuccess = `$false
-        foreach (`$u in `$dlUrls) {
-            try {
-                `$wc.DownloadFile(`$u, `$tempInstaller)
-                if ((Test-Path `$tempInstaller) -and (Get-Item `$tempInstaller).Length -gt 1000) {
-                    # Pre-validate AST syntax of downloaded installer before exiting!
-                    `$astErr = `$null
-                    [System.Management.Automation.Language.Parser]::ParseFile(`$tempInstaller, [ref]`$null, [ref]`$astErr) | Out-Null
-                    if (-not `$astErr -or `$astErr.Count -eq 0) {
-                        `$downloadSuccess = `$true
-                        break
-                    }
-                }
-            } catch {}
-        }
+        `$serviceUrl = "`$baseHost/api/v1/agents/service-script?deviceId=`$DeviceId&mac=`$DeviceMac"
+        `$newCode = `$wc.DownloadString(`$serviceUrl)
 
-        if (`$downloadSuccess) {
-            `$procArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', `$tempInstaller, '-ServerUrl', `$baseHost, '-Token', `$Token)
-            Start-Process -FilePath "powershell.exe" -ArgumentList `$procArgs -WindowStyle Hidden
-            exit
-        }
-    } catch {
-            `$failPayload = @{
-                deviceId = `$DeviceId
-                status = 'FAILED'
-                previousVersion = `$AgentVersion
-                targetVersion = `$targetVer
-                details = "Ошибка загрузки скрипта обновления: " + `$_.Exception.Message
+        if (`$newCode -and `$newCode.Length -gt 1000) {
+            # AST verification
+            `$tokens = `$null
+            `$astErrs = `$null
+            [System.Management.Automation.Language.Parser]::ParseInput(`$newCode, [ref]`$tokens, [ref]`$astErrs) | Out-Null
+            if (-not `$astErrs -or `$astErrs.Count -eq 0) {
+                `$servicePath = Join-Path '$InstallDir' "run_service.ps1"
+                [System.IO.File]::WriteAllText(`$servicePath, `$newCode, (New-Object System.Text.UTF8Encoding(`$true)))
+
+                # Release mutex before starting new instance
+                if (`$global:agentMutex) {
+                    try { `$global:agentMutex.ReleaseMutex() } catch {}
+                    try { `$global:agentMutex.Dispose() } catch {}
+                }
+
+                # Start updated service
+                `$launcherVbs = Join-Path '$InstallDir' "launcher.vbs"
+                if (Test-Path `$launcherVbs) {
+                    Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$launcherVbs`"" -WindowStyle Hidden
+                } else {
+                    Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$servicePath`"") -WindowStyle Hidden
+                }
+                exit 0
             }
-            `$json = `$failPayload | ConvertTo-Json -Depth 3 -Compress
-            `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
-            `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
-            `$req.Method = 'POST'
-            `$req.ContentType = 'application/json; charset=utf-8'
-            `$req.Timeout = 10000
-            `$stream = `$req.GetRequestStream()
-            `$stream.Write(`$bytes, 0, `$bytes.Length)
-            `$stream.Close()
-            `$resp = `$req.GetResponse()
-            `$resp.Close()
-        } catch {}
+        }
     }
 }
 
@@ -797,7 +776,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.8.9"
+        Update-AgentService "2.9.0"
         return
     }
 
@@ -2006,15 +1985,16 @@ WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Byp
             $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
             $triggerBoot = New-ScheduledTaskTrigger -AtStartup
             $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
+            $triggerRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
             $taskPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
             $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
-            Register-ScheduledTask -TaskName "WorkstationManagerAgent" -Action $taskAction -Trigger @($triggerBoot, $triggerLogon) -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
+            Register-ScheduledTask -TaskName "WorkstationManagerAgent" -Action $taskAction -Trigger @($triggerBoot, $triggerLogon, $triggerRepeat) -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
             $taskCreated = $true
-            Write-Host "      [OK] Системная служба успешно зарегистрирована (SYSTEM / Фоновый режим без окон)" -ForegroundColor Green
+            Write-Host "      [OK] Системная служба успешно зарегистрирована (SYSTEM / Фоновый режим / Сторож 5 мин)" -ForegroundColor Green
         } catch {
             $trCmd = "`"$env:SystemRoot\System32\wscript.exe`" `"$launcherVbs`""
-            & schtasks.exe /create /tn "WorkstationManagerAgent" /tr $trCmd /sc ONSTART /ru "SYSTEM" /f 2>&1 | Out-Null
-            Write-Host "      [OK] Системная задача создана (schtasks ONSTART)" -ForegroundColor Green
+            & schtasks.exe /create /tn "WorkstationManagerAgent" /tr $trCmd /sc MINUTE /mo 5 /ru "SYSTEM" /f 2>&1 | Out-Null
+            Write-Host "      [OK] Системная задача создана (schtasks каждые 5 мин)" -ForegroundColor Green
         }
 
         # 2. Common Startup folder for all users
@@ -2281,7 +2261,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.8.9"
+    agentVersion = "2.9.0"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
