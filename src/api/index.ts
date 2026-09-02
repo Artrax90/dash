@@ -334,6 +334,16 @@ export const devicesApi = {
     } catch {}
     return true;
   },
+  sync: async (deviceId: string): Promise<{ status: string; message: string; isOnline?: boolean }> => {
+    try {
+      const res = await fetch(`${API_BASE}/devices/${deviceId}/sync`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return { status: 'success', message: 'Сигнал немедленной синхронизации отправлен на ПК' };
+  },
   powerAction: async (
     deviceId: string,
     action: 'WAKE' | 'SHUTDOWN' | 'FORCE_SHUTDOWN' | 'REBOOT' | 'SLEEP' | 'LOGOFF',

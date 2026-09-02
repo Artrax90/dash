@@ -2719,6 +2719,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteDeviceModal, setShowDeleteDeviceModal] = useState(false);
   const [isUpdatingAgent, setIsUpdatingAgent] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Edit form states
   const [editName, setEditName] = useState('');
@@ -2907,6 +2908,28 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
     }
   };
 
+  const handleSyncDevice = async () => {
+    if (!device) return;
+    setIsSyncing(true);
+    notify(`Запрос мгновенной синхронизации отправлен на ${device.name}...`);
+    try {
+      const res = await devicesApi.sync(device.id);
+      if (res && res.message) {
+        notify(res.message);
+      }
+      setTimeout(() => {
+        loadDeviceData();
+      }, 700);
+      setTimeout(() => {
+        loadDeviceData();
+        setIsSyncing(false);
+      }, 2200);
+    } catch (e: any) {
+      setIsSyncing(false);
+      notify(`Ошибка синхронизации: ${e?.message || 'Сервер не отвечает'}`);
+    }
+  };
+
   const activeRdpSessions = sessions.filter(s => {
     const sType = String(s.type || '');
     const sName = String(s.sessionName || '');
@@ -2977,6 +3000,16 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
               title="Удаленно обновить службу агента по сети (OTA)"
             >
               {isUpdatingAgent ? 'Обновление...' : (device.isOutdated ? `Обновить агент (v${device.latestAgentVersion || '2.8.7'})` : 'Обновить агент')}
+            </Button>
+          )}
+          {!isAgentless && (
+            <Button
+              icon={<RefreshCw size={15} className={isSyncing ? 'spin' : ''} />}
+              onClick={handleSyncDevice}
+              disabled={isSyncing}
+              title="Немедленно опросить агента и синхронизировать актуальные данные с ПК без задержки"
+            >
+              {isSyncing ? 'Синхронизация...' : 'Синхронизировать'}
             </Button>
           )}
           <Button

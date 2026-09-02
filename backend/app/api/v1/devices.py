@@ -1448,6 +1448,84 @@ async def get_device_power_logs(device_id: str, db: AsyncSession = Depends(get_d
     found_logs.sort(key=lambda x: str(x.get("timestamp", "")), reverse=True)
     return found_logs[:100]
 
+@router.post("/{device_id}/sync")
+async def sync_device_state(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    """
+    Trigger instant zero-latency poll and synchronization from workstation agent.
+    Sends Direct LAN UDP trigger WM_CMD:SYNC, enqueues heartbeat command, and performs active reachability probe.
+    """
+    result = await db.execute(
+        select(Device).where(
+            (Device.id == device_id) |
+            (Device.id == device_id.upper()) |
+            (Device.hostname == device_id) |
+            (func.lower(Device.hostname) == device_id.lower())
+        )
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    dev_name = device.name or device.hostname or device.id
+    target_ip = device.ip_address
+
+    from backend.app.api.v1.agents import send_direct_lan_power_signal, queue_device_command
+
+    # 1. Send Direct LAN UDP trigger strictly to port 48123 (Zero-Latency)
+    if target_ip:
+        send_direct_lan_power_signal(
+            ip_address=target_ip,
+            action="SYNC",
+            device_id=device.id,
+            mac_address=device.mac_address,
+            hostname=device.hostname
+        )
+
+    # 2. Also broadcast trigger on subnet for robustness
+    try:
+        if target_ip and "." in target_ip:
+            b_ip = target_ip.rsplit(".", 1)[0] + ".255"
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                clean_mac = (device.mac_address or "").replace(":", "").replace("-", "").strip().upper()
+                msg = f"WM_CMD:SYNC:{device.id}:{clean_mac}:{device.hostname or ''}".encode("utf-8")
+                s.sendto(msg, (b_ip, 48123))
+    except Exception:
+        pass
+
+    # 3. Queue SYNC in pending commands as guaranteed fallback
+    queue_device_command(device.id, "SYNC", reason="Manual sync from Web UI")
+    if device.hostname and device.hostname != device.id:
+        queue_device_command(device.hostname, "SYNC", reason="Manual sync from Web UI")
+
+    # 4. Instant TCP socket reachability probe (common ports 48123, 3389, 445, 135)
+    is_live = False
+    if target_ip and target_ip not in ["127.0.0.1", "0.0.0.0"]:
+        for port in [48123, 3389, 445, 135]:
+            try:
+                probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                probe.settimeout(0.5)
+                res = probe.connect_ex((target_ip, port))
+                probe.close()
+                if res == 0:
+                    is_live = True
+                    break
+            except Exception:
+                pass
+
+    if is_live:
+        device.power_status = PowerStatus.ON
+        device.agent_status = AgentStatus.ONLINE
+        device.last_seen = datetime.utcnow()
+        await db.commit()
+        await ws_manager.broadcast_event("device.updated", format_device_summary(device))
+
+    return {
+        "status": "success",
+        "message": f"Команда немедленной синхронизации отправлена на {dev_name}",
+        "isOnline": is_live or device.power_status == PowerStatus.ON
+    }
+
 @router.post("/{device_id}/power")
 async def execute_device_power_action(device_id: str, payload: Dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)):
     """

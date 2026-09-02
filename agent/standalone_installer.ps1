@@ -780,6 +780,11 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         return
     }
 
+    if (`$act -eq 'SYNC' -or `$act -eq 'REFRESH' -or `$act -eq 'POLL' -or `$act -eq 'HEARTBEAT' -or `$act -eq 'INVENTORY') {
+        Invoke-Heartbeat `$true
+        return
+    }
+
     # Guard: Do not execute queued shutdown if computer booted less than 90 seconds ago (prevents loop on startup)
     if ((`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') -and -not `$isDirectSignal) {
         try {

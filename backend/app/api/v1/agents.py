@@ -13,6 +13,8 @@ from backend.app.models.device import Device, PowerStatus, AgentStatus, HealthSt
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
 from backend.app.models.alert import AlertModel, AlertPolicyModel
 from backend.app.ws.manager import ws_manager
+from backend.app.api.v1.alerts import alerts_db
+from backend.app.services.alert_engine import alert_engine
 
 from backend.app.core.config import settings
 

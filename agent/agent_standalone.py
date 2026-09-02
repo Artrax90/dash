@@ -1344,6 +1344,9 @@ def main():
                             if matched:
                                 if cmd_act.upper() in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
                                     threading.Thread(target=execute_agent_update, args=(server_base, cfg), daemon=True).start()
+                                elif cmd_act.upper() in ["SYNC", "REFRESH", "POLL", "HEARTBEAT", "INVENTORY"]:
+                                    threading.Thread(target=send_heartbeat, args=(server_base, cfg), daemon=True).start()
+                                    threading.Thread(target=send_inventory, args=(server_base, cfg), daemon=True).start()
                                 else:
                                     execute_power_command(cmd_act)
         except Exception:
