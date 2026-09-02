@@ -611,10 +611,34 @@ async def report_device_mac(
     }
 
 @router.post("/agentless")
-async def create_agentless_device(payload: AgentlessDeviceCreateSchema, db: AsyncSession = Depends(get_db)):
+async def create_agentless_device(payload: AgentlessDeviceCreateSchema, request: Request, db: AsyncSession = Depends(get_db)):
     """
     Registers or updates an agentless thin client device in the database for WoL and schedule management.
     """
+    raw_role = request.headers.get("X-User-Role") or ""
+    import urllib.parse
+    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+    if user_role in ["Наблюдатель", "Observer"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения и не может добавлять устройства."
+        )
+
+    # Scope validation: operator can only add devices to allowedGroups
+    x_username = request.headers.get("X-Username")
+    if x_username:
+        from backend.app.api.v1.users import load_users
+        users = load_users()
+        u = next((usr for usr in users if usr.get("username", "").lower() == x_username.strip().lower()), None)
+        if u and u.get("role") not in ["Суперадминистратор", "SuperAdmin"] and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+            allowed_groups = [g.lower().strip() for g in u.get("allowedGroups", [])]
+            target_group = (payload.group or "").lower().strip()
+            if target_group and target_group not in allowed_groups:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Отказ в доступе: вы можете добавлять устройства только в разрешенные вам группы ({', '.join(u.get('allowedGroups', []))})."
+                )
+
     clean_ip = payload.ip.strip()
     clean_mac_raw = re.sub(r'[^A-F0-9]', '', (payload.mac or '').upper())
     if len(clean_mac_raw) != 12:
@@ -1121,7 +1145,37 @@ async def get_device_processes(device_id: str, db: AsyncSession = Depends(get_db
     ]
 
 @router.put("/{device_id}")
-async def update_device(device_id: str, payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
+async def update_device(device_id: str, payload: Dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)):
+    raw_role = request.headers.get("X-User-Role") or ""
+    import urllib.parse
+    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+    if user_role in ["Наблюдатель", "Observer"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения."
+        )
+
+    # Scope validation: cannot add or change group to one outside allowedGroups
+    x_username = request.headers.get("X-Username")
+    if x_username:
+        from backend.app.api.v1.users import load_users
+        users = load_users()
+        u = next((usr for usr in users if usr.get("username", "").lower() == x_username.strip().lower()), None)
+        if u and u.get("role") not in ["Суперадминистратор", "SuperAdmin"] and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+            allowed_groups = [g.lower().strip() for g in u.get("allowedGroups", [])]
+            new_groups = []
+            if "groups" in payload and isinstance(payload["groups"], list):
+                new_groups = [str(g).strip().lower() for g in payload["groups"] if str(g).strip()]
+            elif "group" in payload and payload["group"]:
+                new_groups = [str(payload["group"]).strip().lower()]
+            
+            for ng in new_groups:
+                if ng not in allowed_groups:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"Отказ в доступе: вы не можете привязать группу '{ng}', так как она не входит в вашу зону ответственности."
+                    )
+
     result = await db.execute(select(Device).where(Device.id == device_id))
     device = result.scalar_one_or_none()
     if not device:
@@ -1151,7 +1205,16 @@ async def update_device(device_id: str, payload: Dict[str, Any], db: AsyncSessio
     return format_device_summary(device)
 
 @router.delete("/{device_id}")
-async def delete_device(device_id: str, db: AsyncSession = Depends(get_db)):
+async def delete_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+    raw_role = request.headers.get("X-User-Role") or ""
+    import urllib.parse
+    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+    if user_role and user_role not in ["Суперадминистратор", "SuperAdmin", "Администратор парка"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: удаление рабочих станций разрешено только администраторам."
+        )
+
     result = await db.execute(
         select(Device).where(
             (Device.id == device_id) | 
@@ -1413,34 +1476,6 @@ async def toggle_maintenance(device_id: str, db: AsyncSession = Depends(get_db))
         await db.commit()
         return {"deviceId": device.id, "maintenance": device.maintenance_mode}
     return {"deviceId": device_id, "maintenance": True}
-
-@router.delete("/{device_id}")
-async def delete_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
-    raw_role = request.headers.get("X-User-Role") or ""
-    import urllib.parse
-    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
-    if user_role and user_role not in ["Суперадминистратор", "SuperAdmin", "Администратор парка"]:
-        raise HTTPException(
-            status_code=403,
-            detail="Отказ в доступе: удаление рабочих станций разрешено только администраторам."
-        )
-
-    result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
-    device = result.scalar_one_or_none()
-    if not device:
-        raise HTTPException(status_code=404, detail="Device not found")
-    
-    # Delete associated hardware specs and alerts
-    hw_res = await db.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == device.id))
-    hw_model = hw_res.scalar_one_or_none()
-    if hw_model:
-        await db.delete(hw_model)
-    
-    dev_id = device.id
-    await db.delete(device)
-    await db.commit()
-    await ws_manager.broadcast_event("device.deleted", {"deviceId": dev_id})
-    return {"status": "deleted", "deviceId": dev_id}
 
 @router.post("/bulk")
 async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: Request, db: AsyncSession = Depends(get_db)):

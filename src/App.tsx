@@ -914,7 +914,7 @@ function App() {
         <div className="content">
           <ErrorBoundary>
             {page === 'Dashboard' && <Dashboard onDevice={openDevice} onNavigate={handleNavigate} notify={notify} workspaceName={workspaceName} />}
-            {page === 'Devices' && <Devices onDevice={openDevice} initialFilter={deviceFilter} notify={notify} />}
+            {page === 'Devices' && <Devices onDevice={openDevice} initialFilter={deviceFilter} notify={notify} currentUser={currentUser} />}
             {page === 'Device detail' && <DeviceDetail deviceId={selectedDevice} onBack={() => navigateTo({ page: 'Devices' })} notify={notify} />}
             {page === 'Monitoring' && <Monitoring onDevice={openDevice} notify={notify} />}
             {page === 'Alerts' && <Alerts onDevice={openDevice} notify={notify} />}
@@ -932,6 +932,7 @@ function App() {
                 notify={notify}
                 selectedGroupName={selectedGroup}
                 onSelectGroup={(gName) => navigateTo({ page: 'Groups', selectedGroup: gName || undefined })}
+                currentUser={currentUser}
               />
             )}
             {page === 'Settings' && (isSuperAdmin ? (
@@ -1819,13 +1820,20 @@ function DeviceTable({
 function Devices({
   onDevice,
   initialFilter,
-  notify
+  notify,
+  currentUser
 }: {
   onDevice: (id: string) => void;
   initialFilter?: { group?: string; status?: string; rdp?: boolean };
   notify: (message: string) => void;
+  currentUser?: ManagedUser | null;
 }) {
   const { t } = useLanguage();
+  const isSuperAdmin = currentUser?.role === 'Суперадминистратор' || currentUser?.role === 'SuperAdmin';
+  const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
+  const hasRestrictedScope = !isSuperAdmin && currentUser?.scope !== 'Все устройства' && Array.isArray(currentUser?.allowedGroups) && currentUser.allowedGroups.length > 0;
+  const allowedGroupsList = hasRestrictedScope ? currentUser.allowedGroups : [];
+
   const [items, setItems] = useState<Device[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
@@ -1854,6 +1862,9 @@ function Devices({
 
   // Existing fleet groups dynamically computed
   const existingFleetGroups = useMemo(() => {
+    if (hasRestrictedScope) {
+      return [...allowedGroupsList].sort((a, b) => a.localeCompare(b, 'ru'));
+    }
     const set = new Set<string>();
     items.forEach(d => {
       getDeviceGroups(d).forEach(g => { if (g && g.trim()) set.add(g.trim()); });
@@ -1861,13 +1872,13 @@ function Devices({
     });
     ['Тонкие клиенты', 'Office', 'Warehouse', 'Management', 'Testing', 'Dev'].forEach(g => set.add(g));
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [items]);
+  }, [items, hasRestrictedScope, allowedGroupsList]);
 
   // Add Device Modal state (Agent vs Agentless / Thin Client)
   const [addModalTab, setAddModalTab] = useState<'agent' | 'agentless'>('agent');
   const [tcName, setTcName] = useState('');
   const [tcIp, setTcIp] = useState('');
-  const [tcGroup, setTcGroup] = useState('Тонкие клиенты');
+  const [tcGroup, setTcGroup] = useState(hasRestrictedScope && allowedGroupsList.length > 0 ? allowedGroupsList[0] : 'Тонкие клиенты');
   const [tcCustomGroup, setTcCustomGroup] = useState('');
   const [isCustomTcGroup, setIsCustomTcGroup] = useState(false);
   const [tcMac, setTcMac] = useState('');
@@ -1923,6 +1934,13 @@ function Devices({
       return;
     }
     const finalGroup = isCustomTcGroup ? (tcCustomGroup.trim() || 'Тонкие клиенты') : (tcGroup.trim() || 'Тонкие клиенты');
+    if (hasRestrictedScope) {
+      const allowedLower = allowedGroupsList.map(g => g.toLowerCase().trim());
+      if (!allowedLower.includes(finalGroup.toLowerCase().trim())) {
+        notify(`Отказ в доступе: вы можете добавлять устройства только в разрешенные вам группы (${allowedGroupsList.join(', ')})`);
+        return;
+      }
+    }
     setTcIsSaving(true);
     try {
       const res = await devicesApi.createAgentless({
@@ -2054,6 +2072,14 @@ function Devices({
 
   const handleSaveDeviceEdits = async () => {
     if (!editDeviceTarget) return;
+    if (hasRestrictedScope) {
+      const allowedLower = allowedGroupsList.map(g => g.toLowerCase().trim());
+      const hasForbiddenGroup = editDevGroups.some(g => !allowedLower.includes(g.toLowerCase().trim()));
+      if (hasForbiddenGroup) {
+        notify(`Отказ в доступе: вы можете назначать только разрешенные группы (${allowedGroupsList.join(', ')})`);
+        return;
+      }
+    }
     const updated = await devicesApi.update(editDeviceTarget.id, {
       name: editDevName,
       groups: editDevGroups,
@@ -2087,9 +2113,11 @@ function Devices({
             <Button icon={<ArrowDownToLine size={15} />} onClick={() => { exportDevicesToCsv(items); notify('Список устройств выгружен в CSV'); }}>
               {t('common.export')}
             </Button>
-            <Button primary icon={<Plus size={15} />} onClick={() => setShowAddModal(true)}>
-              {t('devices.addDevice')}
-            </Button>
+            {!isObserver && (
+              <Button primary icon={<Plus size={15} />} onClick={() => setShowAddModal(true)}>
+                {t('devices.addDevice')}
+              </Button>
+            )}
           </>
         }
       />
@@ -2453,7 +2481,7 @@ function Devices({
                         {existingFleetGroups.map(grp => (
                           <option key={grp} value={grp}>{grp}</option>
                         ))}
-                        <option value="__NEW__">+ Ввести новую группу...</option>
+                        {!hasRestrictedScope && <option value="__NEW__">+ Ввести новую группу...</option>}
                       </select>
                     ) : (
                       <div style={{ display: 'flex', gap: '6px' }}>
@@ -2585,18 +2613,25 @@ function Devices({
                 {(() => {
                   const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
                   const serverHost = window.location.hostname || 'localhost';
+                  const defaultGroup = hasRestrictedScope && allowedGroupsList.length > 0 ? allowedGroupsList[0] : '';
+                  const psCmd = defaultGroup
+                    ? `irm "http://${serverHost}:${effectivePort}/install.ps1?group=${encodeURIComponent(defaultGroup)}" | iex`
+                    : `irm "http://${serverHost}:${effectivePort}/install.ps1" | iex`;
+                  const shCmd = defaultGroup
+                    ? `curl -fsSL "http://${serverHost}:${effectivePort}/install.sh?group=${encodeURIComponent(defaultGroup)}" | sudo bash`
+                    : `curl -fsSL "http://${serverHost}:${effectivePort}/install.sh" | sudo bash`;
                   return (
                     <>
                       <div>
                         <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Быстрая установка через PowerShell (Windows):</label>
                         <div className="code-card" style={{ marginTop: 0 }}>
-                          <pre>{`irm "http://${serverHost}:${effectivePort}/install.ps1" | iex`}</pre>
+                          <pre>{psCmd}</pre>
                         </div>
                         <button
                           className="text-button"
                           style={{ marginTop: '4px' }}
                           onClick={() => {
-                            navigator.clipboard?.writeText(`irm "http://${serverHost}:${effectivePort}/install.ps1" | iex`);
+                            navigator.clipboard?.writeText(psCmd);
                             notify('Команда скопирована в буфер обмена');
                           }}
                         >
@@ -2607,13 +2642,13 @@ function Devices({
                       <div>
                         <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Быстрая установка через Bash (Linux Ubuntu/Debian):</label>
                         <div className="code-card" style={{ marginTop: 0 }}>
-                          <pre>{`curl -fsSL "http://${serverHost}:${effectivePort}/install.sh" | sudo bash`}</pre>
+                          <pre>{shCmd}</pre>
                         </div>
                         <button
                           className="text-button"
                           style={{ marginTop: '4px' }}
                           onClick={() => {
-                            navigator.clipboard?.writeText(`curl -fsSL "http://${serverHost}:${effectivePort}/install.sh" | sudo bash`);
+                            navigator.clipboard?.writeText(shCmd);
                             notify('Команда скопирована в буфер обмена');
                           }}
                         >
@@ -10928,15 +10963,23 @@ function Groups({
   onDevice,
   notify,
   selectedGroupName,
-  onSelectGroup
+  onSelectGroup,
+  currentUser
 }: {
   onNavigate?: (page: Page, filter?: any) => void;
   onDevice: (id: string) => void;
   notify: (message: string) => void;
   selectedGroupName?: string;
   onSelectGroup: (name: string | null) => void;
+  currentUser?: ManagedUser | null;
 }) {
   const { t } = useLanguage();
+  const isSuperAdmin = currentUser?.role === 'Суперадминистратор' || currentUser?.role === 'SuperAdmin';
+  const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
+  const hasRestrictedScope = !isSuperAdmin && currentUser?.scope !== 'Все устройства' && Array.isArray(currentUser?.allowedGroups) && currentUser.allowedGroups.length > 0;
+  const allowedGroupNames = hasRestrictedScope ? currentUser.allowedGroups.map(g => g.toLowerCase().trim()) : null;
+  const canManageGroup = (groupName: string) => !hasRestrictedScope || (allowedGroupNames ? allowedGroupNames.includes(groupName.toLowerCase().trim()) : false);
+
   const [devices, setDevices] = useState<Device[]>([]);
   const [groups, setGroups] = useState<GroupData[]>([
     { name: 'Office', count: 1, desc: 'Компьютеры главного офиса компании', color: 'blue', schedule: 'Office Working Day' },
@@ -10994,6 +11037,21 @@ function Groups({
     loadData();
   }, []);
 
+  const visibleGroups = useMemo(() => {
+    if (hasRestrictedScope && allowedGroupNames) {
+      return groups.filter(g => allowedGroupNames.includes(g.name.toLowerCase().trim()));
+    }
+    return groups;
+  }, [groups, hasRestrictedScope, allowedGroupNames]);
+
+  useEffect(() => {
+    if (hasRestrictedScope && selectedGroupName && !canManageGroup(selectedGroupName)) {
+      const fallback = visibleGroups[0]?.name || null;
+      onSelectGroup(fallback);
+      notify('Доступ к этой группе ограничен вашей зоной ответственности');
+    }
+  }, [hasRestrictedScope, selectedGroupName, visibleGroups]);
+
   const selectedGroup = selectedGroupName ? groups.find(g => g.name.toLowerCase() === selectedGroupName.toLowerCase()) || {
     name: selectedGroupName,
     count: 0,
@@ -11003,6 +11061,10 @@ function Groups({
   } : null;
 
   const handleCreateGroup = async () => {
+    if (!isSuperAdmin) {
+      notify('Отказ в доступе: создание групп разрешено только Суперадминистратору');
+      return;
+    }
     if (!newGroupName) return;
     const created: GroupData = {
       name: newGroupName.trim(),
@@ -11030,6 +11092,10 @@ function Groups({
   };
 
   const handleSaveEditGroup = async () => {
+    if (!isSuperAdmin) {
+      notify('Отказ в доступе: редактирование групп разрешено только Суперадминистратору');
+      return;
+    }
     if (!editGroupTarget || !editGroupName) return;
     const oldName = editGroupTarget.name;
     const newName = editGroupName.trim();
@@ -11057,6 +11123,10 @@ function Groups({
   };
 
   const handleDeleteGroup = async (groupName: string) => {
+    if (!isSuperAdmin) {
+      notify('Отказ в доступе: удаление групп разрешено только Суперадминистратору');
+      return;
+    }
     setGroups(prev => prev.filter(g => g.name !== groupName));
     await groupsApi.delete(groupName);
     if (selectedGroupName?.toLowerCase() === groupName.toLowerCase()) {
@@ -11068,6 +11138,10 @@ function Groups({
 
   const handleAssignPcToGroup = async () => {
     if (!selectedGroup || !selectedPcToAssign) return;
+    if (!canManageGroup(selectedGroup.name) || isObserver) {
+      notify('Отказ в доступе: вы не можете добавлять компьютеры в эту группу');
+      return;
+    }
     const targetDev = devices.find(d => d.id === selectedPcToAssign);
     if (targetDev) {
       const existingGroups = getDeviceGroups(targetDev);
@@ -11092,6 +11166,10 @@ function Groups({
 
   const handleBulkGroupPower = async (action: 'WAKE' | 'SHUTDOWN' | 'REBOOT') => {
     if (selectedGroupPcIds.length === 0) return;
+    if (!canManageGroup(selectedGroup?.name || '') || isObserver) {
+      notify('Отказ в доступе: управление питанием недоступно для этой группы');
+      return;
+    }
     const actionNames: Record<string, string> = {
       WAKE: 'Включение (WoL)',
       SHUTDOWN: 'Выключение',
@@ -11108,6 +11186,10 @@ function Groups({
 
   const handleBulkRemoveFromGroup = async () => {
     if (!selectedGroup || selectedGroupPcIds.length === 0) return;
+    if (!canManageGroup(selectedGroup.name) || isObserver) {
+      notify('Отказ в доступе: у вас нет прав на управление этой группой');
+      return;
+    }
     const currentGroupDevices = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === selectedGroup.name.toLowerCase()));
     const devsToUpdate = currentGroupDevices.filter(d => selectedGroupPcIds.includes(d.id));
     if (devsToUpdate.length === 0) return;
@@ -11124,6 +11206,10 @@ function Groups({
 
   const handleRemovePcFromGroup = async (dev: Device) => {
     if (!selectedGroup) return;
+    if (!canManageGroup(selectedGroup.name) || isObserver) {
+      notify('Отказ в доступе: у вас нет прав на управление этой группой');
+      return;
+    }
     const existingGroups = getDeviceGroups(dev);
     const updatedGroups = existingGroups.filter(g => g.toLowerCase() !== selectedGroup.name.toLowerCase());
     await devicesApi.update(dev.id, { ...dev, groups: updatedGroups });
@@ -11172,34 +11258,40 @@ function Groups({
                 </div>
 
                 <div className="header-actions">
-                  <Button
-                    icon={<Edit3 size={15} />}
-                    onClick={() => handleOpenEditGroupModal(selectedGroup)}
-                  >
-                    Настройки группы
-                  </Button>
-                  <Button
-                    primary
-                    icon={<Zap size={15} />}
-                    onClick={async () => {
-                      const groupDevIds = groupDevices.map(d => d.id);
-                      if (groupDevIds.length > 0) {
-                        await devicesApi.bulkOperation(groupDevIds, 'WAKE');
-                        notify(`Magic Packet (WoL) отправлен на ${groupDevIds.length} ПК группы "${selectedGroup.name}"`);
-                        setTimeout(loadData, 1200);
-                      } else {
-                        notify(`В группе "${selectedGroup.name}" нет добавленных ПК`);
-                      }
-                    }}
-                  >
-                    Включить всю группу (WoL)
-                  </Button>
-                  <Button
-                    icon={<Plus size={15} />}
-                    onClick={() => setShowAddPcModal(true)}
-                  >
-                    + Добавить ПК
-                  </Button>
+                  {isSuperAdmin && (
+                    <Button
+                      icon={<Edit3 size={15} />}
+                      onClick={() => handleOpenEditGroupModal(selectedGroup)}
+                    >
+                      Настройки группы
+                    </Button>
+                  )}
+                  {canManageGroup(selectedGroup.name) && !isObserver && (
+                    <Button
+                      primary
+                      icon={<Zap size={15} />}
+                      onClick={async () => {
+                        const groupDevIds = groupDevices.map(d => d.id);
+                        if (groupDevIds.length > 0) {
+                          await devicesApi.bulkOperation(groupDevIds, 'WAKE');
+                          notify(`Magic Packet (WoL) отправлен на ${groupDevIds.length} ПК группы "${selectedGroup.name}"`);
+                          setTimeout(loadData, 1200);
+                        } else {
+                          notify(`В группе "${selectedGroup.name}" нет добавленных ПК`);
+                        }
+                      }}
+                    >
+                      Включить всю группу (WoL)
+                    </Button>
+                  )}
+                  {canManageGroup(selectedGroup.name) && !isObserver && (
+                    <Button
+                      icon={<Plus size={15} />}
+                      onClick={() => setShowAddPcModal(true)}
+                    >
+                      + Добавить ПК
+                    </Button>
+                  )}
                 </div>
               </div>
 
@@ -11395,11 +11487,11 @@ function Groups({
             eyebrow="FLEET MANAGEMENT"
             title="Группы станций"
             description="Организация парка компьютеров по локациям, отделам и назначение групповых политик питания."
-            actions={<Button primary icon={<Plus size={15} />} onClick={() => setShowCreateGroup(true)}>Создать группу</Button>}
+            actions={isSuperAdmin ? <Button primary icon={<Plus size={15} />} onClick={() => setShowCreateGroup(true)}>Создать группу</Button> : undefined}
           />
 
           <div className="group-grid">
-            {groups.map(group => (
+            {visibleGroups.map(group => (
               <section
                 className="panel group-card"
                 key={group.name}
@@ -11409,24 +11501,26 @@ function Groups({
               >
                 <div className={`group-hero ${group.color}`}>
                   <div className="group-symbol"><Server size={20} /></div>
-                  <button
-                    className="hero-more"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === group.name.toLowerCase()));
-                      const devIds = gDevs.map(d => d.id);
-                      if (devIds.length > 0) {
-                        await devicesApi.bulkOperation(devIds, 'WAKE');
-                        notify(`Групповой Wake-on-LAN отправлен на ${devIds.length} ПК группы ${group.name}`);
-                        setTimeout(loadData, 1200);
-                      } else {
-                        notify(`В группе "${group.name}" нет добавленных ПК`);
-                      }
-                    }}
-                    title="Включить все ПК группы (WoL)"
-                  >
-                    <Zap size={16} />
-                  </button>
+                  {canManageGroup(group.name) && !isObserver && (
+                    <button
+                      className="hero-more"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === group.name.toLowerCase()));
+                        const devIds = gDevs.map(d => d.id);
+                        if (devIds.length > 0) {
+                          await devicesApi.bulkOperation(devIds, 'WAKE');
+                          notify(`Групповой Wake-on-LAN отправлен на ${devIds.length} ПК группы ${group.name}`);
+                          setTimeout(loadData, 1200);
+                        } else {
+                          notify(`В группе "${group.name}" нет добавленных ПК`);
+                        }
+                      }}
+                      title="Включить все ПК группы (WoL)"
+                    >
+                      <Zap size={16} />
+                    </button>
+                  )}
                 </div>
                 <div className="group-body">
                   <div className="group-title">
@@ -11630,7 +11724,7 @@ function Groups({
       )}
 
       {/* Add PC to Group Modal */}
-      {showAddPcModal && selectedGroup && (
+      {showAddPcModal && selectedGroup && canManageGroup(selectedGroup.name) && !isObserver && (
         <div className="modal-backdrop" onClick={() => setShowAddPcModal(false)}>
           <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '540px', textAlign: 'left' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
