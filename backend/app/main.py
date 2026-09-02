@@ -55,9 +55,11 @@ async def startup_event():
                     pass
         await conn.run_sync(migrate_columns)
     print("Workstation Manager database initialized.")
-    # Start automated scheduler background loop
+    # Start automated scheduler and telegram bot background loops
     import asyncio
     asyncio.create_task(scheduler_service.start_background_loop())
+    from backend.app.services.telegram_bot_service import telegram_bot_service
+    asyncio.create_task(telegram_bot_service.start_polling_loop())
 
 # Mount API v1 routers
 api_prefix = settings.API_V1_STR

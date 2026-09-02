@@ -44,8 +44,8 @@ def get_httpx_client(cfg: Dict[str, Any] = None, timeout: float = 8.0) -> httpx.
         cfg = load_config()
     proxy = get_proxy_url(cfg)
     if proxy:
-        return httpx.AsyncClient(proxy=proxy, timeout=timeout)
-    return httpx.AsyncClient(timeout=timeout)
+        return httpx.AsyncClient(proxy=proxy, timeout=timeout, follow_redirects=True)
+    return httpx.AsyncClient(timeout=timeout, follow_redirects=True)
 
 def load_config() -> Dict[str, Any]:
     default = {
@@ -87,8 +87,9 @@ import sqlite3
 
 def load_devices() -> List[Dict[str, Any]]:
     possible_paths = [
-        os.path.join(os.getcwd(), "workstation_manager.db"),
+        os.path.join(settings.DATA_DIR, "workstation_manager.db"),
         os.path.join(os.getcwd(), "data", "workstation_manager.db"),
+        os.path.join(os.getcwd(), "workstation_manager.db"),
         os.path.join(settings.DATA_DIR, "fleet.db")
     ]
     for db_path in possible_paths:
@@ -300,16 +301,40 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
 
         if cmd in ["/shutdown", "/poweroff"]:
             ip = target_dev.get("ip", "")
+            dev_id = target_dev.get("id")
+            from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
             if ip:
-                send_udp_command(ip, "SHUTDOWN")
-            record_audit(operator_label, "SHUTDOWN", target_dev.get("id"), "SUCCESS", f"Команда выключения инициирована через Telegram-бота")
+                send_direct_lan_power_signal(
+                    ip_address=ip,
+                    action="SHUTDOWN",
+                    device_id=dev_id,
+                    mac_address=target_dev.get("mac", ""),
+                    hostname=target_dev.get("hostname", "")
+                )
+            if dev_id:
+                queue_device_command(dev_id, "SHUTDOWN", force=True, reason=f"Telegram command by {operator_label}")
+                if target_dev.get("hostname") and target_dev.get("hostname") != dev_id:
+                    queue_device_command(target_dev.get("hostname"), "SHUTDOWN", force=True, reason=f"Telegram command by {operator_label}")
+            record_audit(operator_label, "SHUTDOWN", dev_id, "SUCCESS", f"Команда выключения инициирована через Telegram-бота")
             return f"🛑 <b>Команда выключения отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip})."
 
         if cmd == "/reboot":
             ip = target_dev.get("ip", "")
+            dev_id = target_dev.get("id")
+            from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
             if ip:
-                send_udp_command(ip, "REBOOT")
-            record_audit(operator_label, "REBOOT", target_dev.get("id"), "SUCCESS", f"Команда перезагрузки инициирована через Telegram-бота")
+                send_direct_lan_power_signal(
+                    ip_address=ip,
+                    action="REBOOT",
+                    device_id=dev_id,
+                    mac_address=target_dev.get("mac", ""),
+                    hostname=target_dev.get("hostname", "")
+                )
+            if dev_id:
+                queue_device_command(dev_id, "REBOOT", force=True, reason=f"Telegram command by {operator_label}")
+                if target_dev.get("hostname") and target_dev.get("hostname") != dev_id:
+                    queue_device_command(target_dev.get("hostname"), "REBOOT", force=True, reason=f"Telegram command by {operator_label}")
+            record_audit(operator_label, "REBOOT", dev_id, "SUCCESS", f"Команда перезагрузки инициирована через Telegram-бота")
             return f"🔄 <b>Команда перезагрузки отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip})."
 
     return f"❓ Неизвестная команда <code>{cmd}</code>. Напишите <code>/help</code> для списка доступных команд."
@@ -414,7 +439,8 @@ async def test_telegram_proxy(payload: TestProxyPayload):
                 bot_name = data.get("result", {}).get("username", "")
                 if bot_name:
                     return {"ok": True, "message": f"Соединение с Telegram успешно! Бот @{bot_name} отвечает через прокси.", "botUsername": f"@{bot_name}"}
-                return {"ok": True, "message": "Прокси работает! Шлюз api.telegram.org доступен."}
+            elif resp.status_code == 302:
+                return {"ok": True, "message": "Прокси работает! Шлюз api.telegram.org доступен (получен ответ от серверов Telegram)."}
             elif resp.status_code == 401:
                 return {"ok": True, "message": "Прокси работает! Сервер Telegram ответил (проверьте корректность Bot Token)."}
             else:
