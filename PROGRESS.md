@@ -269,12 +269,15 @@
 
 | **2026-09-02 15:47** | Backend / Stability | [`backend/app/services/scheduler_service.py`](file:///d:/antigravity/dash/backend/app/services/scheduler_service.py), [`backend/app/services/alert_engine.py`](file:///d:/antigravity/dash/backend/app/services/alert_engine.py), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Полное устранение флаппинга (дребезга алертов Вкл/Выкл) и настройка Anti-Flapping гистерезиса**: 1. **Диагностика флаппинга**: в `scheduler_service.py` выполнялся TCP connect на порты (включая UDP 48123 и закрытые порты Windows 445/135), который всегда возвращал отказ, и при таймауте всего в 30 сек сторожевой таймер помечал ПК как `OFF` прямо перед приходом регулярного Heartbeat (30-35 сек), после чего Heartbeat снова помечал его как `ON`, зацикливая ложные алерты; 2. **Удаление ложной TCP-пробы и подъем таймаута**: ложный опрос портов удален, порог отсутствия Heartbeat для фиксации `OFFLINE` сторожевым таймером установлен на гарантированные **90+ секунд** (3 пропущенных цикла); 3. **Аппаратный гистерезис и Anti-Flap в `AlertEngine`**: добавлен трекер состояния `_device_state_tracker`; запрещен повторный вызов одного и того же состояния; запрещен переход в `OFFLINE` при наличии недавнего перехода в `ONLINE` (<60 сек) кроме явного завершения работы ОС; при переходе в `ONLINE` уведомление в Telegram отправляется **только если ПК находился выключенным не менее 45 секунд** (фильтрация перезапуска агента или кратковременных задержек сети); введен рейт-лимит на рассылку сообщений в Telegram (не чаще одного раза в 60 сек на ПК). |
 
+| **2026-09-02 15:50** | Backend / Fix | [`backend/app/services/alert_engine.py`](file:///d:/antigravity/dash/backend/app/services/alert_engine.py), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Добавлен пропущенный импорт `import time` в `alert_engine.py`**: устранена ошибка `NameError: name 'time' is not defined` при вызове `time.time()` в методах `trigger_device_online` и `trigger_device_offline`. |
+
 ---
 
 ## 🔜 Следующие шаги
 1. Выполнить `git pull` на сервере.
 2. Перезапустить бэкенд (`docker restart <container>` или `docker compose restart`).
-3. Проверить стабильную тишину в Telegram при штатной работе ПК и одиночный четкий алерт при реальном выключении ПК.
+3. Проверить стабильную работу алертов без ошибок.
+
 
 
 
