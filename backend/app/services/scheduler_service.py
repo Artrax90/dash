@@ -167,6 +167,53 @@ class SchedulerService:
                     now_utc = datetime.utcnow()
                     status_changed = False
                     for dev in devices:
+                        is_agentless = (
+                            dev.agent_version == "Agentless" or 
+                            dev.os_type == "ThinClient" or 
+                            (dev.id and dev.id.upper().startswith("TC-")) or 
+                            "Agentless" in (dev.tags or []) or
+                            "Тонкий клиент" in (dev.tags or [])
+                        )
+                        if is_agentless:
+                            # Thin clients have no background agent.
+                            # Online status is determined via ICMP ping and fast TCP check:
+                            if dev.ip_address:
+                                ping_ok = False
+                                try:
+                                    ping_cmd = ["ping", "-n", "1", "-w", "600", dev.ip_address] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", dev.ip_address]
+                                    proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                                    rc = await asyncio.wait_for(proc.wait(), timeout=1.2)
+                                    ping_ok = (rc == 0)
+                                except Exception:
+                                    pass
+
+                                if not ping_ok:
+                                    for p in [3389, 80, 443, 22, 8080]:
+                                        try:
+                                            _, writer = await asyncio.wait_for(asyncio.open_connection(dev.ip_address, p), timeout=0.2)
+                                            writer.close()
+                                            await writer.wait_closed()
+                                            ping_ok = True
+                                            break
+                                        except Exception:
+                                            pass
+
+                                if ping_ok:
+                                    if dev.power_status != PowerStatus.ON or dev.agent_status != AgentStatus.CONNECTED:
+                                        dev.power_status = PowerStatus.ON
+                                        dev.agent_status = AgentStatus.CONNECTED
+                                        status_changed = True
+                                        await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+                                    dev.last_seen = now_utc
+                                else:
+                                    sec_since_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
+                                    if dev.power_status == PowerStatus.ON and sec_since_seen > 180:
+                                        dev.power_status = PowerStatus.OFF
+                                        dev.agent_status = AgentStatus.DISCONNECTED
+                                        status_changed = True
+                                        await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+                            continue
+
                         dev_interval = dev.heartbeat_interval or 60
                         timeout_threshold = max(75, dev_interval * 2 + 15)
                         sec_since_last_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999

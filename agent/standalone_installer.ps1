@@ -386,7 +386,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.8.5"
+    agentVersion = "2.8.6"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -687,7 +687,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.8.5'
+`$AgentVersion = '2.8.6'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
@@ -705,9 +705,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.8.5") {
+function Update-AgentService([string]`$targetVer = "2.8.6") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.8.5"
+        `$targetVer = "2.8.6"
     }
     try {
         # 1. Report update in progress
@@ -789,7 +789,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.8.5"
+        Update-AgentService "2.8.6"
         return
     }
 
@@ -2266,7 +2266,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.8.5"
+    agentVersion = "2.8.6"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
