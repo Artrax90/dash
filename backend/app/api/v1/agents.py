@@ -939,6 +939,17 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         device_name=device.name
                     )
 
+                if prev_status == PowerStatus.OFF:
+                    try:
+                        from backend.app.services.alert_engine import alert_engine
+                        await alert_engine.trigger_device_online(
+                            session=db,
+                            device=device,
+                            reason=f"Компьютер {device.name or device.hostname or device.id} включен и вышел на связь"
+                        )
+                    except Exception as on_err:
+                        print(f"[Online Alert Trigger Error] {on_err}")
+
             if cpu_val is not None:
                 device.cpu_usage = int(float(cpu_val))
             if ram_val is not None:
@@ -1489,6 +1500,22 @@ async def report_agent_power_event(payload: Dict[str, Any], db: AsyncSession = D
             is_online=is_on
         )
         await db.commit()
+
+        # Trigger Offline/Online alerts to Telegram and Web UI
+        from backend.app.services.alert_engine import alert_engine
+        if not is_on:
+            await alert_engine.trigger_device_offline(
+                session=db,
+                device=device,
+                reason=f"Зафиксировано выключение компьютера {device.name or device.hostname or device.id} (инициатор: {initiator})"
+            )
+        else:
+            await alert_engine.trigger_device_online(
+                session=db,
+                device=device,
+                reason=f"Компьютер {device.name or device.hostname or device.id} включен (инициатор: {initiator})"
+            )
+
         await ws_manager.broadcast_event("device.updated", format_device_summary(device))
         return {"status": "ok"}
     return {"status": "device_not_found"}

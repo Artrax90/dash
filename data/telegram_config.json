@@ -2,6 +2,7 @@
   "enabled": true,
   "botToken": "",
   "chatId": "",
+  "timezone": "Europe/Moscow",
   "alertsEnabled": true,
   "botUsername": "",
   "status": "Не настроен",

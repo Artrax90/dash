@@ -52,6 +52,7 @@ def load_config() -> Dict[str, Any]:
         "enabled": True,
         "botToken": "",
         "chatId": "",
+        "timezone": "Europe/Moscow",
         "alertsEnabled": True,
         "botUsername": "",
         "status": "Не настроен",
@@ -734,6 +735,7 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
 class TelegramConfigPayload(BaseModel):
     botToken: str = ""
     chatId: str = ""
+    timezone: Optional[str] = "Europe/Moscow"
     alertsEnabled: bool = True
     botUsername: str = ""
     proxyEnabled: bool = False
@@ -767,6 +769,8 @@ async def update_telegram_config(payload: TelegramConfigPayload):
     cfg = load_config()
     cfg["botToken"] = payload.botToken.strip()
     cfg["chatId"] = payload.chatId.strip()
+    if payload.timezone:
+        cfg["timezone"] = payload.timezone.strip()
     cfg["alertsEnabled"] = payload.alertsEnabled
     cfg["proxyEnabled"] = payload.proxyEnabled
     cfg["proxyType"] = payload.proxyType.strip()

@@ -1,6 +1,7 @@
 import os
 import sys
 import time
+import socket
 import asyncio
 from datetime import datetime, timezone
 from typing import List, Dict, Any
@@ -284,11 +285,29 @@ class SchedulerService:
                                     await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
                             continue
 
-                        dev_interval = dev.heartbeat_interval or 60
-                        timeout_threshold = max(75, dev_interval * 2 + 15)
+                        dev_interval = dev.heartbeat_interval or 15
+                        timeout_threshold = max(45, dev_interval * 2 + 10)
                         sec_since_last_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
                         
-                        if dev.power_status == PowerStatus.ON and sec_since_last_seen > timeout_threshold:
+                        # Active reachability check: if agent missed heartbeat for > 25s, verify whether device is reachable
+                        is_unreachable = False
+                        if dev.power_status == PowerStatus.ON and sec_since_last_seen > 25 and dev.ip_address and dev.ip_address not in ["127.0.0.1", "0.0.0.0"]:
+                            alive = False
+                            for port in [48123, 445, 135, 3389]:
+                                try:
+                                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                                    s.settimeout(0.3)
+                                    res = s.connect_ex((dev.ip_address, port))
+                                    s.close()
+                                    if res == 0:
+                                        alive = True
+                                        break
+                                except Exception:
+                                    pass
+                            if not alive:
+                                is_unreachable = True
+
+                        if dev.power_status == PowerStatus.ON and (sec_since_last_seen > timeout_threshold or (sec_since_last_seen > 30 and is_unreachable)):
                             dev.power_status = PowerStatus.OFF
                             dev.agent_status = AgentStatus.DISCONNECTED
                             status_changed = True
@@ -307,8 +326,9 @@ class SchedulerService:
                                     except Exception:
                                         pass
                                         
+                            curr_user = dev.current_user or "Пользователь"
+                            dev_name_clean = dev.name or dev.hostname or dev.id
                             if not has_recent:
-                                curr_user = dev.current_user or "Пользователь"
                                 log_device_power_event(
                                     device_id=dev.id,
                                     action="SHUTDOWN",
@@ -318,6 +338,14 @@ class SchedulerService:
                                     source="LOCAL",
                                     device_name=dev.name
                                 )
+                            
+                            # Dispatch OFFLINE alert to alert engine (Telegram & Web UI)
+                            from backend.app.services.alert_engine import alert_engine
+                            await alert_engine.trigger_device_offline(
+                                session=session,
+                                device=dev,
+                                reason=f"Связь со станцией {dev_name_clean} прервана (компьютер выключен или недоступен в сети, пользователь: {curr_user})"
+                            )
                             
                             await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
                             

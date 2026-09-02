@@ -1866,92 +1866,119 @@ while (`$initAttempts -lt 30) {
 
 `$lastHeartbeat = Get-Date
 
-while (`$true) {
-    if (`$udpListener) {
-        try {
-            if (`$udpListener.Available -gt 0) {
-                `$remoteEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-                `$dataBytes = `$udpListener.Receive([ref]`$remoteEp)
-                `$msg = [System.Text.Encoding]::UTF8.GetString(`$dataBytes)
-                if (`$msg -like "WM_CMD:*") {
-                    `$parts = `$msg.Split(":")
-                    if (`$parts.Length -ge 2) {
-                        `$cmdAction = `$parts[1].Trim()
-                        if (`$cmdAction -eq "PROBE_IP" -or `$cmdAction -eq "PROBE_NEIGHBOR") {
-                            `$targetProbeIp = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
-                            if (`$targetProbeIp) {
-                                try {
-                                    Test-Connection -ComputerName `$targetProbeIp -Count 1 -Quiet | Out-Null
-                                    `$fMac = (Get-NetNeighbor -IPAddress `$targetProbeIp -ErrorAction SilentlyContinue | Where-Object { `$_.LinkLayerAddress -and `$_.LinkLayerAddress -ne '00-00-00-00-00-00' }).LinkLayerAddress | Select-Object -First 1
-                                    if (`$fMac) {
-                                        `$pRes = @{
-                                            ip = `$targetProbeIp
-                                            mac = `$fMac.Replace('-', ':').ToUpper()
-                                            reportedBy = `$DeviceId
+try {
+    while (`$true) {
+        if (`$udpListener) {
+            try {
+                if (`$udpListener.Available -gt 0) {
+                    `$remoteEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                    `$dataBytes = `$udpListener.Receive([ref]`$remoteEp)
+                    `$msg = [System.Text.Encoding]::UTF8.GetString(`$dataBytes)
+                    if (`$msg -like "WM_CMD:*") {
+                        `$parts = `$msg.Split(":")
+                        if (`$parts.Length -ge 2) {
+                            `$cmdAction = `$parts[1].Trim()
+                            if (`$cmdAction -eq "PROBE_IP" -or `$cmdAction -eq "PROBE_NEIGHBOR") {
+                                `$targetProbeIp = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
+                                if (`$targetProbeIp) {
+                                    try {
+                                        Test-Connection -ComputerName `$targetProbeIp -Count 1 -Quiet | Out-Null
+                                        `$fMac = (Get-NetNeighbor -IPAddress `$targetProbeIp -ErrorAction SilentlyContinue | Where-Object { `$_.LinkLayerAddress -and `$_.LinkLayerAddress -ne '00-00-00-00-00-00' }).LinkLayerAddress | Select-Object -First 1
+                                        if (`$fMac) {
+                                            `$pRes = @{
+                                                ip = `$targetProbeIp
+                                                mac = `$fMac.Replace('-', ':').ToUpper()
+                                                reportedBy = `$DeviceId
+                                            }
+                                            `$pJson = `$pRes | ConvertTo-Json -Compress
+                                            `$pBytes = [System.Text.Encoding]::UTF8.GetBytes(`$pJson)
+                                            `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/probe-result")
+                                            `$pReq.Method = 'POST'
+                                            `$pReq.ContentType = 'application/json; charset=utf-8'
+                                            `$pReq.Timeout = 4000
+                                            `$pStream = `$pReq.GetRequestStream()
+                                            `$pStream.Write(`$pBytes, 0, `$pBytes.Length)
+                                            `$pStream.Close()
+                                            `$pResp = `$pReq.GetResponse()
+                                            `$pResp.Close()
                                         }
-                                        `$pJson = `$pRes | ConvertTo-Json -Compress
-                                        `$pBytes = [System.Text.Encoding]::UTF8.GetBytes(`$pJson)
-                                        `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/probe-result")
-                                        `$pReq.Method = 'POST'
-                                        `$pReq.ContentType = 'application/json; charset=utf-8'
-                                        `$pReq.Timeout = 4000
-                                        `$pStream = `$pReq.GetRequestStream()
-                                        `$pStream.Write(`$pBytes, 0, `$pBytes.Length)
-                                        `$pStream.Close()
-                                        `$pResp = `$pReq.GetResponse()
-                                        `$pResp.Close()
-                                    }
-                                } catch {}
+                                    } catch {}
+                                }
+                                continue
                             }
-                            continue
-                        }
-                        `$targetDevId = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
-                        `$targetMac = if (`$parts.Length -ge 4) { `$parts[3].Trim() } else { "" }
-                        `$targetHost = if (`$parts.Length -ge 5) { `$parts[4].Trim() } else { "" }
+                            `$targetDevId = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
+                            `$targetMac = if (`$parts.Length -ge 4) { `$parts[3].Trim() } else { "" }
+                            `$targetHost = if (`$parts.Length -ge 5) { `$parts[4].Trim() } else { "" }
 
-                        `$isTargetMatch = `$true
-                        if (`$targetDevId -and `$targetDevId -ne "REMOTE" -and `$targetDevId -ne "0" -and `$targetMac) {
-                            `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
-                            `$tgtMacClean = `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper()
-                            `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
+                            `$isTargetMatch = `$true
+                            if (`$targetDevId -and `$targetDevId -ne "REMOTE" -and `$targetDevId -ne "0" -and `$targetMac) {
+                                `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
+                                `$tgtMacClean = `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper()
+                                `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
 
-                            if (`$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper() -or `$tgtMacClean -eq `$myMacClean -or (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName)) {
-                                `$isTargetMatch = `$true
+                                if (`$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper() -or `$tgtMacClean -eq `$myMacClean -or (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName)) {
+                                    `$isTargetMatch = `$true
+                                }
                             }
-                        }
 
-                        if (`$isTargetMatch -and `$cmdAction) {
-                            `$extraArg = if (`$parts.Length -ge 6) { `$parts[5].Trim() } else { "" }
-                            `$sessIdVal = `$extraArg
-                            `$uNameVal = ""
-                            `$pidVal = `$extraArg
-                            if (`$extraArg -like "*|*") {
-                                `$subParts = `$extraArg.Split("|")
-                                `$sessIdVal = `$subParts[0]
-                                if (`$subParts.Length -ge 2) { `$uNameVal = `$subParts[1] }
-                                if (`$subParts.Length -ge 3) { `$pidVal = `$subParts[2] }
+                            if (`$isTargetMatch -and `$cmdAction) {
+                                `$extraArg = if (`$parts.Length -ge 6) { `$parts[5].Trim() } else { "" }
+                                `$sessIdVal = `$extraArg
+                                `$uNameVal = ""
+                                `$pidVal = `$extraArg
+                                if (`$extraArg -like "*|*") {
+                                    `$subParts = `$extraArg.Split("|")
+                                    `$sessIdVal = `$subParts[0]
+                                    if (`$subParts.Length -ge 2) { `$uNameVal = `$subParts[1] }
+                                    if (`$subParts.Length -ge 3) { `$pidVal = `$subParts[2] }
+                                }
+                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal }
+                                Execute-PowerCommand `$cmdAction `$true `$cmdObj
                             }
-                            `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal }
-                            Execute-PowerCommand `$cmdAction `$true `$cmdObj
                         }
                     }
                 }
-            }
-        } catch {}
-    }
-
-    `$now = Get-Date
-    if ((`$now - `$lastHeartbeat).TotalSeconds -ge `$script:currentInterval) {
-        `$success = Invoke-Heartbeat
-        if (`$success) {
-            `$lastHeartbeat = Get-Date
-        } else {
-            # Fast retry in 5s if server unreachable
-            `$lastHeartbeat = `$now.AddSeconds(-(`$script:currentInterval - 5))
+            } catch {}
         }
-    }
 
-    Start-Sleep -Milliseconds 1000
+        `$now = Get-Date
+        if ((`$now - `$lastHeartbeat).TotalSeconds -ge `$script:currentInterval) {
+            `$success = Invoke-Heartbeat
+            if (`$success) {
+                `$lastHeartbeat = Get-Date
+            } else {
+                # Fast retry in 5s if server unreachable
+                `$lastHeartbeat = `$now.AddSeconds(-(`$script:currentInterval - 5))
+            }
+        }
+
+        Start-Sleep -Milliseconds 1000
+    }
+} finally {
+    try {
+        if (`$ServerUrl -and `$DeviceId) {
+            `$offPayload = @{
+                deviceId = `$DeviceId
+                hostname = `$env:COMPUTERNAME
+                mac = `$DeviceMac
+                action = "SHUTDOWN"
+                details = "Завершение работы операционной системы Windows"
+                source = "LOCAL"
+                initiator = "Локальный пользователь"
+            }
+            `$offJson = `$offPayload | ConvertTo-Json -Compress
+            `$offBytes = [System.Text.Encoding]::UTF8.GetBytes(`$offJson)
+            `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/power-event")
+            `$pReq.Method = 'POST'
+            `$pReq.ContentType = 'application/json; charset=utf-8'
+            `$pReq.Timeout = 1500
+            `$pStream = `$pReq.GetRequestStream()
+            `$pStream.Write(`$offBytes, 0, `$offBytes.Length)
+            `$pStream.Close()
+            `$pResp = `$pReq.GetResponse()
+            `$pResp.Close()
+        }
+    } catch {}
 }
 "@
     [System.IO.File]::WriteAllText($runServiceScript, $serviceScriptCode, (New-Object System.Text.UTF8Encoding($true)))

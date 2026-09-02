@@ -10627,6 +10627,7 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
   const [alertsEnabled, setAlertsEnabled] = useState(true);
   const [botUsername, setBotUsername] = useState('');
   const [status, setStatus] = useState('Не настроен');
+  const [timezone, setTimezone] = useState('Europe/Moscow');
 
   // Telegram Alert Event Filters (Spam prevention & USB distinction)
   const [eventsConfig, setEventsConfig] = useState({
@@ -10657,6 +10658,7 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
         if (cfg.alertsEnabled !== undefined) setAlertsEnabled(cfg.alertsEnabled);
         if (cfg.botUsername !== undefined) setBotUsername(cfg.botUsername);
         if (cfg.status) setStatus(cfg.status);
+        if (cfg.timezone) setTimezone(cfg.timezone);
         if (cfg.proxyEnabled !== undefined) setProxyEnabled(cfg.proxyEnabled);
         if (cfg.proxyType) setProxyType(cfg.proxyType);
         if (cfg.proxyHost) setProxyHost(cfg.proxyHost);
@@ -10712,6 +10714,7 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
       const savedCfg = await telegramApi.saveConfig({
         botToken,
         chatId,
+        timezone,
         alertsEnabled,
         botUsername,
         proxyEnabled,
@@ -10783,6 +10786,29 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
                 onChange={e => setChatId(e.target.value)}
                 placeholder="-1001234567890"
               />
+            </div>
+            <div>
+              <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Часовой пояс уведомлений (Timezone)</label>
+              <select
+                className="text-input"
+                style={{ width: '100%' }}
+                value={timezone}
+                onChange={e => setTimezone(e.target.value)}
+              >
+                <option value="Europe/Moscow">Europe/Moscow (UTC+3, Москва / Минск / СПб)</option>
+                <option value="Europe/Kaliningrad">Europe/Kaliningrad (UTC+2)</option>
+                <option value="Europe/Samara">Europe/Samara (UTC+4)</option>
+                <option value="Asia/Yekaterinburg">Asia/Yekaterinburg (UTC+5, Екатеринбург)</option>
+                <option value="Asia/Omsk">Asia/Omsk (UTC+6, Омск)</option>
+                <option value="Asia/Krasnoyarsk">Asia/Krasnoyarsk (UTC+7, Красноярск, Новосибирск)</option>
+                <option value="Asia/Irkutsk">Asia/Irkutsk (UTC+8, Иркутск)</option>
+                <option value="Asia/Yakutsk">Asia/Yakutsk (UTC+9, Якутск)</option>
+                <option value="Asia/Vladivostok">Asia/Vladivostok (UTC+10, Владивосток)</option>
+                <option value="Asia/Magadan">Asia/Magadan (UTC+11, Магадан)</option>
+                <option value="Asia/Kamchatka">Asia/Kamchatka (UTC+12, Камчатка)</option>
+                <option value="UTC">UTC (GMT+0)</option>
+                <option value="Europe/Berlin">Europe/Berlin (CET / UTC+1)</option>
+              </select>
             </div>
             <div className="setting-row" style={{ padding: '10px 0', margin: 0 }}>
               <div><strong>Мгновенные алерты в Telegram</strong><span>Включить глобальную рассылку сообщений ботом</span></div>

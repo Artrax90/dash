@@ -82,9 +82,14 @@ class AlertEngine:
                     # 2. Hardware changes
                     if a_type == "HARDWARE_MISMATCH" and not events.get("hardwareChanges", True):
                         return
-                    # 3. Critical power / offline
-                    if a_type in ["POWER_FAILED", "OFFLINE"] and not events.get("criticalAlerts", True):
-                        return
+                    # 3. Power and Disconnect alerts
+                    if a_type in ["POWER_FAILED", "EMERGENCY_SHUTDOWN", "OFFLINE", "AGENT_DISCONNECTED"]:
+                        if not (events.get("criticalAlerts", True) or events.get("disconnectAlerts", True) or events.get("powerAlerts", True)):
+                            print(f"[Telegram Alert] Skipped {a_type} ({alert.get('description')}) - Telegram disconnect/power alerts disabled.")
+                            return
+                    if a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT"]:
+                        if not (events.get("powerAlerts", True) or events.get("disconnectAlerts", True)):
+                            return
 
                     # Collect ALL valid recipient chat IDs
                     target_chats = set()
@@ -110,11 +115,32 @@ class AlertEngine:
                     sev = str(alert.get("severity", "Warning")).upper()
                     dev_name = alert.get("device") or alert.get("deviceName") or alert.get("deviceId") or "Рабочая станция"
                     desc = alert.get("description") or "Зафиксировано изменение конфигурации"
-                    now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
+                    
+                    # Exact local timezone formatting (defaults to Europe/Moscow UTC+3)
+                    tz_name = cfg.get("timezone") or os.getenv("TZ") or "Europe/Moscow"
+                    now_str = ""
+                    try:
+                        from zoneinfo import ZoneInfo
+                        now_str = datetime.now(ZoneInfo(tz_name)).strftime("%d.%m.%Y %H:%M:%S")
+                    except Exception:
+                        try:
+                            from datetime import timezone, timedelta
+                            now_str = datetime.now(timezone(timedelta(hours=3))).strftime("%d.%m.%Y %H:%M:%S")
+                        except Exception:
+                            now_str = datetime.now().strftime("%d.%m.%Y %H:%M:%S")
 
                     if a_type == "USB_STORAGE_CHANGED":
                         icon = "💾"
                         header = "СЪЕМНЫЙ USB-НАКОПИТЕЛЬ"
+                    elif a_type in ["OFFLINE", "AGENT_DISCONNECTED"]:
+                        icon = "🔌"
+                        header = "ПОТЕРЯ СВЯЗИ / ПК ВЫКЛЮЧЕН"
+                    elif a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT"]:
+                        icon = "🟢"
+                        header = "СВЯЗЬ ВОССТАНОВЛЕНА / ПК ВКЛЮЧЕН"
+                    elif a_type in ["POWER_FAILED", "EMERGENCY_SHUTDOWN"]:
+                        icon = "⚡️"
+                        header = "АВАРИЙНОЕ ВЫКЛЮЧЕНИЕ ПИТАНИЯ"
                     elif sev in ["CRITICAL", "HIGH"]:
                         icon = "🚨"
                         header = "КРИТИЧЕСКИЙ СБОЙ ОБОРУДОВАНИЯ"
@@ -146,5 +172,148 @@ class AlertEngine:
                                 print(f"[Telegram Alert] Failed sending to {cid}: {post_err}")
             except Exception as e:
                 print(f"[Telegram Alert Dispatch Error] {e}")
+
+    @classmethod
+    async def trigger_device_offline(cls, session, device, reason: str = ""):
+        """
+        Record and dispatch device OFFLINE alert to DB, Telegram, and WebSocket.
+        """
+        try:
+            from backend.app.models.alert import Alert as AlertModel, AlertPolicy as AlertPolicyModel
+            from backend.app.api.v1.alerts import alerts_db
+            from backend.app.core.ws import ws_manager
+            from sqlalchemy import select
+            
+            # Deduplication: do not create multiple open OFFLINE alerts for the same device
+            existing = await session.execute(
+                select(AlertModel).where(
+                    (AlertModel.device_id == device.id) &
+                    (AlertModel.alert_type.in_(["OFFLINE", "AGENT_DISCONNECTED"])) &
+                    (AlertModel.state == "Open")
+                )
+            )
+            if existing.scalars().first():
+                return
+                
+            now_utc = datetime.utcnow()
+            dev_title = device.name or device.hostname or device.id
+            alert_id = f"ALT-OFF-{device.id}-{int(now_utc.timestamp())}"
+            desc = reason or f"Связь с агентом прервана (компьютер {dev_title} выключен или недоступен в сети)"
+            
+            alert_obj = AlertModel(
+                id=alert_id,
+                device_id=device.id,
+                alert_type="OFFLINE",
+                severity="Warning",
+                description=desc,
+                state="Open",
+                created_at=now_utc
+            )
+            session.add(alert_obj)
+            
+            alert_dict = {
+                "id": alert_id,
+                "device": dev_title,
+                "deviceName": dev_title,
+                "deviceId": device.id,
+                "type": "OFFLINE",
+                "category": "Availability",
+                "severity": "Warning",
+                "state": "Open",
+                "description": desc,
+                "createdAt": now_utc.isoformat() + "Z",
+                "time": now_utc.isoformat() + "Z",
+                "timestamp": now_utc.isoformat() + "Z"
+            }
+            alerts_db.insert(0, alert_dict)
+            if len(alerts_db) > 1000:
+                alerts_db.pop()
+                
+            # Query device alert policy
+            pol_res = await session.execute(
+                select(AlertPolicyModel).where(
+                    (AlertPolicyModel.device_id == device.id) | (AlertPolicyModel.device_id == device.hostname)
+                )
+            )
+            pol_model = pol_res.scalar_one_or_none()
+            policy_dict = {
+                "mode": pol_model.mode,
+                "events_config": pol_model.events_config,
+                "notify_channels": pol_model.notify_channels
+            } if pol_model else {"mode": "Full", "events_config": {"agentDisconnect": True}, "notify_channels": {"webUi": True, "telegram": True}}
+            
+            await cls.dispatch_alert(alert_dict, policy=policy_dict)
+            await ws_manager.broadcast_event("alert.created", alert_dict)
+        except Exception as err:
+            print(f"[Trigger Device Offline Error] {err}")
+
+    @classmethod
+    async def trigger_device_online(cls, session, device, reason: str = ""):
+        """
+        Auto-resolve open OFFLINE alerts, dispatch ONLINE alert if policy enables it.
+        """
+        try:
+            from backend.app.models.alert import Alert as AlertModel, AlertPolicy as AlertPolicyModel
+            from backend.app.api.v1.alerts import alerts_db
+            from backend.app.core.ws import ws_manager
+            from sqlalchemy import select
+            
+            now_utc = datetime.utcnow()
+            # 1. Resolve open OFFLINE alerts
+            open_alerts = await session.execute(
+                select(AlertModel).where(
+                    (AlertModel.device_id == device.id) &
+                    (AlertModel.alert_type.in_(["OFFLINE", "AGENT_DISCONNECTED"])) &
+                    (AlertModel.state == "Open")
+                )
+            )
+            for a in open_alerts.scalars().all():
+                a.state = "Resolved"
+                a.resolved_at = now_utc
+                await ws_manager.broadcast_event("alert.updated", {
+                    "id": a.id,
+                    "deviceId": device.id,
+                    "state": "Resolved",
+                    "resolvedAt": now_utc.isoformat() + "Z"
+                })
+                
+            for a in alerts_db:
+                if a.get("deviceId") == device.id and a.get("type") in ["OFFLINE", "AGENT_DISCONNECTED"] and a.get("state") == "Open":
+                    a["state"] = "Resolved"
+                    
+            # 2. Dispatch ONLINE alert
+            pol_res = await session.execute(
+                select(AlertPolicyModel).where(
+                    (AlertPolicyModel.device_id == device.id) | (AlertPolicyModel.device_id == device.hostname)
+                )
+            )
+            pol_model = pol_res.scalar_one_or_none()
+            policy_dict = {
+                "mode": pol_model.mode,
+                "events_config": pol_model.events_config,
+                "notify_channels": pol_model.notify_channels
+            } if pol_model else {"mode": "Full", "events_config": {"agentOnline": True}, "notify_channels": {"webUi": True, "telegram": True}}
+            
+            if cls.should_notify("ONLINE", policy_dict):
+                dev_title = device.name or device.hostname or device.id
+                alert_id = f"ALT-ON-{device.id}-{int(now_utc.timestamp())}"
+                desc = reason or f"Связь с агентом {dev_title} восстановлена (компьютер включен)"
+                online_dict = {
+                    "id": alert_id,
+                    "device": dev_title,
+                    "deviceName": dev_title,
+                    "deviceId": device.id,
+                    "type": "ONLINE",
+                    "category": "Availability",
+                    "severity": "Info",
+                    "state": "Resolved",
+                    "description": desc,
+                    "createdAt": now_utc.isoformat() + "Z",
+                    "time": now_utc.isoformat() + "Z",
+                    "timestamp": now_utc.isoformat() + "Z"
+                }
+                await cls.dispatch_alert(online_dict, policy=policy_dict)
+        except Exception as err:
+            print(f"[Trigger Device Online Error] {err}")
 
 alert_engine = AlertEngine()
