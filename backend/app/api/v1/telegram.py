@@ -102,20 +102,60 @@ def load_devices() -> List[Dict[str, Any]]:
                 rows = cursor.fetchall()
                 conn.close()
                 devs = []
+                now_utc = datetime.utcnow()
                 for r in rows:
                     grp_str = r["group_name"] or "Office"
                     grps = [g.strip() for g in grp_str.split(",") if g.strip()]
+                    
+                    last_seen_val = r["last_seen"]
+                    sec_since = 999999
+                    if last_seen_val:
+                        try:
+                            if isinstance(last_seen_val, str):
+                                dt = datetime.fromisoformat(last_seen_val.replace("Z", "+00:00"))
+                            elif isinstance(last_seen_val, datetime):
+                                dt = last_seen_val
+                            else:
+                                dt = None
+                            if dt:
+                                if dt.tzinfo is not None:
+                                    dt = dt.replace(tzinfo=None)
+                                sec_since = (now_utc - dt).total_seconds()
+                        except Exception:
+                            pass
+
+                    p_raw = str(r["power_status"] or "").strip().upper()
+                    agent_ver = str(r["agent_version"] or "")
+                    dev_id = str(r["id"] or "")
+
+                    is_agentless = (
+                        agent_ver == "Agentless" or 
+                        dev_id.startswith("TC-") or 
+                        "тонкий" in grp_str.lower()
+                    )
+                    timeout = 45 if is_agentless else 135
+
+                    if p_raw in ["OFF", "POWERSTATUS.OFF"]:
+                        is_online = False
+                    elif p_raw in ["ON", "POWERSTATUS.ON", "BOOTING"]:
+                        is_online = (sec_since <= timeout)
+                    else:
+                        is_online = (sec_since <= timeout)
+
+                    effective_power = "On" if is_online else "Off"
+
                     devs.append({
-                        "id": r["id"],
-                        "name": r["name"] or r["hostname"] or r["id"],
+                        "id": dev_id,
+                        "name": r["name"] or r["hostname"] or dev_id,
                         "hostname": r["hostname"] or "",
                         "ip": r["ip_address"] or "",
                         "mac": r["mac_address"] or "",
                         "group": grps[0] if grps else "Office",
                         "groups": grps,
-                        "powerStatus": r["power_status"] or "On",
-                        "agentVersion": r["agent_version"] or "2.9.1",
-                        "lastSeen": r["last_seen"]
+                        "powerStatus": effective_power,
+                        "isOnline": is_online,
+                        "agentVersion": agent_ver or "2.9.1",
+                        "lastSeen": last_seen_val
                     })
                 if devs:
                     return devs
@@ -238,7 +278,7 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
 
     if cmd == "/status":
         total = len(user_devices)
-        online = sum(1 for d in user_devices if d.get("powerStatus") == "On")
+        online = sum(1 for d in user_devices if d.get("powerStatus") == "On" or d.get("isOnline") is True)
         offline = total - online
         return (
             f"📊 <b>Сводка состояния парка ПК</b>\n"
@@ -253,9 +293,10 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
             return f"🖥 В вашей зоне ответственности (<b>{scope_desc}</b>) пока нет зарегистрированных ПК."
         lines = [f"🖥 <b>Список рабочих станций ({scope_desc}):</b>\n"]
         for d in user_devices:
-            status_icon = "🟢" if d.get("powerStatus") == "On" else "🔴"
+            is_on = (d.get("powerStatus") == "On" or d.get("isOnline") is True)
+            status_icon = "🟢" if is_on else "🔴"
             grp = d.get("group", "Общие")
-            lines.append(f"{status_icon} <b>{d.get('name')}</b> ({d.get('ip')}) · <i>{grp}</i> · v{d.get('agentVersion', '2.8.8')}")
+            lines.append(f"{status_icon} <b>{d.get('name')}</b> ({d.get('ip')}) · <i>{grp}</i> · v{d.get('agentVersion', '2.9.1')}")
         return "\n".join(lines)
 
     if cmd in ["/wake", "/shutdown", "/reboot", "/poweroff"]:
