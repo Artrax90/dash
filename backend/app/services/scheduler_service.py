@@ -182,9 +182,9 @@ class SchedulerService:
                             # Determine reachability through active network probing:
                             # 1. Fast ICMP Ping (1.2s timeout)
                             # 2. Common TCP ports (RDP 3389, HTTP 80, HTTPS 443, SSH 22, Web 8080, VNC 5900)
+                            ping_ok = False
+                            
                             if dev.ip_address:
-                                ping_ok = False
-                                
                                 # Layer 1: Fast ICMP Ping
                                 try:
                                     ping_cmd = ["ping", "-n", "1", "-w", "600", dev.ip_address] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", dev.ip_address]
@@ -206,22 +206,82 @@ class SchedulerService:
                                         except Exception:
                                             pass
 
-                                if ping_ok:
-                                    dev.last_seen = now_utc
-                                    if dev.power_status != PowerStatus.ON or dev.agent_status != AgentStatus.CONNECTED:
+                            # If current IP is unreachable (or not set), check if device has migrated to another IP via MAC
+                            if not ping_ok and dev.mac_address and dev.mac_address != "00:00:00:00:00:00":
+                                clean_mac = dev.mac_address.replace("-", ":").upper().strip()
+                                from backend.app.api.v1.agents import fleet_mac_to_ip
+                                candidate_ip = None
+                                
+                                # 1. Check fleet MAC-to-IP table reported by online Windows agents across subnets
+                                m_info = fleet_mac_to_ip.get(clean_mac)
+                                if m_info and isinstance(m_info, dict):
+                                    c_ip = m_info.get("ip")
+                                    if c_ip and c_ip != dev.ip_address and (time.time() - m_info.get("timestamp", 0)) < 300:
+                                        candidate_ip = c_ip
+
+                                # 2. Check local host ARP table (/proc/net/arp)
+                                if not candidate_ip and os.path.exists("/proc/net/arp"):
+                                    try:
+                                        with open("/proc/net/arp", "r") as f:
+                                            for line in f:
+                                                parts = line.split()
+                                                if len(parts) >= 4:
+                                                    row_ip = parts[0]
+                                                    row_mac = parts[3].replace("-", ":").upper().strip()
+                                                    if row_mac == clean_mac and row_ip != dev.ip_address and not row_ip.startswith("127."):
+                                                        candidate_ip = row_ip
+                                                        break
+                                    except Exception:
+                                        pass
+
+                                # 3. If candidate IP found, verify with quick active probe
+                                if candidate_ip:
+                                    cand_ok = False
+                                    try:
+                                        c_cmd = ["ping", "-n", "1", "-w", "500", candidate_ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", candidate_ip]
+                                        c_proc = await asyncio.create_subprocess_exec(*c_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                                        c_rc = await asyncio.wait_for(c_proc.wait(), timeout=1.2)
+                                        cand_ok = (c_rc == 0)
+                                    except Exception:
+                                        pass
+                                    if not cand_ok:
+                                        for p in [3389, 80, 443, 22, 8080, 5900]:
+                                            try:
+                                                _, w = await asyncio.wait_for(asyncio.open_connection(candidate_ip, p), timeout=0.25)
+                                                w.close()
+                                                await w.wait_closed()
+                                                cand_ok = True
+                                                break
+                                            except Exception:
+                                                pass
+
+                                    if cand_ok:
+                                        old_ip = dev.ip_address
+                                        dev.ip_address = candidate_ip
+                                        dev.last_seen = now_utc
                                         dev.power_status = PowerStatus.ON
                                         dev.agent_status = AgentStatus.CONNECTED
+                                        ping_ok = True
                                         status_changed = True
+                                        print(f"[Auto-Migrate IP] Thin client {dev.id} ({clean_mac}) auto-migrated IP: {old_ip} -> {candidate_ip}")
                                         await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+
+                            if ping_ok:
+                                dev.last_seen = now_utc
+                                if dev.power_status != PowerStatus.ON or dev.agent_status != AgentStatus.CONNECTED:
+                                    dev.power_status = PowerStatus.ON
+                                    dev.agent_status = AgentStatus.CONNECTED
                                     status_changed = True
-                                else:
-                                    sec_since_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
-                                    # Fast offline switch: if unreachable for > 30 seconds, mark device as OFF
-                                    if dev.power_status == PowerStatus.ON and sec_since_seen > 30:
-                                        dev.power_status = PowerStatus.OFF
-                                        dev.agent_status = AgentStatus.DISCONNECTED
-                                        status_changed = True
-                                        await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+                                    await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+                                status_changed = True
+                            else:
+                                sec_since_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
+                                # Fast offline switch: if unreachable for > 30 seconds, mark device as OFF
+                                if dev.power_status == PowerStatus.ON and sec_since_seen > 30:
+                                    dev.power_status = PowerStatus.OFF
+                                    dev.agent_status = AgentStatus.DISCONNECTED
+                                    status_changed = True
+                                    await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
                             continue
 
                         dev_interval = dev.heartbeat_interval or 60

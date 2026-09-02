@@ -100,6 +100,7 @@ tokens_store: List[Dict[str, Any]] = load_tokens()
 
 # Global fleet network neighbor (ARP / Get-NetNeighbor) cache populated by active Windows agents
 fleet_arp_cache: Dict[str, Dict[str, Any]] = {}
+fleet_mac_to_ip: Dict[str, Dict[str, Any]] = {}
 
 @router.post("/probe-result")
 async def receive_probe_result(payload: Dict[str, Any]):
@@ -108,9 +109,15 @@ async def receive_probe_result(payload: Dict[str, Any]):
     if ip and mac:
         clean_ip = str(ip).strip()
         clean_mac = str(mac).replace("-", ":").upper().strip()
+        now_ts = time.time()
         fleet_arp_cache[clean_ip] = {
             "mac": clean_mac,
-            "timestamp": time.time(),
+            "timestamp": now_ts,
+            "reportedBy": payload.get("reportedBy")
+        }
+        fleet_mac_to_ip[clean_mac] = {
+            "ip": clean_ip,
+            "timestamp": now_ts,
             "reportedBy": payload.get("reportedBy")
         }
         return {"status": "ok", "ip": clean_ip, "mac": clean_mac}
@@ -838,8 +845,15 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 nip = n.get("ip")
                 nmac = n.get("mac")
                 if nip and nmac and str(nmac).strip() != "00:00:00:00:00:00" and not str(nip).startswith("127."):
-                    fleet_arp_cache[str(nip).strip()] = {
-                        "mac": str(nmac).replace("-", ":").upper().strip(),
+                    clean_nip = str(nip).strip()
+                    clean_nmac = str(nmac).replace("-", ":").upper().strip()
+                    fleet_arp_cache[clean_nip] = {
+                        "mac": clean_nmac,
+                        "timestamp": now_ts,
+                        "reportedBy": device_id or payload.get("hostname")
+                    }
+                    fleet_mac_to_ip[clean_nmac] = {
+                        "ip": clean_nip,
                         "timestamp": now_ts,
                         "reportedBy": device_id or payload.get("hostname")
                     }

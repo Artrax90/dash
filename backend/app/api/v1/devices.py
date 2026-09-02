@@ -22,7 +22,7 @@ import socket
 import asyncio
 import subprocess
 from backend.app.core.config import settings
-from backend.app.api.v1.agents import fleet_arp_cache
+from backend.app.api.v1.agents import fleet_arp_cache, fleet_mac_to_ip
 
 router = APIRouter(prefix="/devices", tags=["devices"])
 
@@ -479,6 +479,39 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
             db_res = await db.execute(select(Device).where(or_(*lookup_dev_conds)))
             found_dev = db_res.scalars().first()
             if found_dev:
+                # If current IP failed to respond, but we have a MAC, check if device migrated to another IP
+                if not is_online and formatted_mac and formatted_mac != "00:00:00:00:00:00":
+                    from backend.app.api.v1.agents import fleet_mac_to_ip
+                    m_cand = fleet_mac_to_ip.get(formatted_mac)
+                    if m_cand and isinstance(m_cand, dict):
+                        alt_ip = m_cand.get("ip")
+                        if alt_ip and alt_ip != ip:
+                            # Verify alt_ip with ping
+                            alt_ok = False
+                            try:
+                                alt_p = ["ping", "-n", "1", "-w", "500", alt_ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", alt_ip]
+                                a_proc = await asyncio.create_subprocess_exec(*alt_p, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                                alt_rc = await asyncio.wait_for(a_proc.wait(), timeout=1.2)
+                                alt_ok = (alt_rc == 0)
+                            except Exception:
+                                pass
+                            if not alt_ok:
+                                for p in [3389, 80, 443, 22, 8080, 5900]:
+                                    try:
+                                        _, w = await asyncio.wait_for(asyncio.open_connection(alt_ip, p), timeout=0.25)
+                                        w.close()
+                                        await w.wait_closed()
+                                        alt_ok = True
+                                        break
+                                    except Exception:
+                                        pass
+                            if alt_ok:
+                                print(f"[Probe] Thin client {found_dev.id} ({formatted_mac}) auto-migrated IP: {ip} -> {alt_ip}")
+                                old_ip_logged = ip
+                                ip = alt_ip
+                                found_dev.ip_address = alt_ip
+                                is_online = True
+
                 if is_online:
                     found_dev.power_status = PowerStatus.ON
                     found_dev.agent_status = AgentStatus.CONNECTED
@@ -547,10 +580,16 @@ async def report_device_mac(
     clean_mac = re.sub(r'[^A-F0-9]', '', str(target_mac).upper())
     formatted_mac = ":".join([clean_mac[i:i+2] for i in range(0, len(clean_mac), 2)]) if len(clean_mac) == 12 else str(target_mac).strip().upper()
 
-    from backend.app.api.v1.agents import fleet_arp_cache
+    from backend.app.api.v1.agents import fleet_arp_cache, fleet_mac_to_ip
+    now_ts = time.time()
     fleet_arp_cache[clean_ip] = {
         "mac": formatted_mac,
-        "timestamp": time.time(),
+        "timestamp": now_ts,
+        "reportedBy": "PowerShell Quick Report"
+    }
+    fleet_mac_to_ip[formatted_mac] = {
+        "ip": clean_ip,
+        "timestamp": now_ts,
         "reportedBy": "PowerShell Quick Report"
     }
 
