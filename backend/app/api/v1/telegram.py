@@ -64,15 +64,21 @@ def load_config() -> Dict[str, Any]:
         "proxyPass": "",
         "eventsConfig": {
             "criticalAlerts": True,
+            "hardwareChanges": True,
+            "usbStorage": False,
             "morningWakeSummary": True,
             "eveningShutdownSummary": True,
-            "hardwareChanges": True,
+            "powerAlerts": True,
+            "disconnectAlerts": True,
         },
     }
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
+                if "eventsConfig" in data and isinstance(data["eventsConfig"], dict):
+                    default["eventsConfig"].update(data["eventsConfig"])
+                    data.pop("eventsConfig")
                 default.update(data)
         except Exception:
             pass
@@ -736,6 +742,7 @@ class TelegramConfigPayload(BaseModel):
     proxyPort: str = "1080"
     proxyUser: str = ""
     proxyPass: str = ""
+    eventsConfig: Optional[Dict[str, bool]] = None
 
 class TestProxyPayload(BaseModel):
     botToken: Optional[str] = ""
@@ -767,6 +774,10 @@ async def update_telegram_config(payload: TelegramConfigPayload):
     cfg["proxyPort"] = str(payload.proxyPort).strip()
     cfg["proxyUser"] = payload.proxyUser.strip()
     cfg["proxyPass"] = payload.proxyPass.strip()
+    if payload.eventsConfig is not None:
+        if "eventsConfig" not in cfg or not isinstance(cfg["eventsConfig"], dict):
+            cfg["eventsConfig"] = {}
+        cfg["eventsConfig"].update(payload.eventsConfig)
 
     if not cfg["botToken"]:
         cfg["botUsername"] = ""

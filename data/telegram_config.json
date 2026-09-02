@@ -14,8 +14,11 @@
   "proxyPass": "",
   "eventsConfig": {
     "criticalAlerts": true,
+    "hardwareChanges": true,
+    "usbStorage": false,
     "morningWakeSummary": true,
     "eveningShutdownSummary": true,
-    "hardwareChanges": true
+    "powerAlerts": true,
+    "disconnectAlerts": true
   }
 }

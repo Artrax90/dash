@@ -1251,13 +1251,18 @@ async def delete_device(device_id: str, request: Request, db: AsyncSession = Dep
 
 @router.post("/{device_id}/alert-policy")
 async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == device_id))
+    result = await db.execute(
+        select(AlertPolicyModel).where(
+            (AlertPolicyModel.device_id == device_id) |
+            (AlertPolicyModel.device_id == func.lower(device_id))
+        )
+    )
     policy = result.scalar_one_or_none()
     
     mode = payload.get("mode", "Full")
     events = payload.get("events", {})
     thresholds = payload.get("thresholds", {})
-    channels = payload.get("notifyChannels", {})
+    channels = payload.get("notifyChannels", {}) or payload.get("notify_channels", {})
 
     if not policy:
         policy = AlertPolicyModel(
@@ -1275,7 +1280,72 @@ async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSe
         policy.notify_channels = channels
 
     await db.commit()
+
+    # Also persist to DEVICE_CONFIGS_FILE for redundancy
+    try:
+        cfgs = load_device_configs()
+        if "policies" not in cfgs:
+            cfgs["policies"] = {}
+        cfgs["policies"][device_id] = {
+            "mode": mode,
+            "events": events,
+            "thresholds": thresholds,
+            "notifyChannels": channels
+        }
+        save_device_configs(cfgs)
+    except Exception:
+        pass
+
     return {"status": "saved", "deviceId": device_id}
+
+@router.get("/{device_id}/alert-policy")
+async def get_alert_policy(device_id: str, db: AsyncSession = Depends(get_db)):
+    result = await db.execute(
+        select(AlertPolicyModel).where(
+            (AlertPolicyModel.device_id == device_id) |
+            (AlertPolicyModel.device_id == func.lower(device_id))
+        )
+    )
+    policy = result.scalar_one_or_none()
+    if policy:
+        return {
+            "mode": policy.mode,
+            "events": policy.events_config or {},
+            "thresholds": policy.thresholds or {},
+            "notifyChannels": policy.notify_channels or {}
+        }
+    
+    # Fallback to DEVICE_CONFIGS_FILE
+    cfgs = load_device_configs()
+    if device_id in cfgs.get("policies", {}):
+        return cfgs["policies"][device_id]
+        
+    return {
+        "mode": "Full",
+        "events": {
+            "hardwareChanges": True,
+            "usbStorage": False,
+            "powerStateFailed": True,
+            "morningWakeFailed": True,
+            "eveningShutdownFailed": True,
+            "rdpSessionTimeout": True,
+            "agentDisconnect": True,
+            "highCpuUsage": True,
+            "highRamUsage": True,
+            "highDiskUsage": True,
+        },
+        "thresholds": {
+            "cpuPercent": 90,
+            "ramPercent": 85,
+            "diskPercent": 90,
+            "rdpIdleMinutes": 30,
+        },
+        "notifyChannels": {
+            "webUi": True,
+            "telegram": True,
+            "email": False,
+        }
+    }
 
 @router.post("/{device_id}/wake")
 async def wake_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
@@ -1615,42 +1685,6 @@ def save_device_configs(data: Dict[str, Any]):
     os.makedirs(os.path.dirname(DEVICE_CONFIGS_FILE), exist_ok=True)
     with open(DEVICE_CONFIGS_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=2)
-
-@router.get("/{device_id}/alert-policy")
-async def get_device_alert_policy(device_id: str):
-    cfgs = load_device_configs()
-    return cfgs.get("policies", {}).get(device_id, {
-        "mode": "Full",
-        "events": {
-            "hardwareChanges": True,
-            "powerStateFailed": True,
-            "rdpSessionTimeout": True,
-            "agentDisconnect": True,
-            "highCpuUsage": True,
-            "highRamUsage": True,
-            "highDiskUsage": True,
-        },
-        "thresholds": {
-            "cpuPercent": 90,
-            "ramPercent": 85,
-            "diskPercent": 90,
-            "rdpIdleMinutes": 30,
-        },
-        "notifyChannels": {
-            "webUi": True,
-            "telegram": True,
-            "email": False,
-        }
-    })
-
-@router.post("/{device_id}/alert-policy")
-async def save_device_alert_policy(device_id: str, payload: Dict[str, Any]):
-    cfgs = load_device_configs()
-    if "policies" not in cfgs:
-        cfgs["policies"] = {}
-    cfgs["policies"][device_id] = payload
-    save_device_configs(cfgs)
-    return {"status": "saved", "deviceId": device_id, "policy": payload}
 
 @router.get("/{device_id}/credentials")
 async def get_device_credentials(device_id: str):

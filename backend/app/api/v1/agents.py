@@ -537,12 +537,16 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                 hardware_changes_db.insert(0, c)
 
                 # Create persistent Alert
+                is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
+                cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else "HARDWARE_MISMATCH"
+                cur_category = "Security" if is_usb else "Hardware"
+
                 alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
                 new_alert = AlertModel(
                     id=alert_id,
                     device_id=real_device_id,
-                    alert_type="HARDWARE_MISMATCH",
-                    category="Hardware",
+                    alert_type=cur_alert_type,
+                    category=cur_category,
                     severity=c["severity"],
                     state="Open",
                     description=alert_desc
@@ -554,8 +558,8 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     "device": dev_name,
                     "deviceName": dev_name,
                     "deviceId": real_device_id,
-                    "type": "HARDWARE_MISMATCH",
-                    "category": "Hardware",
+                    "type": cur_alert_type,
+                    "category": cur_category,
                     "severity": c["severity"],
                     "state": "Open",
                     "description": alert_desc,
@@ -566,7 +570,7 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                 alerts_db.insert(0, alert_dict)
 
                 # Query policy if exists
-                pol_res = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == device_id))
+                pol_res = await db.execute(select(AlertPolicyModel).where((AlertPolicyModel.device_id == real_device_id) | (AlertPolicyModel.device_id == device_id)))
                 pol_model = pol_res.scalar_one_or_none()
                 policy_dict = {
                     "mode": pol_model.mode,
@@ -1197,12 +1201,16 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                     hardware_changes_db.insert(0, c)
 
                                     # Create persistent Alert
+                                    is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
+                                    cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else "HARDWARE_MISMATCH"
+                                    cur_category = "Security" if is_usb else "Hardware"
+
                                     alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
                                     new_alert = AlertModel(
                                         id=alert_id,
                                         device_id=device.id,
-                                        alert_type="HARDWARE_MISMATCH",
-                                        category="Hardware",
+                                        alert_type=cur_alert_type,
+                                        category=cur_category,
                                         severity=c["severity"],
                                         state="Open",
                                         description=alert_desc
@@ -1214,8 +1222,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         "device": dev_name,
                                         "deviceName": dev_name,
                                         "deviceId": device.id,
-                                        "type": "HARDWARE_MISMATCH",
-                                        "category": "Hardware",
+                                        "type": cur_alert_type,
+                                        "category": cur_category,
                                         "severity": c["severity"],
                                         "state": "Open",
                                         "description": alert_desc,
@@ -1228,7 +1236,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                     alerts_db.insert(0, alert_dict)
 
                                     # Query device alert policy if available
-                                    pol_res = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == device.id))
+                                    pol_res = await db.execute(select(AlertPolicyModel).where((AlertPolicyModel.device_id == device.id) | (AlertPolicyModel.device_id == device.hostname)))
                                     pol_model = pol_res.scalar_one_or_none()
                                     policy_dict = {
                                         "mode": pol_model.mode,

@@ -90,6 +90,28 @@ class HardwareDiffService:
         base_storage = prev_spec.get("storage", []) or []
         curr_storage = current_spec.get("storage", []) or []
 
+        def is_usb_storage(d: Dict[str, Any]) -> bool:
+            if not isinstance(d, dict):
+                return False
+            bus = str(d.get("busType", "")).upper()
+            interface = str(d.get("interfaceType", "")).upper()
+            media = str(d.get("mediaType", "")).lower()
+            model = str(d.get("model", "")).lower()
+            name = str(d.get("name", "")).lower()
+            return (
+                "USB" in bus or
+                "USB" in interface or
+                "removable" in media or
+                "usb" in media or
+                "usb" in model or
+                "flash" in model or
+                "datatraveler" in model or
+                "sandisk" in model or
+                "transcend" in model or
+                "kingston" in model or
+                bool(d.get("isRemovable"))
+            )
+
         if isinstance(base_storage, list) and isinstance(curr_storage, list) and len(base_storage) > 0 and len(curr_storage) > 0:
             base_disks = {d.get("serialNumber"): d for d in base_storage if isinstance(d, dict) and d.get("serialNumber") and not str(d.get("serialNumber")).startswith("DISK-SN-")}
             curr_disks = {d.get("serialNumber"): d for d in curr_storage if isinstance(d, dict) and d.get("serialNumber") and not str(d.get("serialNumber")).startswith("DISK-SN-")}
@@ -97,34 +119,42 @@ class HardwareDiffService:
             if base_disks and curr_disks:
                 for sn, d in base_disks.items():
                     if sn not in curr_disks:
+                        is_usb = is_usb_storage(d)
+                        comp_name = "USB-накопитель" if is_usb else "Storage"
+                        desc = f"Извлечен съемный USB-накопитель: {d.get('model', 'USB Flash')} (S/N: {sn})" if is_usb else f"Извлечен накопитель: {d.get('model', 'Накопитель')} (S/N: {sn})"
                         changes.append({
-                            "id": f"HWC-{device_id}-DISK-REM-{sn[:8]}-{ts_suffix}",
+                            "id": f"HWC-{device_id}-{'USB' if is_usb else 'DISK'}-REM-{sn[:8]}-{ts_suffix}",
                             "deviceId": device_id,
                             "timestamp": now_str,
-                            "component": "Storage",
+                            "component": comp_name,
                             "changeType": "REMOVED",
-                            "severity": "Critical",
+                            "severity": "Info" if is_usb else "Critical",
                             "previousValue": f"{d.get('model', 'Накопитель')} (S/N: {sn})",
                             "currentValue": "Отсутствует / Извлечен",
-                            "description": f"Извлечен накопитель: {d.get('model', 'Накопитель')} (S/N: {sn})",
+                            "description": desc,
                             "acknowledged": False,
                             "diffStatus": "MISMATCH",
+                            "isUsb": is_usb
                         })
                         
                 for sn, d in curr_disks.items():
                     if sn not in base_disks:
+                        is_usb = is_usb_storage(d)
+                        comp_name = "USB-накопитель" if is_usb else "Storage"
+                        desc = f"Подключен съемный USB-накопитель: {d.get('model', 'USB Flash')} (S/N: {sn})" if is_usb else f"Подключен новый накопитель: {d.get('model', 'Накопитель')} (S/N: {sn})"
                         changes.append({
-                            "id": f"HWC-{device_id}-DISK-ADD-{sn[:8]}-{ts_suffix}",
+                            "id": f"HWC-{device_id}-{'USB' if is_usb else 'DISK'}-ADD-{sn[:8]}-{ts_suffix}",
                             "deviceId": device_id,
                             "timestamp": now_str,
-                            "component": "Storage",
+                            "component": comp_name,
                             "changeType": "ADDED",
-                            "severity": "Warning",
+                            "severity": "Info" if is_usb else "Warning",
                             "previousValue": "Отсутствует",
                             "currentValue": f"{d.get('model', 'Накопитель')} (S/N: {sn})",
-                            "description": f"Подключен новый накопитель: {d.get('model', 'Накопитель')} (S/N: {sn})",
+                            "description": desc,
                             "acknowledged": False,
                             "diffStatus": "MISMATCH",
+                            "isUsb": is_usb
                         })
 
         # 3. Compare GPU (Additions, Removals, Replacements)

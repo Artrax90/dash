@@ -5,7 +5,7 @@ import {
   LoaderCircle, LogOut, Menu, Monitor, Moon, MoreHorizontal, Network, Power, RefreshCw, Search, Send, Server,
   Settings, ShieldCheck, Sun, Tag, Terminal, UserRound, Users as UsersIcon, Wifi, X, Zap, Plus, Trash2, Play,
   Edit3, Lock, Download, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
-  Eye, EyeOff, Sparkles, Pencil
+  Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb
 } from 'lucide-react';
 import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, getActiveUserName, wsClient, notificationService } from '@/api';
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
@@ -5805,12 +5805,27 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
 // ----------------------------------------------------
 function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (message: string) => void }) {
   const { t } = useLanguage();
-  const [mode, setMode] = useState('Full');
-  const [hwEvents, setHwEvents] = useState(true);
-  const [powerEvents, setPowerEvents] = useState(true);
-  const [rdpEvents, setRdpEvents] = useState(true);
+  const [mode, setMode] = useState<'Full' | 'Critical Only' | 'Hardware Only' | 'Custom' | 'Muted'>('Full');
+  
+  // Custom mode granular toggles
+  const [hwCritical, setHwCritical] = useState(true);
+  const [hwDisks, setHwDisks] = useState(true);
+  const [hwUsb, setHwUsb] = useState(false);
+  const [hwNetwork, setHwNetwork] = useState(true);
+
+  const [powerWake, setPowerWake] = useState(true);
+  const [powerShutdown, setPowerShutdown] = useState(true);
+  const [powerUnexpected, setPowerUnexpected] = useState(true);
+
   const [agentDisconnect, setAgentDisconnect] = useState(true);
-  const [resourceEvents, setResourceEvents] = useState(true);
+  const [agentOnline, setAgentOnline] = useState(true);
+
+  const [rdpIdle, setRdpIdle] = useState(true);
+  const [rdpLogon, setRdpLogon] = useState(false);
+
+  const [resourceCpu, setResourceCpu] = useState(true);
+  const [resourceRam, setResourceRam] = useState(true);
+  const [resourceDisk, setResourceDisk] = useState(true);
 
   const [cpuThreshold, setCpuThreshold] = useState(90);
   const [ramThreshold, setRamThreshold] = useState(85);
@@ -5824,25 +5839,37 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
   useEffect(() => {
     devicesApi.getAlertPolicy(deviceId).then(policy => {
       if (policy) {
-        if (policy.mode) setMode(policy.mode);
-        if (policy.events) {
-          if (policy.events.hardwareChanges !== undefined) setHwEvents(policy.events.hardwareChanges);
-          if (policy.events.powerStateFailed !== undefined) setPowerEvents(policy.events.powerStateFailed);
-          if (policy.events.rdpSessionTimeout !== undefined) setRdpEvents(policy.events.rdpSessionTimeout);
-          if (policy.events.agentDisconnect !== undefined) setAgentDisconnect(policy.events.agentDisconnect);
-          if (policy.events.highCpuUsage !== undefined) setResourceEvents(policy.events.highCpuUsage);
-        }
+        if (policy.mode) setMode(policy.mode as any);
+        const ev = policy.events || policy.events_config || {};
+        if (ev.hardwareChanges !== undefined) setHwCritical(ev.hardwareChanges);
+        if (ev.hwDisks !== undefined) setHwDisks(ev.hwDisks);
+        if (ev.usbStorage !== undefined) setHwUsb(ev.usbStorage);
+        if (ev.hwNetwork !== undefined) setHwNetwork(ev.hwNetwork);
+
+        if (ev.morningWakeFailed !== undefined) setPowerWake(ev.morningWakeFailed);
+        if (ev.eveningShutdownFailed !== undefined) setPowerShutdown(ev.eveningShutdownFailed);
+        if (ev.powerStateFailed !== undefined) setPowerUnexpected(ev.powerStateFailed);
+
+        if (ev.agentDisconnect !== undefined) setAgentDisconnect(ev.agentDisconnect);
+        if (ev.agentOnline !== undefined) setAgentOnline(ev.agentOnline);
+
+        if (ev.rdpSessionTimeout !== undefined) setRdpIdle(ev.rdpSessionTimeout);
+        if (ev.rdpLogon !== undefined) setRdpLogon(ev.rdpLogon);
+
+        if (ev.highCpuUsage !== undefined) setResourceCpu(ev.highCpuUsage);
+        if (ev.highRamUsage !== undefined) setResourceRam(ev.highRamUsage);
+        if (ev.highDiskUsage !== undefined) setResourceDisk(ev.highDiskUsage);
+
         if (policy.thresholds) {
           if (policy.thresholds.cpuPercent !== undefined) setCpuThreshold(policy.thresholds.cpuPercent);
           if (policy.thresholds.ramPercent !== undefined) setRamThreshold(policy.thresholds.ramPercent);
           if (policy.thresholds.diskPercent !== undefined) setDiskThreshold(policy.thresholds.diskPercent);
           if (policy.thresholds.rdpIdleMinutes !== undefined) setRdpIdleLimit(policy.thresholds.rdpIdleMinutes);
         }
-        if (policy.notifyChannels) {
-          if (policy.notifyChannels.webUi !== undefined) setWebUiChannel(policy.notifyChannels.webUi);
-          if (policy.notifyChannels.telegram !== undefined) setTelegramChannel(policy.notifyChannels.telegram);
-          if (policy.notifyChannels.email !== undefined) setEmailChannel(policy.notifyChannels.email);
-        }
+        const ch = policy.notifyChannels || policy.notify_channels || {};
+        if (ch.webUi !== undefined) setWebUiChannel(ch.webUi);
+        if (ch.telegram !== undefined) setTelegramChannel(ch.telegram);
+        if (ch.email !== undefined) setEmailChannel(ch.email);
       }
     });
   }, [deviceId]);
@@ -5851,13 +5878,20 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
     await devicesApi.saveAlertPolicy(deviceId, {
       mode,
       events: {
-        hardwareChanges: hwEvents,
-        powerStateFailed: powerEvents,
-        rdpSessionTimeout: rdpEvents,
+        hardwareChanges: hwCritical,
+        hwDisks,
+        usbStorage: hwUsb,
+        hwNetwork,
+        morningWakeFailed: powerWake,
+        eveningShutdownFailed: powerShutdown,
+        powerStateFailed: powerUnexpected,
         agentDisconnect,
-        highCpuUsage: resourceEvents,
-        highRamUsage: resourceEvents,
-        highDiskUsage: resourceEvents,
+        agentOnline,
+        rdpSessionTimeout: rdpIdle,
+        rdpLogon,
+        highCpuUsage: resourceCpu,
+        highRamUsage: resourceRam,
+        highDiskUsage: resourceDisk,
       },
       thresholds: {
         cpuPercent: cpuThreshold,
@@ -5876,75 +5910,294 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
 
   return (
     <section className="panel automation-panel">
-      <div className="panel-heading">
-        <div><h2>Политика оповещений устройства</h2><p>Режим мониторинга, пороговые значения и каналы оповещения</p></div>
-        <select value={mode} onChange={(e) => setMode(e.target.value)} className="text-input">
-          <option value="Full">Full (Все события и пороги)</option>
-          <option value="Hardware Only">Hardware Only (Только изменения железа)</option>
-          <option value="Custom">Custom (Пользовательские настройки)</option>
-          <option value="Muted">Muted (Оповещения отключены)</option>
-        </select>
-      </div>
-
-      <div className="setting-row">
-        <div><strong>Изменения аппаратной конфигурации</strong><span>Изъятие ОЗУ, замена дисков, смена GPU или процессора</span></div>
-        <Switch checked={hwEvents} onChange={setHwEvents} />
-      </div>
-
-      <div className="setting-row">
-        <div><strong>Сбои питания и циклов расписания</strong><span>Ошибки утреннего включения WoL или вечернего выключения</span></div>
-        <Switch checked={powerEvents} onChange={setPowerEvents} />
-      </div>
-
-      <div className="setting-row">
-        <div><strong>Потеря связи с агентом</strong><span>Оповещать при отсутствии heartbeat более 2 минут</span></div>
-        <Switch checked={agentDisconnect} onChange={setAgentDisconnect} />
-      </div>
-
-      <div className="setting-row">
-        <div><strong>RDP-сессии и таймаут простоя</strong><span>Превышение лимита брошенных или неактивных подключений</span></div>
-        <Switch checked={rdpEvents} onChange={setRdpEvents} />
-      </div>
-
-      <div className="setting-row">
-        <div><strong>Превышение порогов нагрузки</strong><span>Контроль утилизации CPU, памяти и дискового пространства</span></div>
-        <Switch checked={resourceEvents} onChange={setResourceEvents} />
-      </div>
-
-      <div style={{ padding: '16px 21px', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
-        <strong style={{ fontSize: '13px', display: 'block', marginBottom: '12px' }}>Пороговые лимиты срабатывания:</strong>
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
-          <div>
-            <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>Порог нагрузки CPU (%):</span>
-            <input type="number" min="50" max="99" value={cpuThreshold} onChange={(e) => setCpuThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
-          </div>
-          <div>
-            <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>Порог использования RAM (%):</span>
-            <input type="number" min="50" max="99" value={ramThreshold} onChange={(e) => setRamThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
-          </div>
-          <div>
-            <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>Порог диска (%):</span>
-            <input type="number" min="50" max="99" value={diskThreshold} onChange={(e) => setDiskThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
-          </div>
-          <div>
-            <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>Таймаут простоя RDP (мин):</span>
-            <input type="number" min="5" max="240" value={rdpIdleLimit} onChange={(e) => setRdpIdleLimit(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
-          </div>
+      <div className="panel-heading" style={{ flexWrap: 'wrap', gap: '14px', alignItems: 'center' }}>
+        <div>
+          <h2>Политика оповещений устройства</h2>
+          <p>Выбор профиля мониторинга, пороговых значений и каналов оповещения</p>
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <span style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>Профиль:</span>
+          <select
+            value={mode}
+            onChange={(e) => setMode(e.target.value as any)}
+            className="text-input"
+            style={{ fontWeight: 600, minWidth: '220px' }}
+          >
+            <option value="Full">Full (Все события и пороги)</option>
+            <option value="Critical Only">Critical Only (Только критические сбои)</option>
+            <option value="Hardware Only">Hardware Only (Комплектующие ПК)</option>
+            <option value="Custom">Custom (Пользовательские настройки)</option>
+            <option value="Muted">Muted (Оповещения отключены)</option>
+          </select>
         </div>
       </div>
 
+      {/* Preset summary banner when NOT in Custom mode */}
+      {mode === 'Critical Only' && (
+        <div style={{ padding: '18px 21px', background: 'var(--panel)', borderBottom: '1px solid var(--line)' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+            <div className="stat-icon red" style={{ flexShrink: 0 }}><AlertTriangle size={18} /></div>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <strong style={{ fontSize: '13px' }}>Профиль: Только критические сбои и аварии</strong>
+                <span className="status-pill critical">Critical Only</span>
+              </div>
+              <p style={{ margin: '0 0 10px', fontSize: '11px', color: 'var(--muted)', lineHeight: '1.55' }}>
+                Включен мониторинг исключительно критических инцидентов: несанкционированное изъятие или замена комплектующих (CPU, RAM, GPU, системных дисков), аварийное обесточивание и потеря связи со станцией.
+                Обычные внешние USB-флешки и пороги нагрузки игнорируются, исключая ложный шум в Telegram и почте.
+              </p>
+              <button className="text-button" style={{ fontWeight: 600, fontSize: '11px' }} onClick={() => setMode('Custom')}>
+                ⚙️ Переключить в Custom для ручной настройки чекбоксов →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mode === 'Full' && (
+        <div style={{ padding: '18px 21px', background: 'var(--panel)', borderBottom: '1px solid var(--line)' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+            <div className="stat-icon blue" style={{ flexShrink: 0 }}><CheckCircle2 size={18} /></div>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <strong style={{ fontSize: '13px' }}>Профиль: Полный контроль (Все события)</strong>
+                <span className="status-pill open">Full</span>
+              </div>
+              <p style={{ margin: '0 0 10px', fontSize: '11px', color: 'var(--muted)', lineHeight: '1.55' }}>
+                Отслеживаются все категории инцидентов: конфигурация комплектующих, питание, расписания, доступность, сессии и пороги нагрузки.
+              </p>
+              <button className="text-button" style={{ fontWeight: 600, fontSize: '11px' }} onClick={() => setMode('Custom')}>
+                ⚙️ Переключить в Custom для выбора конкретных событий →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mode === 'Hardware Only' && (
+        <div style={{ padding: '18px 21px', background: 'var(--panel)', borderBottom: '1px solid var(--line)' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+            <div className="stat-icon blue" style={{ flexShrink: 0 }}><Cpu size={18} /></div>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <strong style={{ fontSize: '13px' }}>Профиль: Только аппаратное обеспечение</strong>
+                <span className="status-pill open">Hardware Only</span>
+              </div>
+              <p style={{ margin: '0 0 10px', fontSize: '11px', color: 'var(--muted)', lineHeight: '1.55' }}>
+                Контролируются физические компоненты компьютера: CPU, оперативная память, видеокарта и накопители. События сессий, циклов расписания и нагрузки отключены.
+              </p>
+              <button className="text-button" style={{ fontWeight: 600, fontSize: '11px' }} onClick={() => setMode('Custom')}>
+                ⚙️ Переключить в Custom для ручной настройки чекбоксов →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {mode === 'Muted' && (
+        <div style={{ padding: '18px 21px', background: 'var(--panel)', borderBottom: '1px solid var(--line)' }}>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+            <div className="stat-icon slate" style={{ flexShrink: 0 }}><BellOff size={18} /></div>
+            <div style={{ flex: 1 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '4px' }}>
+                <strong style={{ fontSize: '13px' }}>Оповещения отключены</strong>
+                <span className="status-pill warning">Muted</span>
+              </div>
+              <p style={{ margin: '0 0 10px', fontSize: '11px', color: 'var(--muted)', lineHeight: '1.55' }}>
+                Для данного компьютера все уведомления и алерты заглушены. Алерты не генерируются и не рассылаются.
+              </p>
+              <button className="text-button" style={{ fontWeight: 600, fontSize: '11px' }} onClick={() => setMode('Custom')}>
+                ⚙️ Включить Custom и выбрать нужные события →
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* FULL CUSTOM MATRIX PANEL (like Roles & Permissions) */}
+      {mode === 'Custom' && (
+        <div style={{ borderTop: '1px solid var(--line)' }}>
+          {/* Section 1: Hardware */}
+          <div style={{ padding: '14px 21px 8px', background: 'var(--blue-soft)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Cpu size={16} style={{ color: 'var(--blue)' }} />
+            <strong style={{ fontSize: '12px', color: 'var(--ink)' }}>1. Аппаратный контроль и накопители</strong>
+          </div>
+          <div className="permissions" style={{ borderTop: 0 }}>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={hwCritical} onChange={(e) => setHwCritical(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Критическое оборудование</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Замена или изъятие CPU, модулей RAM, GPU, мат. платы</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={hwDisks} onChange={(e) => setHwDisks(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Внутренние накопители</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Замена или извлечение системных дисков SATA / NVMe SSD</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={hwNetwork} onChange={(e) => setHwNetwork(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Сетевые интерфейсы и MAC</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Смена физического MAC-адреса или сетевого контроллера</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px', background: hwUsb ? 'rgba(235, 120, 50, 0.08)' : undefined }}>
+              <input type="checkbox" checked={hwUsb} onChange={(e) => setHwUsb(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Внешние USB-накопители и флешки</strong>
+                  <span className="maintenance-badge" style={{ margin: 0 }}>Внимание</span>
+                </div>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Оповещать о подключении/извлечении флешек. Отключите в проде для защиты от спама</span>
+              </div>
+            </label>
+          </div>
+
+          {/* Section 2: Power & Schedules */}
+          <div style={{ padding: '14px 21px 8px', background: 'var(--blue-soft)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Zap size={16} style={{ color: 'var(--orange)' }} />
+            <strong style={{ fontSize: '12px', color: 'var(--ink)' }}>2. Питание и расписания</strong>
+          </div>
+          <div className="permissions" style={{ borderTop: 0 }}>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={powerWake} onChange={(e) => setPowerWake(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Сбой утреннего включения (WoL)</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>ПК не вышел на связь после отправки сигнала включения</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={powerShutdown} onChange={(e) => setPowerShutdown(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Сбой вечернего выключения</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Станция осталась включенной после команды выключения</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={powerUnexpected} onChange={(e) => setPowerUnexpected(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Аварийное обесточивание</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Непредвиденное отключение питания в рабочие часы</span>
+              </div>
+            </label>
+          </div>
+
+          {/* Section 3: Availability */}
+          <div style={{ padding: '14px 21px 8px', background: 'var(--blue-soft)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Wifi size={16} style={{ color: 'var(--green)' }} />
+            <strong style={{ fontSize: '12px', color: 'var(--ink)' }}>3. Доступность и связь с агентом</strong>
+          </div>
+          <div className="permissions" style={{ borderTop: 0 }}>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={agentDisconnect} onChange={(e) => setAgentDisconnect(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Потеря связи со станцией</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Отсутствие Heartbeat от агента более 2 минут (уход в оффлайн)</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={agentOnline} onChange={(e) => setAgentOnline(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Восстановление связи (Online)</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Уведомлять при успешном возвращении станции в сеть</span>
+              </div>
+            </label>
+          </div>
+
+          {/* Section 4: Security & RDP */}
+          <div style={{ padding: '14px 21px 8px', background: 'var(--blue-soft)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Lock size={16} style={{ color: 'var(--blue)' }} />
+            <strong style={{ fontSize: '12px', color: 'var(--ink)' }}>4. Безопасность и RDP-сессии</strong>
+          </div>
+          <div className="permissions" style={{ borderTop: 0 }}>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={rdpIdle} onChange={(e) => setRdpIdle(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Превышение простоя RDP</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Фиксировать брошенные неактивные подключения пользователей</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={rdpLogon} onChange={(e) => setRdpLogon(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Вход пользователя в систему</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Уведомлять при каждой новой авторизации в RDP или консоли</span>
+              </div>
+            </label>
+          </div>
+
+          {/* Section 5: Resource Thresholds */}
+          <div style={{ padding: '14px 21px 8px', background: 'var(--blue-soft)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <Gauge size={16} style={{ color: 'var(--orange)' }} />
+            <strong style={{ fontSize: '12px', color: 'var(--ink)' }}>5. Пороги нагрузки и ресурсов</strong>
+          </div>
+          <div className="permissions" style={{ borderTop: 0 }}>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={resourceCpu} onChange={(e) => setResourceCpu(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Контроль нагрузки CPU</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Превышение лимита использования процессора</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={resourceRam} onChange={(e) => setResourceRam(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Контроль памяти RAM</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Превышение лимита оперативной памяти</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px' }}>
+              <input type="checkbox" checked={resourceDisk} onChange={(e) => setResourceDisk(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Контроль свободного места на диске</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Превышение заполненности системного накопителя</span>
+              </div>
+            </label>
+          </div>
+        </div>
+      )}
+
+      {/* Threshold numeric limits */}
+      {(mode === 'Custom' || mode === 'Full') && (
+        <div style={{ padding: '16px 21px', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)' }}>
+          <strong style={{ fontSize: '12px', display: 'block', marginBottom: '12px', color: 'var(--ink)' }}>Лимиты срабатывания порогов:</strong>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '14px' }}>
+            <div>
+              <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>Порог нагрузки CPU (%):</span>
+              <input type="number" min="50" max="99" value={cpuThreshold} onChange={(e) => setCpuThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
+            </div>
+            <div>
+              <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>Порог использования RAM (%):</span>
+              <input type="number" min="50" max="99" value={ramThreshold} onChange={(e) => setRamThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
+            </div>
+            <div>
+              <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>Порог заполнения диска (%):</span>
+              <input type="number" min="50" max="99" value={diskThreshold} onChange={(e) => setDiskThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
+            </div>
+            <div>
+              <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>Таймаут простоя RDP (мин):</span>
+              <input type="number" min="5" max="240" value={rdpIdleLimit} onChange={(e) => setRdpIdleLimit(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Channels */}
       <div style={{ padding: '16px 21px' }}>
-        <strong style={{ fontSize: '13px', display: 'block', marginBottom: '10px' }}>Каналы отправки уведомлений:</strong>
+        <strong style={{ fontSize: '12px', display: 'block', marginBottom: '10px', color: 'var(--ink)' }}>Каналы отправки оповещений:</strong>
         <div style={{ display: 'flex', gap: '20px', flexWrap: 'wrap' }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
             <input type="checkbox" checked={webUiChannel} onChange={(e) => setWebUiChannel(e.target.checked)} />
-            Веб-интерфейс (Колокольчик и дашборд)
+            Веб-интерфейс (Колокольчик и бейджи)
           </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
             <input type="checkbox" checked={telegramChannel} onChange={(e) => setTelegramChannel(e.target.checked)} />
             Telegram-бот
           </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
             <input type="checkbox" checked={emailChannel} onChange={(e) => setEmailChannel(e.target.checked)} />
             Email оповещения
           </label>
@@ -5952,7 +6205,7 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
       </div>
 
       <div className="automation-footer">
-        <span><ShieldCheck size={15} /> Параметры применяются немедленно</span>
+        <span><ShieldCheck size={15} /> Параметры политики сохраняются на сервере и применяются мгновенно</span>
         <Button primary onClick={handleSavePolicy}>Сохранить политику алертинга</Button>
       </div>
     </section>
@@ -10342,6 +10595,17 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
   const [botUsername, setBotUsername] = useState('');
   const [status, setStatus] = useState('Не настроен');
 
+  // Telegram Alert Event Filters (Spam prevention & USB distinction)
+  const [eventsConfig, setEventsConfig] = useState({
+    criticalAlerts: true,
+    hardwareChanges: true,
+    usbStorage: false, // Default false to prevent flooding Telegram with flash drive insertions
+    morningWakeSummary: true,
+    eveningShutdownSummary: true,
+    powerAlerts: true,
+    disconnectAlerts: true,
+  });
+
   // Proxy Configuration State
   const [proxyEnabled, setProxyEnabled] = useState(false);
   const [proxyType, setProxyType] = useState('SOCKS5');
@@ -10366,6 +10630,9 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
         if (cfg.proxyPort) setProxyPort(String(cfg.proxyPort));
         if (cfg.proxyUser) setProxyUser(cfg.proxyUser);
         if (cfg.proxyPass) setProxyPass(cfg.proxyPass);
+        if (cfg.eventsConfig && typeof cfg.eventsConfig === 'object') {
+          setEventsConfig(prev => ({ ...prev, ...cfg.eventsConfig }));
+        }
       }
     });
   }, []);
@@ -10419,7 +10686,8 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
         proxyHost,
         proxyPort,
         proxyUser,
-        proxyPass
+        proxyPass,
+        eventsConfig
       });
       if (savedCfg) {
         if (savedCfg.botUsername !== undefined) setBotUsername(savedCfg.botUsername);
@@ -10484,7 +10752,7 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
               />
             </div>
             <div className="setting-row" style={{ padding: '10px 0', margin: 0 }}>
-              <div><strong>Мгновенные алерты в чат</strong><span>Отправлять критические сбои оборудования</span></div>
+              <div><strong>Мгновенные алерты в Telegram</strong><span>Включить глобальную рассылку сообщений ботом</span></div>
               <label className="switch"><input type="checkbox" checked={alertsEnabled} onChange={e => setAlertsEnabled(e.target.checked)} /><span /></label>
             </div>
           </div>
@@ -10615,7 +10883,70 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
           </div>
         </section>
 
-        {/* Panel 3: Commands cheat-sheet */}
+        {/* Panel 3: Granular Telegram Alerts Filtering */}
+        <section className="panel info-panel" style={{ gridColumn: '1 / -1' }}>
+          <div className="panel-heading">
+            <div>
+              <h2>Фильтрация категорий оповещений для Telegram</h2>
+              <p>Разграничение критических инцидентов и обычных событий для защиты от спама</p>
+            </div>
+            <Bell size={19} className="heading-icon" />
+          </div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(320px, 1fr))', gap: '12px', padding: '0 21px 21px' }}>
+            <div className="setting-row" style={{ margin: 0, padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+              <div>
+                <strong>Критические сбои оборудования</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Отказ CPU, изъятие модулей памяти RAM, отказ питания</span>
+              </div>
+              <Switch checked={eventsConfig.criticalAlerts} onChange={v => setEventsConfig(p => ({ ...p, criticalAlerts: v }))} />
+            </div>
+
+            <div className="setting-row" style={{ margin: 0, padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+              <div>
+                <strong>Изменение конфигурации оборудования</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Замена системных накопителей, видеокарт, сетевых карт</span>
+              </div>
+              <Switch checked={eventsConfig.hardwareChanges} onChange={v => setEventsConfig(p => ({ ...p, hardwareChanges: v }))} />
+            </div>
+
+            <div className="setting-row" style={{ margin: 0, padding: '12px 14px', background: eventsConfig.usbStorage ? 'rgba(235, 120, 50, 0.08)' : 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <strong>Съемные USB-накопители и флешки</strong>
+                  <span className="maintenance-badge" style={{ margin: 0 }}>Внимание</span>
+                </div>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>По умолчанию выключено. Включайте только для станций строгого контроля, чтобы обычные флешки не спамили в Telegram</span>
+              </div>
+              <Switch checked={eventsConfig.usbStorage} onChange={v => setEventsConfig(p => ({ ...p, usbStorage: v }))} />
+            </div>
+
+            <div className="setting-row" style={{ margin: 0, padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+              <div>
+                <strong>Потеря связи со станцией</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Оповещать об уходе рабочей станции в оффлайн (Heartbeat таймаут)</span>
+              </div>
+              <Switch checked={eventsConfig.disconnectAlerts} onChange={v => setEventsConfig(p => ({ ...p, disconnectAlerts: v }))} />
+            </div>
+
+            <div className="setting-row" style={{ margin: 0, padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+              <div>
+                <strong>Сбои питания и расписания</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Ошибки утреннего включения WoL и вечернего выключения</span>
+              </div>
+              <Switch checked={eventsConfig.powerAlerts} onChange={v => setEventsConfig(p => ({ ...p, powerAlerts: v }))} />
+            </div>
+
+            <div className="setting-row" style={{ margin: 0, padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+              <div>
+                <strong>Ежедневные сводки включения / выключения</strong>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Утренний и вечерний отчеты о готовности парка машин</span>
+              </div>
+              <Switch checked={eventsConfig.morningWakeSummary} onChange={v => setEventsConfig(p => ({ ...p, morningWakeSummary: v }))} />
+            </div>
+          </div>
+        </section>
+
+        {/* Panel 4: Commands cheat-sheet */}
         <section className="panel info-panel" style={{ gridColumn: '1 / -1' }}>
           <div className="panel-heading">
             <div><h2>Команды управления и ролевой доступ</h2><p>Инструкция для операторов в Telegram</p></div>
