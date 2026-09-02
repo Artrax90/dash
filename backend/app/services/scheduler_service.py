@@ -285,29 +285,12 @@ class SchedulerService:
                                     await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
                             continue
 
-                        dev_interval = dev.heartbeat_interval or 15
-                        timeout_threshold = max(45, dev_interval * 2 + 10)
+                        dev_interval = dev.heartbeat_interval or 30
+                        # Reliable watchdog: mark offline only after at least 3 missed heartbeats (minimum 90s)
+                        timeout_threshold = max(90, dev_interval * 3 + 15)
                         sec_since_last_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
-                        
-                        # Active reachability check: if agent missed heartbeat for > 25s, verify whether device is reachable
-                        is_unreachable = False
-                        if dev.power_status == PowerStatus.ON and sec_since_last_seen > 25 and dev.ip_address and dev.ip_address not in ["127.0.0.1", "0.0.0.0"]:
-                            alive = False
-                            for port in [48123, 445, 135, 3389]:
-                                try:
-                                    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                                    s.settimeout(0.3)
-                                    res = s.connect_ex((dev.ip_address, port))
-                                    s.close()
-                                    if res == 0:
-                                        alive = True
-                                        break
-                                except Exception:
-                                    pass
-                            if not alive:
-                                is_unreachable = True
 
-                        if dev.power_status == PowerStatus.ON and (sec_since_last_seen > timeout_threshold or (sec_since_last_seen > 30 and is_unreachable)):
+                        if dev.power_status == PowerStatus.ON and sec_since_last_seen > timeout_threshold:
                             dev.power_status = PowerStatus.OFF
                             dev.agent_status = AgentStatus.DISCONNECTED
                             status_changed = True
