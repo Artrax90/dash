@@ -1,4 +1,4 @@
-# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
 if (-not $ServerUrl -or $ServerUrl -eq "__SERVER_URL__") { $ServerUrl = "__SERVER_URL__" }
 if (-not $Token -or $Token -eq "__TOKEN__") { $Token = "__TOKEN__" }
 
@@ -779,16 +779,6 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     if (`$act -eq 'SYNC' -or `$act -eq 'REFRESH' -or `$act -eq 'POLL' -or `$act -eq 'HEARTBEAT' -or `$act -eq 'INVENTORY') {
         Invoke-Heartbeat `$true
         return
-    }
-
-    # Guard: Do not execute queued shutdown if computer booted less than 90 seconds ago (prevents loop on startup)
-    if ((`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') -and -not `$isDirectSignal) {
-        try {
-            `$bt = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).LastBootUpTime
-            if (`$bt -and ((Get-Date) - `$bt).TotalSeconds -lt 90) {
-                return
-            }
-        } catch {}
     }
 
     if (`$act -eq 'REBOOT' -or `$act -eq 'RESTART') {
