@@ -187,17 +187,20 @@ class SchedulerService:
                             pass
 
                         sec_since_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
-                        # Device is considered online if ping answers OR agent sent heartbeat recently (< 45s)
-                        is_online = ping_ok or (sec_since_seen <= 45)
+                        agent_alive = (sec_since_seen <= 60)
 
-                        if is_online:
+                        # Update agent connection status independently from ping
+                        if not agent_alive and dev.agent_status == AgentStatus.CONNECTED:
+                            dev.agent_status = AgentStatus.DISCONNECTED
+                            status_changed = True
+                            await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+
+                        if ping_ok:
                             self._unreachable_first_seen.pop(dev.id, None)
-                            dev.last_seen = now_utc
                             
                             # Transition: OFF -> ON
                             if dev.power_status != PowerStatus.ON:
                                 dev.power_status = PowerStatus.ON
-                                dev.agent_status = AgentStatus.CONNECTED
                                 status_changed = True
                                 
                                 from backend.app.services.alert_engine import alert_engine

@@ -695,6 +695,17 @@ public class WtsManagerService
 if (`$ServerUrl) {
     `$ServerUrl = `$ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
 }
+try {
+    if (-not `$ServerUrl -or `$ServerUrl -like "*localhost*" -or `$ServerUrl -like "*127.0.0.1*") {
+        `$cfgFile = Join-Path '$InstallDir' "config.json"
+        if (Test-Path `$cfgFile) {
+            `$cfgObj = Get-Content `$cfgFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+            if (`$cfgObj -and `$cfgObj.server_url -and `$cfgObj.server_url -notlike "*localhost*" -and `$cfgObj.server_url -notlike "*127.0.0.1*") {
+                `$ServerUrl = `$cfgObj.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+            }
+        }
+    }
+} catch {}
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
 `$AgentVersion = '2.9.2'
@@ -702,11 +713,15 @@ if (`$ServerUrl) {
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
-`$mutexName = "Global\WorkstationManagerAgentMutex"
-`$createdNew = `$false
-`$global:agentMutex = New-Object System.Threading.Mutex(`$true, `$mutexName, [ref]`$createdNew)
-if (-not `$createdNew) {
-    exit
+`$mutexAcquired = `$false
+try {
+    `$global:agentMutex = New-Object System.Threading.Mutex(`$false, "Global\WorkstationManagerAgentMutex")
+    `$mutexAcquired = `$global:agentMutex.WaitOne(200, `$false)
+} catch {
+    `$mutexAcquired = `$true
+}
+if (-not `$mutexAcquired) {
+    exit 0
 }
 
 try {
@@ -789,15 +804,17 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     }
 
     if (`$act -eq 'REBOOT' -or `$act -eq 'RESTART') {
+        try { Start-Process -FilePath "`$env:SystemRoot\System32\shutdown.exe" -ArgumentList @('/r', '/f', '/t', '0') -NoNewWindow } catch {}
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(6) } catch {}
         try { Restart-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0 /d p:0:0
+        & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0
     }
     elseif (`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') {
+        try { Start-Process -FilePath "`$env:SystemRoot\System32\shutdown.exe" -ArgumentList @('/s', '/f', '/t', '0') -NoNewWindow } catch {}
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(12) } catch {}
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(5) } catch {}
         try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 /d p:0:0
+        & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0
     }
     elseif (`$act -eq 'CLOSE_RDP' -or `$act -eq 'CLOSE_RDP_CLIENT' -or `$act -eq 'KILL_RDP' -or `$act -eq 'DISCONNECT_RDP') {
         `$targetPid = `$null
@@ -1843,14 +1860,8 @@ try {
     `$udpListener.Client.ReceiveTimeout = 500
 } catch {}
 
-# Initial fast retry loop on startup (wait for network/DHCP and backend to become available)
-`$initAttempts = 0
-while (`$initAttempts -lt 30) {
-    `$ok = Invoke-Heartbeat `$true
-    if (`$ok) { break }
-    `$initAttempts++
-    Start-Sleep -Seconds 2
-}
+# Immediate startup heartbeat (non-blocking)
+Invoke-Heartbeat `$true | Out-Null
 
 `$lastHeartbeat = Get-Date
 
@@ -1862,6 +1873,9 @@ try {
                     `$remoteEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                     `$dataBytes = `$udpListener.Receive([ref]`$remoteEp)
                     `$msg = [System.Text.Encoding]::UTF8.GetString(`$dataBytes)
+                    if (`$remoteEp -and `$remoteEp.Address -and (`$ServerUrl -like "*localhost*" -or `$ServerUrl -like "*127.0.0.1*")) {
+                        `$ServerUrl = "http://" + `$remoteEp.Address.ToString() + ":2301"
+                    }
                     if (`$msg -like "WM_CMD:*") {
                         `$parts = `$msg.Split(":")
                         if (`$parts.Length -ge 2) {
@@ -2108,8 +2122,9 @@ try {
 
     # 6.5. Создание правил брандмауэра для приема Wake-on-LAN и управляющих сигналов
     try {
-        New-NetFirewallRule -DisplayName "Workstation Manager Wake-on-LAN (UDP 7, 9)" -Direction Inbound -Protocol UDP -LocalPort 7,9 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
-        New-NetFirewallRule -DisplayName "Workstation Manager Direct Signal (UDP 48123)" -Direction Inbound -Protocol UDP -LocalPort 48123 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+        New-NetFirewallRule -DisplayName "Workstation Manager Wake-on-LAN (UDP 7, 9)" -Direction Inbound -Protocol UDP -LocalPort 7,9 -RemoteAddress Any -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+        New-NetFirewallRule -DisplayName "Workstation Manager Direct Signal (UDP 48123)" -Direction Inbound -Protocol UDP -LocalPort 48123 -RemoteAddress Any -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+        & netsh.exe advfirewall firewall add rule name="Workstation Manager Direct Signal (UDP 48123)" protocol=UDP localport=48123 dir=in action=allow 2>&1 | Out-Null
         Write-Host "      [OK] Брандмауэр: открыты порты UDP 7, 9 (Magic Packet) и UDP 48123 (Direct LAN Signal)." -ForegroundColor Green
     } catch {}
 
