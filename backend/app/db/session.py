@@ -14,6 +14,9 @@ AsyncSessionLocal = async_sessionmaker(
     expire_on_commit=False,
 )
 
+# Alias for backwards compatibility
+SessionLocal = AsyncSessionLocal
+
 Base = declarative_base()
 
 async def get_db():

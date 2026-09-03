@@ -2,45 +2,37 @@ from fastapi import APIRouter, HTTPException
 from typing import List, Dict, Any, Optional
 import json
 import os
+import sqlite3
 from backend.app.core.config import settings
-from backend.app.db.session import SessionLocal
-from backend.app.models.device import Device
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
 GROUPS_FILE = os.path.join(settings.DATA_DIR, "groups.json")
 
 def unassign_devices_by_scope(building: Optional[str] = None, floor: Optional[str] = None, room: Optional[str] = None, group_name: Optional[str] = None):
-    try:
-        db = SessionLocal()
-        query = db.query(Device)
-        if group_name:
-            devices = query.filter(Device.group_name == group_name).all()
-            for d in devices:
-                d.group_name = "Default"
-                d.room = ""
-        elif building and floor and room:
-            devices = query.filter(Device.building == building, Device.floor == floor, Device.room == room).all()
-            for d in devices:
-                d.group_name = "Default"
-                d.room = ""
-        elif building and floor:
-            devices = query.filter(Device.building == building, Device.floor == floor).all()
-            for d in devices:
-                d.group_name = "Default"
-                d.floor = ""
-                d.room = ""
-        elif building:
-            devices = query.filter(Device.building == building).all()
-            for d in devices:
-                d.group_name = "Default"
-                d.building = ""
-                d.floor = ""
-                d.room = ""
-        db.commit()
-        db.close()
-    except Exception as e:
-        print(f"Error unassigning devices: {e}")
+    possible_paths = [
+        os.path.join(settings.DATA_DIR, "workstation_manager.db"),
+        os.path.join(os.getcwd(), "data", "workstation_manager.db"),
+        os.path.join(os.getcwd(), "workstation_manager.db")
+    ]
+    for db_path in possible_paths:
+        if os.path.exists(db_path):
+            try:
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                if group_name:
+                    cursor.execute("UPDATE devices SET group_name = 'Default', room = '' WHERE group_name = ?", (group_name,))
+                elif building and floor and room:
+                    cursor.execute("UPDATE devices SET group_name = 'Default', room = '' WHERE building = ? AND floor = ? AND room = ?", (building, floor, room))
+                elif building and floor:
+                    cursor.execute("UPDATE devices SET group_name = 'Default', floor = '', room = '' WHERE building = ? AND floor = ?", (building, floor))
+                elif building:
+                    cursor.execute("UPDATE devices SET group_name = 'Default', building = '', floor = '', room = '' WHERE building = ?", (building,))
+                conn.commit()
+                conn.close()
+                break
+            except Exception as e:
+                print(f"Error unassigning devices in {db_path}: {e}")
 
 def get_default_groups() -> List[Dict[str, Any]]:
     return [
