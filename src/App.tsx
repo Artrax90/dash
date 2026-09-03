@@ -92,6 +92,7 @@ export function formatDeviceLastSeen(lastSeen?: string, lastSeenIso?: string, po
 
 export interface BuildingConfig {
   name: string;
+  color?: GroupData['color'];
   floorsCount: number;
   hasBasement: boolean;
   hasSubFloor: boolean;
@@ -9767,35 +9768,22 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     return Array.from(map.values());
   }, [hierarchyData, activeTokenBuilding, allGroupsList, availableGroups]);
 
-  // Rooms on currently selected floor
+  // Rooms on currently selected floor STRICTLY
   const activeFloorRooms = useMemo(() => {
     return allBuildingRooms
       .filter(item => item.floor.toLowerCase() === activeTokenFloor.toLowerCase())
       .map(item => item.room);
   }, [allBuildingRooms, activeTokenFloor]);
 
-  // Rooms on other floors of this building
-  const otherFloorsRooms = useMemo(() => {
-    return allBuildingRooms
-      .filter(item => item.floor.toLowerCase() !== activeTokenFloor.toLowerCase());
-  }, [allBuildingRooms, activeTokenFloor]);
-
   const selectedRoomValue = useMemo(() => {
-    if (tokenRoom) {
-      if (activeFloorRooms.some(r => r.toLowerCase() === tokenRoom.toLowerCase())) {
-        return tokenRoom;
-      }
-      const foundOther = otherFloorsRooms.find(r => r.room.toLowerCase() === tokenRoom.toLowerCase());
-      if (foundOther) return foundOther.room;
+    if (tokenRoom && activeFloorRooms.some(r => r.toLowerCase() === tokenRoom.toLowerCase())) {
+      return tokenRoom;
     }
     if (activeFloorRooms.length > 0) {
       return activeFloorRooms[0];
     }
-    if (otherFloorsRooms.length > 0) {
-      return otherFloorsRooms[0].room;
-    }
     return '';
-  }, [tokenRoom, activeFloorRooms, otherFloorsRooms]);
+  }, [tokenRoom, activeFloorRooms]);
 
   const effectiveRoom = isCustomTokenRoom
     ? (customTokenRoomInput.trim() || 'Кабинет')
@@ -10688,7 +10676,7 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                   <select
                     className="text-input"
                     style={{ width: '100%' }}
-                    value={isCustomTokenRoom ? '__new__' : (selectedRoomValue || '__new__')}
+                    value={isCustomTokenRoom || activeFloorRooms.length === 0 ? '__new__' : (selectedRoomValue || '__new__')}
                     onChange={(e) => {
                       const val = e.target.value;
                       if (val === '__new__') {
@@ -10697,36 +10685,20 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                       } else {
                         setIsCustomTokenRoom(false);
                         setTokenRoom(val);
-                        // Auto-switch floor if this room belongs to a different floor
-                        const matching = allBuildingRooms.find(r => r.room.toLowerCase() === val.toLowerCase());
-                        if (matching && matching.floor && matching.floor.toLowerCase() !== activeTokenFloor.toLowerCase()) {
-                          setTokenFloor(matching.floor);
-                        }
                       }
                     }}
                   >
-                    {activeFloorRooms.length > 0 && (
-                      <optgroup label={`Кабинеты (${activeTokenFloor})`}>
-                        {activeFloorRooms.map(r => (
-                          <option key={r} value={r}>Кабинет {r}</option>
-                        ))}
-                      </optgroup>
+                    {activeFloorRooms.length > 0 ? (
+                      activeFloorRooms.map(r => (
+                        <option key={r} value={r}>Кабинет {r}</option>
+                      ))
+                    ) : (
+                      <option value="__new__">На этом этаже нет кабинетов (+ Ввести новый)</option>
                     )}
-
-                    {otherFloorsRooms.length > 0 && (
-                      <optgroup label="Кабинеты на других этажах здания">
-                        {otherFloorsRooms.map(r => (
-                          <option key={`${r.floor}-${r.room}`} value={r.room}>
-                            Кабинет {r.room} ({r.floor})
-                          </option>
-                        ))}
-                      </optgroup>
-                    )}
-
                     <option value="__new__">+ Ввести новый кабинет...</option>
                   </select>
 
-                  {isCustomTokenRoom && (
+                  {(isCustomTokenRoom || activeFloorRooms.length === 0) && (
                     <div style={{ marginTop: '8px' }}>
                       <input
                         className="text-input"
@@ -11803,9 +11775,16 @@ function Groups({
   const [selectedBuildingOption, setSelectedBuildingOption] = useState<string>('Главный корпус');
   const [isNewBuildingMode, setIsNewBuildingMode] = useState<boolean>(false);
   const [newBuildingNameInput, setNewBuildingNameInput] = useState<string>('');
+  const [newBuildingColor, setNewBuildingColor] = useState<GroupData['color']>('blue');
   const [newBuildingFloorsCount, setNewBuildingFloorsCount] = useState<string>('3');
   const [newBuildingHasBasement, setNewBuildingHasBasement] = useState<boolean>(false);
   const [newBuildingHasSubFloor, setNewBuildingHasSubFloor] = useState<boolean>(false);
+
+  // Delete & Edit Building/Floor/Room State
+  const [deleteBuildingTarget, setDeleteBuildingTarget] = useState<{ name: string; floorsCount: number; roomsCount: number; totalPcs: number } | null>(null);
+  const [deleteFloorTarget, setDeleteFloorTarget] = useState<{ building: string; floor: string; roomsCount: number; totalPcs: number } | null>(null);
+  const [deleteRoomTarget, setDeleteRoomTarget] = useState<{ name: string; roomName: string; building: string; floor: string } | null>(null);
+  const [editBuildingTarget, setEditBuildingTarget] = useState<{ originalName: string; name: string; color: GroupData['color']; floorsCount: string; hasBasement: boolean; hasSubFloor: boolean } | null>(null);
 
   const [selectedFloorOption, setSelectedFloorOption] = useState<string>('1 этаж');
   const [isCustomFloorMode, setIsCustomFloorMode] = useState<boolean>(false);
@@ -12005,6 +11984,7 @@ function Groups({
         const genFloors = generateBuildingFloors(parsedFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor);
         await groupsApi.saveBuilding({
           name: bldVal,
+          color: newBuildingColor,
           floorsCount: parsedFloorsCount,
           hasBasement: newBuildingHasBasement,
           hasSubFloor: newBuildingHasSubFloor,
@@ -12012,6 +11992,7 @@ function Groups({
         });
         setBuildingConfigs(prev => [...prev.filter(b => b.name.toLowerCase() !== bldVal.toLowerCase()), {
           name: bldVal,
+          color: newBuildingColor,
           floorsCount: parsedFloorsCount,
           hasBasement: newBuildingHasBasement,
           hasSubFloor: newBuildingHasSubFloor,
@@ -12055,6 +12036,7 @@ function Groups({
     setCreateRoom('');
     setNewGroupDesc('');
     setNewGroupColor('blue');
+    setNewBuildingColor('blue');
     setIsNewBuildingMode(false);
     setNewBuildingNameInput('');
     setNewBuildingFloorsCount('3');
@@ -12115,6 +12097,80 @@ function Groups({
     }
     notify(`Группа "${groupName}" удалена`);
     setEditGroupTarget(null);
+  };
+
+  const handleConfirmDeleteBuilding = async () => {
+    if (!deleteBuildingTarget) return;
+    const bldName = deleteBuildingTarget.name;
+    try {
+      await groupsApi.deleteBuilding(bldName);
+      notify(`Корпус "${bldName}" и все его кабинеты успешно удалены`);
+      setDeleteBuildingTarget(null);
+      if (drillBuilding?.toLowerCase() === bldName.toLowerCase()) {
+        setDrillBuilding(null);
+        setDrillFloor(null);
+      }
+      loadData();
+    } catch {
+      notify(`Ошибка при удалении корпуса "${bldName}"`);
+    }
+  };
+
+  const handleConfirmDeleteFloor = async () => {
+    if (!deleteFloorTarget) return;
+    const { building, floor } = deleteFloorTarget;
+    try {
+      await groupsApi.deleteFloor(building, floor);
+      notify(`Этаж "${floor}" в корпусе "${building}" успешно удален`);
+      setDeleteFloorTarget(null);
+      if (drillFloor?.toLowerCase() === floor.toLowerCase()) {
+        setDrillFloor(null);
+      }
+      loadData();
+    } catch {
+      notify(`Ошибка при удалении этажа "${floor}"`);
+    }
+  };
+
+  const handleConfirmDeleteRoom = async () => {
+    if (!deleteRoomTarget) return;
+    const { name, roomName } = deleteRoomTarget;
+    try {
+      await groupsApi.delete(name);
+      notify(`Кабинет "${roomName}" успешно удален`);
+      setDeleteRoomTarget(null);
+      if (selectedGroupName?.toLowerCase() === name.toLowerCase()) {
+        onSelectGroup(null);
+      }
+      loadData();
+    } catch {
+      notify(`Ошибка при удалении кабинета "${roomName}"`);
+    }
+  };
+
+  const handleSaveEditBuilding = async () => {
+    if (!editBuildingTarget) return;
+    const { originalName, name, color, floorsCount, hasBasement, hasSubFloor } = editBuildingTarget;
+    const count = Math.max(1, Math.min(50, parseInt(floorsCount, 10) || 1));
+    const genFloors = generateBuildingFloors(count, hasBasement, hasSubFloor);
+    try {
+      await groupsApi.updateBuilding(originalName, {
+        name,
+        color,
+        floorsCount: count,
+        hasBasement,
+        hasSubFloor,
+        floors: genFloors
+      });
+      notify(`Параметры корпуса "${name}" успешно сохранены!`);
+      if (drillBuilding?.toLowerCase() === originalName.toLowerCase()) {
+        setDrillBuilding(name);
+      }
+      setEditBuildingTarget(null);
+      loadData();
+    } catch {
+      notify('Ошибка при сохранении параметров корпуса');
+    }
   };
 
   const handleAssignPcToGroup = async () => {
@@ -12593,6 +12649,8 @@ function Groups({
             <div className="group-grid">
               {Object.keys(hierarchyData).map(bldName => {
                 const stats = getBuildingStats(bldName);
+                const bConfig = buildingConfigs.find(b => b.name.toLowerCase() === bldName.toLowerCase());
+                const bColor = bConfig?.color || (hierarchyData as any)[bldName]?.color || 'blue';
                 return (
                   <section
                     className="panel group-card"
@@ -12601,37 +12659,73 @@ function Groups({
                     style={{ cursor: 'pointer', transition: '0.2s', border: '1px solid var(--line)' }}
                     title={`Открыть корпус ${bldName}`}
                   >
-                    <div className="group-hero blue">
+                    <div className={`group-hero ${bColor}`} style={{ position: 'relative' }}>
                       <div className="group-symbol"><Building size={24} /></div>
-                      {isSuperAdmin && (
-                        <button
-                          className="hero-more"
-                          onClick={async (e) => {
-                            e.stopPropagation();
-                            const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => stats.groupNames.includes(grp.toLowerCase())));
-                            const devIds = bldDevs.map(d => d.id);
-                            if (devIds.length > 0) {
-                              await devicesApi.bulkOperation(devIds, 'WAKE');
-                              notify(`Wake-on-LAN отправлен на ${devIds.length} ПК корпуса "${bldName}"`);
-                              setTimeout(loadData, 1200);
-                            } else {
-                              notify(`В корпусе "${bldName}" нет ПК`);
-                            }
-                          }}
-                          title={`Включить все ПК корпуса "${bldName}" (WoL)`}
-                        >
-                          <Zap size={16} />
-                        </button>
-                      )}
+                      <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                        {isSuperAdmin && (
+                          <>
+                            <button
+                              className="hero-more"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setEditBuildingTarget({
+                                  originalName: bldName,
+                                  name: bldName,
+                                  color: bColor,
+                                  floorsCount: String(bConfig?.floorsCount || stats.floorsCount || 3),
+                                  hasBasement: Boolean(bConfig?.hasBasement),
+                                  hasSubFloor: Boolean(bConfig?.hasSubFloor)
+                                });
+                              }}
+                              title={`Настройки корпуса "${bldName}"`}
+                              style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                            >
+                              <Edit3 size={15} />
+                            </button>
+                            <button
+                              className="hero-more"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setDeleteBuildingTarget({ name: bldName, floorsCount: stats.floorsCount, roomsCount: stats.roomsCount, totalPcs: stats.totalPcs });
+                              }}
+                              title={`Удалить корпус "${bldName}"`}
+                              style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#ffb4b4', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                            >
+                              <Trash2 size={15} />
+                            </button>
+                          </>
+                        )}
+                        {isSuperAdmin && (
+                          <button
+                            className="hero-more"
+                            onClick={async (e) => {
+                              e.stopPropagation();
+                              const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => stats.groupNames.includes(grp.toLowerCase())));
+                              const devIds = bldDevs.map(d => d.id);
+                              if (devIds.length > 0) {
+                                await devicesApi.bulkOperation(devIds, 'WAKE');
+                                notify(`Wake-on-LAN отправлен на ${devIds.length} ПК корпуса "${bldName}"`);
+                                setTimeout(loadData, 1200);
+                              } else {
+                                notify(`В корпусе "${bldName}" нет ПК`);
+                              }
+                            }}
+                            title={`Включить все ПК корпуса "${bldName}" (WoL)`}
+                            style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                          >
+                            <Zap size={16} />
+                          </button>
+                        )}
+                      </div>
                     </div>
                     <div className="group-body">
                       <div className="group-title">
                         <div>
-                          <div className="eyebrow" style={{ color: 'var(--blue)', fontSize: '10px' }}>КОРПУС / ЗДАНИЕ</div>
+                          <div className="eyebrow" style={{ color: `var(--${bColor})`, fontSize: '10px' }}>КОРПУС / ЗДАНИЕ</div>
                           <h2 style={{ fontSize: '18px', fontWeight: 700, marginTop: '2px' }}>{bldName}</h2>
                           <p style={{ lineHeight: 1.4 }}>{stats.floorsCount} этажей · {stats.roomsCount} кабинетов</p>
                         </div>
-                        <span style={{ fontSize: '20px', fontWeight: 700, color: 'var(--blue)' }}>{stats.totalPcs}</span>
+                        <span style={{ fontSize: '20px', fontWeight: 700, color: `var(--${bColor})` }}>{stats.totalPcs}</span>
                       </div>
                       <div className="group-info">
                         <span style={{ color: 'var(--green)', fontWeight: 600 }}>
@@ -12695,26 +12789,42 @@ function Groups({
                             style={{ cursor: 'pointer', transition: '0.2s', border: '1px solid var(--line)' }}
                             title={`Открыть ${flrName}`}
                           >
-                            <div className="group-hero purple">
+                            <div className="group-hero purple" style={{ position: 'relative' }}>
                               <div className="group-symbol"><Layers size={24} /></div>
-                              {isSuperAdmin && (
-                                <button
-                                  className="hero-more"
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
-                                    const devIds = fDevs.map(d => d.id);
-                                    if (devIds.length > 0) {
-                                      await devicesApi.bulkOperation(devIds, 'WAKE');
-                                      notify(`WoL отправлен на ${devIds.length} ПК этажа "${flrName}"`);
-                                      setTimeout(loadData, 1200);
-                                    }
-                                  }}
-                                  title={`Включить все ПК этажа "${flrName}" (WoL)`}
-                                >
-                                  <Zap size={16} />
-                                </button>
-                              )}
+                              <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                                {isSuperAdmin && (
+                                  <button
+                                    className="hero-more"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteFloorTarget({ building: drillBuilding, floor: flrName, roomsCount: fStats.roomsCount, totalPcs: fStats.totalPcs });
+                                    }}
+                                    title={`Удалить этаж "${flrName}"`}
+                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#ffb4b4', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                  >
+                                    <Trash2 size={15} />
+                                  </button>
+                                )}
+                                {isSuperAdmin && (
+                                  <button
+                                    className="hero-more"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
+                                      const devIds = fDevs.map(d => d.id);
+                                      if (devIds.length > 0) {
+                                        await devicesApi.bulkOperation(devIds, 'WAKE');
+                                        notify(`WoL отправлен на ${devIds.length} ПК этажа "${flrName}"`);
+                                        setTimeout(loadData, 1200);
+                                      }
+                                    }}
+                                    title={`Включить все ПК этажа "${flrName}" (WoL)`}
+                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                  >
+                                    <Zap size={16} />
+                                  </button>
+                                )}
+                              </div>
                             </div>
                             <div className="group-body">
                               <div className="group-title">
@@ -12789,28 +12899,66 @@ function Groups({
                           style={{ cursor: 'pointer', transition: '0.2s', border: '1px solid var(--line)' }}
                           title={`Открыть кабинет ${roomGroup.roomName}`}
                         >
-                          <div className={`group-hero ${roomGroup.color}`}>
+                          <div className={`group-hero ${roomGroup.color}`} style={{ position: 'relative' }}>
                             <div className="group-symbol"><Server size={20} /></div>
-                            {canManageGroup(roomGroup.name) && !isObserver && (
-                              <button
-                                className="hero-more"
-                                onClick={async (e) => {
-                                  e.stopPropagation();
-                                  const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === roomGroup.name.toLowerCase()));
-                                  const devIds = gDevs.map(d => d.id);
-                                  if (devIds.length > 0) {
-                                    await devicesApi.bulkOperation(devIds, 'WAKE');
-                                    notify(`WoL отправлен на ${devIds.length} ПК кабинета "${roomGroup.roomName}"`);
-                                    setTimeout(loadData, 1200);
-                                  } else {
-                                    notify(`В кабинете "${roomGroup.roomName}" нет добавленных ПК`);
-                                  }
-                                }}
-                                title="Включить все ПК кабинета (WoL)"
-                              >
-                                <Zap size={16} />
-                              </button>
-                            )}
+                            <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
+                              {isSuperAdmin && (
+                                <>
+                                  <button
+                                    className="hero-more"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      const targetGroupObj = groups.find(g => g.name.toLowerCase() === roomGroup.name.toLowerCase()) || {
+                                        name: roomGroup.name,
+                                        desc: roomGroup.desc,
+                                        color: roomGroup.color,
+                                        schedule: roomGroup.schedule,
+                                        building: drillBuilding,
+                                        floor: drillFloor,
+                                        room: roomGroup.roomName
+                                      } as any;
+                                      handleOpenEditGroupModal(targetGroupObj);
+                                    }}
+                                    title="Настройки кабинета"
+                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                  >
+                                    <Edit3 size={14} />
+                                  </button>
+                                  <button
+                                    className="hero-more"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setDeleteRoomTarget({ name: roomGroup.name, roomName: roomGroup.roomName, building: drillBuilding, floor: drillFloor });
+                                    }}
+                                    title={`Удалить кабинет "${roomGroup.roomName}"`}
+                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#ffb4b4', borderRadius: '6px', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                  >
+                                    <Trash2 size={14} />
+                                  </button>
+                                </>
+                              )}
+                              {canManageGroup(roomGroup.name) && !isObserver && (
+                                <button
+                                  className="hero-more"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === roomGroup.name.toLowerCase()));
+                                    const devIds = gDevs.map(d => d.id);
+                                    if (devIds.length > 0) {
+                                      await devicesApi.bulkOperation(devIds, 'WAKE');
+                                      notify(`WoL отправлен на ${devIds.length} ПК кабинета "${roomGroup.roomName}"`);
+                                      setTimeout(loadData, 1200);
+                                    } else {
+                                      notify(`В кабинете "${roomGroup.roomName}" нет добавленных ПК`);
+                                    }
+                                  }}
+                                  title="Включить все ПК кабинета (WoL)"
+                                  style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                >
+                                  <Zap size={14} />
+                                </button>
+                              )}
+                            </div>
                           </div>
                           <div className="group-body">
                             <div className="group-title">
@@ -12958,6 +13106,24 @@ function Groups({
                           </label>
                         </div>
                       </div>
+
+                      <div style={{ marginTop: '12px' }}>
+                        <label style={{ fontSize: '11px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                          Цветовая метка корпуса
+                        </label>
+                        <div className="color-picker">
+                          {colorOptions.map(opt => (
+                            <div
+                              key={opt.id}
+                              className={`color-option ${opt.id} ${newBuildingColor === opt.id ? 'selected' : ''}`}
+                              onClick={() => setNewBuildingColor(opt.id)}
+                              title={opt.label}
+                            >
+                              {newBuildingColor === opt.id && <Check size={16} color="#fff" />}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -13042,7 +13208,9 @@ function Groups({
               </div>
 
               <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Цветовая метка</label>
+                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                  {isHierarchicalCreate ? 'Цветовая метка кабинета' : 'Цветовая метка группы'}
+                </label>
                 <div className="color-picker">
                   {colorOptions.map(opt => (
                     <div
@@ -13250,6 +13418,226 @@ function Groups({
               <Button primary onClick={handleAssignPcToGroup} disabled={!selectedPcToAssign}>
                 Добавить в группу
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit Building Modal */}
+      {editBuildingTarget && (
+        <div className="modal-backdrop" onClick={() => setEditBuildingTarget(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '500px', textAlign: 'left' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
+              <div className="confirm-icon" style={{ background: 'var(--blue-soft)', color: 'var(--blue)', margin: 0 }}>
+                <Building size={22} />
+              </div>
+              <div>
+                <h2 style={{ fontSize: '17px', margin: 0 }}>Настройки корпуса</h2>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>{editBuildingTarget.originalName}</p>
+              </div>
+            </div>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                  Название корпуса
+                </label>
+                <input
+                  className="text-input"
+                  style={{ width: '100%' }}
+                  value={editBuildingTarget.name}
+                  onChange={(e) => setEditBuildingTarget({ ...editBuildingTarget, name: e.target.value })}
+                  placeholder="Например: Главный корпус"
+                />
+              </div>
+
+              <div>
+                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                  Цветовая метка корпуса
+                </label>
+                <div className="color-picker">
+                  {colorOptions.map(opt => (
+                    <div
+                      key={opt.id}
+                      className={`color-option ${opt.id} ${editBuildingTarget.color === opt.id ? 'selected' : ''}`}
+                      onClick={() => setEditBuildingTarget({ ...editBuildingTarget, color: opt.id })}
+                      title={opt.label}
+                    >
+                      {editBuildingTarget.color === opt.id && <Check size={16} color="#fff" />}
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                    Количество этажей
+                  </label>
+                  <input
+                    type="number"
+                    min={1}
+                    max={50}
+                    className="text-input"
+                    style={{ width: '110px' }}
+                    value={editBuildingTarget.floorsCount}
+                    onChange={(e) => setEditBuildingTarget({ ...editBuildingTarget, floorsCount: e.target.value })}
+                    onBlur={() => {
+                      const val = parseInt(editBuildingTarget.floorsCount, 10);
+                      if (isNaN(val) || val < 1) setEditBuildingTarget({ ...editBuildingTarget, floorsCount: '1' });
+                      else if (val > 50) setEditBuildingTarget({ ...editBuildingTarget, floorsCount: '50' });
+                    }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '10px' }}>
+                  <label style={{ fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={editBuildingTarget.hasBasement}
+                      onChange={(e) => setEditBuildingTarget({ ...editBuildingTarget, hasBasement: e.target.checked })}
+                    />
+                    Цокольный этаж (Цоколь)
+                  </label>
+                  <label style={{ fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                    <input
+                      type="checkbox"
+                      checked={editBuildingTarget.hasSubFloor}
+                      onChange={(e) => setEditBuildingTarget({ ...editBuildingTarget, hasSubFloor: e.target.checked })}
+                    />
+                    Подвальный этаж (-1 этаж)
+                  </label>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: '20px' }}>
+              <Button onClick={() => setEditBuildingTarget(null)}>{t('common.cancel')}</Button>
+              <Button primary onClick={handleSaveEditBuilding} disabled={!editBuildingTarget.name.trim()}>
+                Сохранить изменения
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Building Confirmation Modal */}
+      {deleteBuildingTarget && (
+        <div className="modal-backdrop" onClick={() => setDeleteBuildingTarget(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '460px', textAlign: 'left' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
+              <div className="confirm-icon" style={{ background: 'var(--red-soft, rgba(239, 68, 68, 0.15))', color: 'var(--red)', margin: 0 }}>
+                <Trash2 size={22} />
+              </div>
+              <div>
+                <h2 style={{ fontSize: '17px', margin: 0, color: 'var(--red)' }}>Удаление корпуса</h2>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>Корпус: {deleteBuildingTarget.name}</p>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '13px', lineHeight: 1.5, color: 'var(--text)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <p style={{ margin: 0 }}>
+                Вы действительно хотите удалить корпус <strong>"{deleteBuildingTarget.name}"</strong>?
+              </p>
+              <div style={{ padding: '10px 12px', background: 'var(--red-soft, rgba(239, 68, 68, 0.08))', borderLeft: '3px solid var(--red)', borderRadius: '4px', fontSize: '12px' }}>
+                <div>• Будут удалены все этажи (<strong>{deleteBuildingTarget.floorsCount}</strong> эт.)</div>
+                <div>• Будут удалены все кабинеты (<strong>{deleteBuildingTarget.roomsCount}</strong> каб.)</div>
+                <div style={{ marginTop: '4px', fontWeight: 600 }}>
+                  • {deleteBuildingTarget.totalPcs > 0 ? `${deleteBuildingTarget.totalPcs} ПК будут отвязаны от группы и переведены в Нераспределенные.` : 'В корпусе нет добавленных ПК.'}
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: '20px' }}>
+              <Button onClick={() => setDeleteBuildingTarget(null)}>{t('common.cancel')}</Button>
+              <button
+                className="btn"
+                style={{ backgroundColor: 'var(--red)', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 600, cursor: 'pointer' }}
+                onClick={handleConfirmDeleteBuilding}
+              >
+                Удалить корпус
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Floor Confirmation Modal */}
+      {deleteFloorTarget && (
+        <div className="modal-backdrop" onClick={() => setDeleteFloorTarget(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '460px', textAlign: 'left' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
+              <div className="confirm-icon" style={{ background: 'var(--red-soft, rgba(239, 68, 68, 0.15))', color: 'var(--red)', margin: 0 }}>
+                <Trash2 size={22} />
+              </div>
+              <div>
+                <h2 style={{ fontSize: '17px', margin: 0, color: 'var(--red)' }}>Удаление этажа</h2>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>{deleteFloorTarget.building} → {deleteFloorTarget.floor}</p>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '13px', lineHeight: 1.5, color: 'var(--text)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <p style={{ margin: 0 }}>
+                Удалить этаж <strong>"{deleteFloorTarget.floor}"</strong> в корпусе <strong>"{deleteFloorTarget.building}"</strong>?
+              </p>
+              <div style={{ padding: '10px 12px', background: 'var(--red-soft, rgba(239, 68, 68, 0.08))', borderLeft: '3px solid var(--red)', borderRadius: '4px', fontSize: '12px' }}>
+                <div>• Будут удалены кабинеты этого этажа (<strong>{deleteFloorTarget.roomsCount}</strong> каб.)</div>
+                <div style={{ marginTop: '4px', fontWeight: 600 }}>
+                  • {deleteFloorTarget.totalPcs > 0 ? `${deleteFloorTarget.totalPcs} ПК этого этажа будут отвязаны.` : 'На этаже нет привязанных ПК.'}
+                </div>
+                <div style={{ marginTop: '4px', color: 'var(--muted)' }}>
+                  • Сам корпус "{deleteFloorTarget.building}" останется без изменений.
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: '20px' }}>
+              <Button onClick={() => setDeleteFloorTarget(null)}>{t('common.cancel')}</Button>
+              <button
+                className="btn"
+                style={{ backgroundColor: 'var(--red)', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 600, cursor: 'pointer' }}
+                onClick={handleConfirmDeleteFloor}
+              >
+                Удалить этаж
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Delete Room Confirmation Modal */}
+      {deleteRoomTarget && (
+        <div className="modal-backdrop" onClick={() => setDeleteRoomTarget(null)}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '460px', textAlign: 'left' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
+              <div className="confirm-icon" style={{ background: 'var(--red-soft, rgba(239, 68, 68, 0.15))', color: 'var(--red)', margin: 0 }}>
+                <Trash2 size={22} />
+              </div>
+              <div>
+                <h2 style={{ fontSize: '17px', margin: 0, color: 'var(--red)' }}>Удаление кабинета</h2>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>{deleteRoomTarget.building} / {deleteRoomTarget.floor}</p>
+              </div>
+            </div>
+
+            <div style={{ fontSize: '13px', lineHeight: 1.5, color: 'var(--text)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+              <p style={{ margin: 0 }}>
+                Вы действительно хотите удалить кабинет <strong>"{deleteRoomTarget.roomName}"</strong>?
+              </p>
+              <div style={{ padding: '10px 12px', background: 'var(--blue-soft, rgba(59, 130, 246, 0.08))', borderLeft: '3px solid var(--blue)', borderRadius: '4px', fontSize: '12px' }}>
+                <div>• Этаж "{deleteRoomTarget.floor}" и корпус "{deleteRoomTarget.building}" сохраняются.</div>
+                <div>• Компьютеры из этого кабинета будут отвязаны.</div>
+              </div>
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: '20px' }}>
+              <Button onClick={() => setDeleteRoomTarget(null)}>{t('common.cancel')}</Button>
+              <button
+                className="btn"
+                style={{ backgroundColor: 'var(--red)', color: '#fff', border: 'none', padding: '8px 16px', borderRadius: '6px', fontWeight: 600, cursor: 'pointer' }}
+                onClick={handleConfirmDeleteRoom}
+              >
+                Удалить кабинет
+              </button>
             </div>
           </div>
         </div>

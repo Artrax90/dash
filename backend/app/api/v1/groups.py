@@ -3,10 +3,44 @@ from typing import List, Dict, Any, Optional
 import json
 import os
 from backend.app.core.config import settings
+from backend.app.db.session import SessionLocal
+from backend.app.models.device import Device
 
 router = APIRouter(prefix="/groups", tags=["groups"])
 
 GROUPS_FILE = os.path.join(settings.DATA_DIR, "groups.json")
+
+def unassign_devices_by_scope(building: Optional[str] = None, floor: Optional[str] = None, room: Optional[str] = None, group_name: Optional[str] = None):
+    try:
+        db = SessionLocal()
+        query = db.query(Device)
+        if group_name:
+            devices = query.filter(Device.group_name == group_name).all()
+            for d in devices:
+                d.group_name = "Default"
+                d.room = ""
+        elif building and floor and room:
+            devices = query.filter(Device.building == building, Device.floor == floor, Device.room == room).all()
+            for d in devices:
+                d.group_name = "Default"
+                d.room = ""
+        elif building and floor:
+            devices = query.filter(Device.building == building, Device.floor == floor).all()
+            for d in devices:
+                d.group_name = "Default"
+                d.floor = ""
+                d.room = ""
+        elif building:
+            devices = query.filter(Device.building == building).all()
+            for d in devices:
+                d.group_name = "Default"
+                d.building = ""
+                d.floor = ""
+                d.room = ""
+        db.commit()
+        db.close()
+    except Exception as e:
+        print(f"Error unassigning devices: {e}")
 
 def get_default_groups() -> List[Dict[str, Any]]:
     return [
@@ -91,6 +125,7 @@ def get_default_buildings() -> List[Dict[str, Any]]:
     return [
         {
             "name": "Главный корпус",
+            "color": "blue",
             "floorsCount": 3,
             "hasBasement": True,
             "hasSubFloor": False,
@@ -98,6 +133,7 @@ def get_default_buildings() -> List[Dict[str, Any]]:
         },
         {
             "name": "Учебный корпус",
+            "color": "purple",
             "floorsCount": 4,
             "hasBasement": False,
             "hasSubFloor": False,
@@ -166,6 +202,7 @@ async def list_buildings():
         if b_name and b_name != "Общие группы" and b_name.lower() not in existing:
             new_item = {
                 "name": b_name,
+                "color": "blue",
                 "floorsCount": 3,
                 "hasBasement": False,
                 "hasSubFloor": False,
@@ -184,6 +221,7 @@ async def create_or_update_building(payload: Dict[str, Any]):
     if not name:
         raise HTTPException(status_code=400, detail="Название корпуса обязательно")
     
+    color = str(payload.get("color") or "blue").strip()
     floors_count = int(payload.get("floorsCount") or 3)
     has_basement = bool(payload.get("hasBasement", False))
     has_sub_floor = bool(payload.get("hasSubFloor", False))
@@ -191,6 +229,7 @@ async def create_or_update_building(payload: Dict[str, Any]):
     
     item = {
         "name": name,
+        "color": color,
         "floorsCount": floors_count,
         "hasBasement": has_basement,
         "hasSubFloor": has_sub_floor,
@@ -205,6 +244,100 @@ async def create_or_update_building(payload: Dict[str, Any]):
     save_buildings(buildings_store)
     return item
 
+@router.put("/buildings/{bld_name}", response_model=Dict[str, Any])
+async def update_building(bld_name: str, payload: Dict[str, Any]):
+    idx = next((i for i, b in enumerate(buildings_store) if b["name"].lower() == bld_name.lower()), -1)
+    if idx < 0:
+        raise HTTPException(status_code=404, detail="Корпус не найден")
+    
+    new_name = str(payload.get("name") or bld_name).strip()
+    color = str(payload.get("color") or buildings_store[idx].get("color", "blue")).strip()
+    floors_count = int(payload.get("floorsCount") or buildings_store[idx].get("floorsCount", 3))
+    has_basement = bool(payload.get("hasBasement", buildings_store[idx].get("hasBasement", False)))
+    has_sub_floor = bool(payload.get("hasSubFloor", buildings_store[idx].get("hasSubFloor", False)))
+    floors = payload.get("floors") or generate_building_floors(floors_count, has_basement, has_sub_floor)
+
+    updated_item = {
+        "name": new_name,
+        "color": color,
+        "floorsCount": floors_count,
+        "hasBasement": has_basement,
+        "hasSubFloor": has_sub_floor,
+        "floors": floors
+    }
+    buildings_store[idx] = updated_item
+    save_buildings(buildings_store)
+
+    # If name changed, rename in groups and devices
+    if new_name.lower() != bld_name.lower():
+        for g in groups_store:
+            if g.get("building", "").lower() == bld_name.lower():
+                g["building"] = new_name
+                flr = g.get("floor", "")
+                rm = g.get("room", "")
+                if flr and rm:
+                    g["name"] = f"{new_name} / {flr} / {rm}"
+            elif g.get("name", "").startswith(f"{bld_name} /"):
+                parts = [p.strip() for p in g["name"].split("/")]
+                if len(parts) >= 3:
+                    g["name"] = f"{new_name} / {parts[1]} / {parts[2]}"
+        save_groups(groups_store)
+
+        try:
+            db = SessionLocal()
+            devices = db.query(Device).filter(Device.building == bld_name).all()
+            for d in devices:
+                d.building = new_name
+                if d.group_name and d.group_name.startswith(f"{bld_name} /"):
+                    parts = [p.strip() for p in d.group_name.split("/")]
+                    if len(parts) >= 3:
+                        d.group_name = f"{new_name} / {parts[1]} / {parts[2]}"
+            db.commit()
+            db.close()
+        except Exception as e:
+            print(f"Error updating device building: {e}")
+
+    return updated_item
+
+@router.delete("/buildings/{bld_name}")
+async def delete_building(bld_name: str):
+    idx = next((i for i, b in enumerate(buildings_store) if b["name"].lower() == bld_name.lower()), -1)
+    if idx >= 0:
+        buildings_store.pop(idx)
+        save_buildings(buildings_store)
+
+    global groups_store
+    groups_store = [
+        g for g in groups_store
+        if g.get("building", "").lower() != bld_name.lower()
+        and not g.get("name", "").lower().startswith(f"{bld_name.lower()} /")
+    ]
+    save_groups(groups_store)
+    unassign_devices_by_scope(building=bld_name)
+
+    return {"status": "deleted", "building": bld_name}
+
+@router.delete("/buildings/{bld_name}/floors/{flr_name}")
+async def delete_floor(bld_name: str, flr_name: str):
+    idx = next((i for i, b in enumerate(buildings_store) if b["name"].lower() == bld_name.lower()), -1)
+    if idx >= 0:
+        b = buildings_store[idx]
+        b["floors"] = [f for f in b.get("floors", []) if f.lower() != flr_name.lower()]
+        save_buildings(buildings_store)
+
+    global groups_store
+    groups_store = [
+        g for g in groups_store
+        if not (
+            (g.get("building", "").lower() == bld_name.lower() and g.get("floor", "").lower() == flr_name.lower())
+            or g.get("name", "").lower().startswith(f"{bld_name.lower()} / {flr_name.lower()} /")
+        )
+    ]
+    save_groups(groups_store)
+    unassign_devices_by_scope(building=bld_name, floor=flr_name)
+
+    return {"status": "deleted", "building": bld_name, "floor": flr_name}
+
 @router.get("/hierarchy")
 async def get_groups_hierarchy():
     buildings_map: Dict[str, Dict[str, Any]] = {}
@@ -214,6 +347,7 @@ async def get_groups_hierarchy():
         b_name = b["name"]
         buildings_map[b_name] = {
             "name": b_name,
+            "color": b.get("color", "blue"),
             "floors": {f_name: {"name": f_name, "building": b_name, "rooms": []} for f_name in b.get("floors", [])}
         }
 
@@ -274,6 +408,7 @@ async def get_groups_hierarchy():
             })
         result.append({
             "name": b_name,
+            "color": b_data.get("color", "blue"),
             "floors": floors_list
         })
     return result
@@ -359,11 +494,13 @@ async def update_group(name: str, payload: Dict[str, Any]):
     save_groups(groups_store)
     return existing
 
-@router.delete("/{name}")
+@router.delete("/{name:path}")
 async def delete_group(name: str):
     idx = next((i for i, g in enumerate(groups_store) if g["name"].lower() == name.lower()), None)
     if idx is not None:
         deleted = groups_store.pop(idx)
         save_groups(groups_store)
+        unassign_devices_by_scope(group_name=name)
         return {"status": "deleted", "group": deleted}
+    unassign_devices_by_scope(group_name=name)
     return {"status": "not_found"}

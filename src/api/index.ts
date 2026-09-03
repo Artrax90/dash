@@ -888,6 +888,35 @@ export const groupsApi = {
       if (res.ok) return await res.json();
     } catch {}
     return payload;
+  },
+  updateBuilding: async (name: string, payload: any): Promise<any> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/buildings/${encodeURIComponent(name)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return payload;
+  },
+  deleteBuilding: async (name: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/buildings/${encodeURIComponent(name)}`, {
+        method: 'DELETE'
+      });
+      return res.ok;
+    } catch {}
+    return true;
+  },
+  deleteFloor: async (buildingName: string, floorName: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/buildings/${encodeURIComponent(buildingName)}/floors/${encodeURIComponent(floorName)}`, {
+        method: 'DELETE'
+      });
+      return res.ok;
+    } catch {}
+    return true;
   }
 };
 
