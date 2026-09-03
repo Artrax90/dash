@@ -2613,13 +2613,13 @@ function Devices({
                 {(() => {
                   const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
                   const serverHost = window.location.hostname || 'localhost';
-                  const defaultGroup = hasRestrictedScope && allowedGroupsList.length > 0 ? allowedGroupsList[0] : '';
+                  const srvUrl = `http://${serverHost}:${effectivePort}`;
                   const psCmd = defaultGroup
-                    ? `irm "http://${serverHost}:${effectivePort}/install.ps1?group=${encodeURIComponent(defaultGroup)}" | iex`
-                    : `irm "http://${serverHost}:${effectivePort}/install.ps1" | iex`;
+                    ? `irm "${srvUrl}/install.ps1?group=${encodeURIComponent(defaultGroup)}&server_url=${encodeURIComponent(srvUrl)}" | iex`
+                    : `irm "${srvUrl}/install.ps1?server_url=${encodeURIComponent(srvUrl)}" | iex`;
                   const shCmd = defaultGroup
-                    ? `curl -fsSL "http://${serverHost}:${effectivePort}/install.sh?group=${encodeURIComponent(defaultGroup)}" | sudo bash`
-                    : `curl -fsSL "http://${serverHost}:${effectivePort}/install.sh" | sudo bash`;
+                    ? `curl -fsSL "${srvUrl}/install.sh?group=${encodeURIComponent(defaultGroup)}&server_url=${encodeURIComponent(srvUrl)}" | sudo bash`
+                    : `curl -fsSL "${srvUrl}/install.sh?server_url=${encodeURIComponent(srvUrl)}" | sudo bash`;
                   return (
                     <>
                       <div>
@@ -9596,10 +9596,10 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
   const currentTargetGroup = activeTokenObj ? activeTokenObj.targetGroup : 'Office';
 
   const effectiveServer = serverAddress.trim().replace(/\/+$/, '');
-  const psOneLiner = `irm "${effectiveServer}/install.ps1?token=${activeToken}" | iex`;
-  const bashOneLiner = `curl -fsSL "${effectiveServer}/install.sh?token=${activeToken}" | sudo bash`;
-  const uninstallerCommand = `irm "${effectiveServer}/uninstall.ps1" | iex`;
-  const linuxUninstallerCommand = `curl -fsSL "${effectiveServer}/uninstall.sh" | sudo bash`;
+  const psOneLiner = `irm "${effectiveServer}/install.ps1?token=${activeToken}&server_url=${encodeURIComponent(effectiveServer)}" | iex`;
+  const bashOneLiner = `curl -fsSL "${effectiveServer}/install.sh?token=${activeToken}&server_url=${encodeURIComponent(effectiveServer)}" | sudo bash`;
+  const uninstallerCommand = `irm "${effectiveServer}/uninstall.ps1?server_url=${encodeURIComponent(effectiveServer)}" | iex`;
+  const linuxUninstallerCommand = `curl -fsSL "${effectiveServer}/uninstall.sh?server_url=${encodeURIComponent(effectiveServer)}" | sudo bash`;
 
   const handleCopy = (text: string, key: string) => {
     copyToClipboard(text);
@@ -12152,7 +12152,8 @@ function Groups({
                 {(() => {
                   const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
                   const serverHost = window.location.hostname || 'localhost';
-                  const cmd = `irm "http://${serverHost}:${effectivePort}/install.ps1?group=${encodeURIComponent(selectedGroup.name)}" | iex`;
+                  const srvUrl = `http://${serverHost}:${effectivePort}`;
+                  const cmd = `irm "${srvUrl}/install.ps1?group=${encodeURIComponent(selectedGroup.name)}&server_url=${encodeURIComponent(srvUrl)}" | iex`;
                   return (
                     <>
                       <div className="code-card" style={{ marginTop: 0 }}>
