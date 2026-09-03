@@ -19,15 +19,65 @@ def unassign_devices_by_scope(building: Optional[str] = None, floor: Optional[st
         if os.path.exists(db_path):
             try:
                 conn = sqlite3.connect(db_path)
+                conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                if group_name:
-                    cursor.execute("UPDATE devices SET group_name = 'Default', room = '' WHERE group_name = ?", (group_name,))
-                elif building and floor and room:
-                    cursor.execute("UPDATE devices SET group_name = 'Default', room = '' WHERE building = ? AND floor = ? AND room = ?", (building, floor, room))
-                elif building and floor:
-                    cursor.execute("UPDATE devices SET group_name = 'Default', floor = '', room = '' WHERE building = ? AND floor = ?", (building, floor))
-                elif building:
-                    cursor.execute("UPDATE devices SET group_name = 'Default', building = '', floor = '', room = '' WHERE building = ?", (building,))
+                cursor.execute("SELECT id, group_name, building, floor, room FROM devices")
+                rows = cursor.fetchall()
+
+                for r in rows:
+                    dev_id = r["id"]
+                    curr_grp = r["group_name"] or ""
+                    curr_b = r["building"] or ""
+                    curr_f = r["floor"] or ""
+                    curr_r = r["room"] or ""
+
+                    grps = [g.strip() for g in curr_grp.split(",") if g.strip()]
+                    should_update = False
+                    new_b = curr_b
+                    new_f = curr_f
+                    new_r = curr_r
+
+                    # Match by room
+                    if building and floor and room:
+                        if (curr_b.lower() == building.lower() and curr_f.lower() == floor.lower() and curr_r.lower() == room.lower()) or (group_name and any(g.lower() == group_name.lower() for g in grps)):
+                            new_r = ""
+                            path = f"{building} / {floor} / {room}".lower()
+                            grps = [g for g in grps if g.lower() != path and (not group_name or g.lower() != group_name.lower())]
+                            should_update = True
+
+                    # Match by floor
+                    elif building and floor:
+                        if curr_b.lower() == building.lower() and curr_f.lower() == floor.lower():
+                            new_f = ""
+                            new_r = ""
+                            prefix = f"{building} / {floor} /".lower()
+                            grps = [g for g in grps if not g.lower().startswith(prefix)]
+                            should_update = True
+
+                    # Match by building
+                    elif building:
+                        if curr_b.lower() == building.lower():
+                            new_b = ""
+                            new_f = ""
+                            new_r = ""
+                            prefix = f"{building} /".lower()
+                            grps = [g for g in grps if not g.lower().startswith(prefix)]
+                            should_update = True
+
+                    # Match solely by group_name
+                    elif group_name:
+                        matched = any(g.lower() == group_name.lower() for g in grps)
+                        if matched:
+                            grps = [g for g in grps if g.lower() != group_name.lower()]
+                            should_update = True
+
+                    if should_update:
+                        new_grp_str = ", ".join(grps) if grps else "Default"
+                        cursor.execute(
+                            "UPDATE devices SET group_name = ?, building = ?, floor = ?, room = ? WHERE id = ?",
+                            (new_grp_str, new_b, new_f, new_r, dev_id)
+                        )
+
                 conn.commit()
                 conn.close()
                 break
@@ -492,7 +542,13 @@ async def delete_group(name: str):
     if idx is not None:
         deleted = groups_store.pop(idx)
         save_groups(groups_store)
-        unassign_devices_by_scope(group_name=name)
+        bld = deleted.get("building")
+        flr = deleted.get("floor")
+        rm = deleted.get("room")
+        if bld and flr and rm:
+            unassign_devices_by_scope(building=bld, floor=flr, room=rm, group_name=name)
+        else:
+            unassign_devices_by_scope(group_name=name)
         return {"status": "deleted", "group": deleted}
     unassign_devices_by_scope(group_name=name)
     return {"status": "not_found"}

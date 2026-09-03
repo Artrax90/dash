@@ -11811,7 +11811,7 @@ function Groups({
 
     return {
       building: b || 'Общие группы',
-      floor: f || '1 этаж',
+      floor: f || (b && b !== 'Общие группы' ? '1 этаж' : 'Группы'),
       room: r || gName,
       isHierarchical: Boolean(b && b !== 'Общие группы')
     };
@@ -11861,28 +11861,49 @@ function Groups({
   const hierarchyData = useMemo(() => {
     const buildingsMap: Record<string, {
       name: string;
+      color?: GroupData['color'];
       floors: Record<string, {
         name: string;
+        building: string;
         rooms: (GroupData & { roomName: string })[];
       }>;
     }> = {};
 
-    visibleGroups.forEach(g => {
-      const { building, floor, room } = parseGroupHierarchy(g.name, (g as any).building, (g as any).floor, (g as any).room);
-      if (!buildingsMap[building]) {
-        buildingsMap[building] = { name: building, floors: {} };
-      }
-      if (!buildingsMap[building].floors[floor]) {
-        buildingsMap[building].floors[floor] = { name: floor, rooms: [] };
-      }
-      buildingsMap[building].floors[floor].rooms.push({
-        ...g,
-        roomName: room
+    // 1. Pre-populate all configured buildings and their floors so they never vanish
+    buildingConfigs.forEach(b => {
+      buildingsMap[b.name] = {
+        name: b.name,
+        color: b.color || 'blue',
+        floors: {}
+      };
+      (b.floors || []).forEach(fName => {
+        buildingsMap[b.name].floors[fName] = {
+          name: fName,
+          building: b.name,
+          rooms: []
+        };
       });
     });
 
+    // 2. Populate rooms from visibleGroups
+    visibleGroups.forEach(g => {
+      const { building, floor, room } = parseGroupHierarchy(g.name, (g as any).building, (g as any).floor, (g as any).room);
+      if (!buildingsMap[building]) {
+        buildingsMap[building] = { name: building, color: 'blue', floors: {} };
+      }
+      if (!buildingsMap[building].floors[floor]) {
+        buildingsMap[building].floors[floor] = { name: floor, building, rooms: [] };
+      }
+      if (!buildingsMap[building].floors[floor].rooms.some(r => r.name.toLowerCase() === g.name.toLowerCase())) {
+        buildingsMap[building].floors[floor].rooms.push({
+          ...g,
+          roomName: room
+        });
+      }
+    });
+
     return buildingsMap;
-  }, [visibleGroups, parseGroupHierarchy]);
+  }, [buildingConfigs, visibleGroups, parseGroupHierarchy]);
 
   const availableBuildingOptions = useMemo(() => {
     const list: string[] = [];
@@ -11919,28 +11940,33 @@ function Groups({
 
   const getBuildingStats = useCallback((bldName: string) => {
     const bld = hierarchyData[bldName];
-    if (!bld) return { floorsCount: 0, roomsCount: 0, totalPcs: 0, onlinePcs: 0, groupNames: [] as string[] };
-    const floors = Object.values(bld.floors);
-    const floorsCount = floors.length;
+    const bConfig = buildingConfigs.find(b => b.name.toLowerCase() === bldName.toLowerCase());
+    const floors = Object.values(bld?.floors || {});
+    const floorsCount = bConfig?.floors?.length ?? floors.length;
     let roomsCount = 0;
     const groupNames: string[] = [];
     floors.forEach(f => {
       roomsCount += f.rooms.length;
       f.rooms.forEach(r => groupNames.push(r.name.toLowerCase()));
     });
-    const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => groupNames.includes(grp.toLowerCase())));
+    const bldDevs = devices.filter(d => 
+      (d.building && d.building.toLowerCase() === bldName.toLowerCase()) ||
+      getDeviceGroups(d).some(grp => groupNames.includes(grp.toLowerCase()))
+    );
     const totalPcs = bldDevs.length;
     const onlinePcs = bldDevs.filter(d => d.powerStatus === 'On').length;
     return { floorsCount, roomsCount, totalPcs, onlinePcs, groupNames };
-  }, [hierarchyData, devices]);
+  }, [hierarchyData, buildingConfigs, devices]);
 
   const getFloorStats = useCallback((bldName: string, flrName: string) => {
     const bld = hierarchyData[bldName];
     const flr = bld?.floors[flrName];
-    if (!flr) return { roomsCount: 0, totalPcs: 0, onlinePcs: 0, groupNames: [] as string[] };
-    const roomsCount = flr.rooms.length;
-    const groupNames = flr.rooms.map(r => r.name.toLowerCase());
-    const flrDevs = devices.filter(d => getDeviceGroups(d).some(grp => groupNames.includes(grp.toLowerCase())));
+    const roomsCount = flr?.rooms?.length || 0;
+    const groupNames = (flr?.rooms || []).map(r => r.name.toLowerCase());
+    const flrDevs = devices.filter(d => 
+      (d.building && d.building.toLowerCase() === bldName.toLowerCase() && d.floor && d.floor.toLowerCase() === flrName.toLowerCase()) ||
+      getDeviceGroups(d).some(grp => groupNames.includes(grp.toLowerCase()))
+    );
     const totalPcs = flrDevs.length;
     const onlinePcs = flrDevs.filter(d => d.powerStatus === 'On').length;
     return { roomsCount, totalPcs, onlinePcs, groupNames };
@@ -12090,13 +12116,14 @@ function Groups({
       notify('Отказ в доступе: удаление групп разрешено только Суперадминистратору');
       return;
     }
-    setGroups(prev => prev.filter(g => g.name !== groupName));
+    setGroups(prev => prev.filter(g => g.name.toLowerCase() !== groupName.toLowerCase()));
     await groupsApi.delete(groupName);
     if (selectedGroupName?.toLowerCase() === groupName.toLowerCase()) {
       onSelectGroup(null);
     }
-    notify(`Группа "${groupName}" удалена`);
+    notify(`"${groupName}" удалено`);
     setEditGroupTarget(null);
+    loadData();
   };
 
   const handleConfirmDeleteBuilding = async () => {
@@ -12104,6 +12131,11 @@ function Groups({
     const bldName = deleteBuildingTarget.name;
     try {
       await groupsApi.deleteBuilding(bldName);
+      setBuildingConfigs(prev => prev.filter(b => b.name.toLowerCase() !== bldName.toLowerCase()));
+      setGroups(prev => prev.filter(g => {
+        const { building: b } = parseGroupHierarchy(g.name, (g as any).building, (g as any).floor, (g as any).room);
+        return b.toLowerCase() !== bldName.toLowerCase();
+      }));
       notify(`Корпус "${bldName}" и все его кабинеты успешно удалены`);
       setDeleteBuildingTarget(null);
       if (drillBuilding?.toLowerCase() === bldName.toLowerCase()) {
@@ -12121,6 +12153,16 @@ function Groups({
     const { building, floor } = deleteFloorTarget;
     try {
       await groupsApi.deleteFloor(building, floor);
+      setBuildingConfigs(prev => prev.map(b => {
+        if (b.name.toLowerCase() === building.toLowerCase()) {
+          return { ...b, floors: (b.floors || []).filter(f => f.toLowerCase() !== floor.toLowerCase()) };
+        }
+        return b;
+      }));
+      setGroups(prev => prev.filter(g => {
+        const { building: b, floor: f } = parseGroupHierarchy(g.name, (g as any).building, (g as any).floor, (g as any).room);
+        return !(b.toLowerCase() === building.toLowerCase() && f.toLowerCase() === floor.toLowerCase());
+      }));
       notify(`Этаж "${floor}" в корпусе "${building}" успешно удален`);
       setDeleteFloorTarget(null);
       if (drillFloor?.toLowerCase() === floor.toLowerCase()) {
@@ -12137,6 +12179,7 @@ function Groups({
     const { name, roomName } = deleteRoomTarget;
     try {
       await groupsApi.delete(name);
+      setGroups(prev => prev.filter(g => g.name.toLowerCase() !== name.toLowerCase()));
       notify(`Кабинет "${roomName}" успешно удален`);
       setDeleteRoomTarget(null);
       if (selectedGroupName?.toLowerCase() === name.toLowerCase()) {
