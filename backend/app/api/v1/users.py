@@ -75,12 +75,15 @@ def sanitize_user(u: Dict[str, Any]) -> Dict[str, Any]:
     safe.pop("salt", None)
     return safe
 
+BACKUP_USERS_FILE = os.path.join(settings.DATA_DIR, "users.backup.json")
+
 def load_users() -> List[Dict[str, Any]]:
+    # 1. Try loading from main users.json
     if os.path.exists(USERS_FILE):
         try:
             with open(USERS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list):
+                if isinstance(data, list) and len(data) > 0:
                     # Upgrade any legacy users missing hashes or groups
                     updated = False
                     for u in data:
@@ -97,15 +100,40 @@ def load_users() -> List[Dict[str, Any]]:
                             updated = True
                     if updated:
                         save_users(data)
+                    else:
+                        # Auto-update backup
+                        try:
+                            with open(BACKUP_USERS_FILE, "w", encoding="utf-8") as bf:
+                                json.dump(data, bf, ensure_ascii=False, indent=2)
+                        except Exception:
+                            pass
                     return data
         except Exception:
             pass
+
+    # 2. Resilient fallback: If users.json was wiped or reset by git, restore from backup!
+    if os.path.exists(BACKUP_USERS_FILE):
+        try:
+            with open(BACKUP_USERS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    save_users(data)
+                    return data
+        except Exception:
+            pass
+
     return []
 
 def save_users(users: List[Dict[str, Any]]):
     os.makedirs(settings.DATA_DIR, exist_ok=True)
     with open(USERS_FILE, "w", encoding="utf-8") as f:
         json.dump(users, f, ensure_ascii=False, indent=2)
+    if users:
+        try:
+            with open(BACKUP_USERS_FILE, "w", encoding="utf-8") as f:
+                json.dump(users, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 class InitialAdminSetupPayload(BaseModel):
     username: str
