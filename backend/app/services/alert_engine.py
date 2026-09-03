@@ -179,8 +179,7 @@ class AlertEngine:
     @classmethod
     async def trigger_device_offline(cls, session, device, reason: str = ""):
         """
-        Record and dispatch device OFFLINE alert to DB, Telegram, and WebSocket.
-        Deduplication: only creates alert if no open OFFLINE alert exists for this device.
+        Record and dispatch device OFFLINE alert to DB, Telegram, and WebSocket with anti-flapping guard.
         """
         try:
             from backend.app.models.alert import AlertModel, AlertPolicyModel
@@ -188,9 +187,28 @@ class AlertEngine:
             from backend.app.ws.manager import ws_manager
             from sqlalchemy import select
             
-            now_utc = datetime.utcnow()
             now_ts = time.time()
             dev_id = str(device.id).upper()
+            tracker = cls._device_state_tracker.setdefault(dev_id, {
+                "state": "UNKNOWN",
+                "last_offline_time": 0,
+                "last_online_time": 0,
+                "last_offline_alert_ts": 0,
+                "last_online_alert_ts": 0
+            })
+            
+            # Anti-flapping: do not re-trigger if device is already OFFLINE
+            if tracker.get("state") == "OFFLINE":
+                return
+                
+            # Anti-flapping: ignore transient blips if device was marked ONLINE < 60s ago
+            # unless it is an explicit shutdown event from the OS
+            is_explicit = any(k in reason.upper() for k in ["ЗАВЕРШЕНИЕ", "SHUTDOWN", "ВЫКЛЮЧЕН ЛОКАЛЬНО"])
+            if not is_explicit and tracker.get("last_online_time", 0) > 0 and (now_ts - tracker.get("last_online_time", 0) < 60):
+                return
+                
+            tracker["state"] = "OFFLINE"
+            tracker["last_offline_time"] = now_ts
 
             # Deduplication in DB: do not create multiple open OFFLINE alerts
             existing = await session.execute(
@@ -203,6 +221,7 @@ class AlertEngine:
             if existing.scalars().first():
                 return
                 
+            now_utc = datetime.utcnow()
             dev_title = device.name or device.hostname or device.id
             alert_id = f"ALT-OFF-{device.id}-{int(now_utc.timestamp())}"
             desc = reason or f"Связь с агентом прервана (компьютер {dev_title} выключен или недоступен в сети)"
@@ -217,10 +236,6 @@ class AlertEngine:
                 created_at=now_utc
             )
             session.add(alert_obj)
-            try:
-                await session.commit()
-            except Exception as c_err:
-                print(f"[AlertEngine Commit Error] {c_err}")
             
             alert_dict = {
                 "id": alert_id,
@@ -253,7 +268,11 @@ class AlertEngine:
                 "notify_channels": pol_model.notify_channels
             } if pol_model else {"mode": "Full", "events_config": {"agentDisconnect": True}, "notify_channels": {"webUi": True, "telegram": True}}
             
-            await cls.dispatch_alert(alert_dict, policy=policy_dict)
+            # Rate-limit Telegram dispatch (max once per 60s per device)
+            if now_ts - tracker.get("last_offline_alert_ts", 0) >= 60:
+                tracker["last_offline_alert_ts"] = now_ts
+                await cls.dispatch_alert(alert_dict, policy=policy_dict)
+                
             await ws_manager.broadcast_event("alert.created", alert_dict)
         except Exception as err:
             print(f"[Trigger Device Offline Error] {err}")
@@ -261,7 +280,8 @@ class AlertEngine:
     @classmethod
     async def trigger_device_online(cls, session, device, reason: str = ""):
         """
-        Auto-resolve open OFFLINE alerts in DB and dispatch ONLINE alert to Telegram & Web UI.
+        Auto-resolve open OFFLINE alerts. Only dispatch Telegram ONLINE alert if device
+        was actually offline for >= 45s (anti-flapping guard).
         """
         try:
             from backend.app.models.alert import AlertModel, AlertPolicyModel
@@ -269,8 +289,24 @@ class AlertEngine:
             from backend.app.ws.manager import ws_manager
             from sqlalchemy import select
             
-            now_utc = datetime.utcnow()
+            now_ts = time.time()
+            dev_id = str(device.id).upper()
+            tracker = cls._device_state_tracker.setdefault(dev_id, {
+                "state": "UNKNOWN",
+                "last_offline_time": 0,
+                "last_online_time": 0,
+                "last_offline_alert_ts": 0,
+                "last_online_alert_ts": 0
+            })
             
+            prev_state = tracker.get("state")
+            last_off = tracker.get("last_offline_time", 0)
+            offline_duration = (now_ts - last_off) if last_off > 0 else 999999
+            
+            tracker["state"] = "ONLINE"
+            tracker["last_online_time"] = now_ts
+            
+            now_utc = datetime.utcnow()
             # 1. Always auto-resolve open OFFLINE alerts in DB and Web UI
             open_alerts = await session.execute(
                 select(AlertModel).where(
@@ -288,16 +324,22 @@ class AlertEngine:
                     "state": "Resolved",
                     "resolvedAt": now_utc.isoformat() + "Z"
                 })
-            try:
-                await session.commit()
-            except Exception as c_err:
-                print(f"[AlertEngine Resolve Commit Error] {c_err}")
                 
             for a in alerts_db:
                 if a.get("deviceId") == device.id and a.get("type") in ["OFFLINE", "AGENT_DISCONNECTED"] and a.get("state") == "Open":
                     a["state"] = "Resolved"
+                    
+            # 2. Anti-flapping: DO NOT spam Telegram if device was already online
+            # or was offline for less than 45 seconds (temporary glitch / service restart)
+            if prev_state == "ONLINE" or (last_off > 0 and offline_duration < 45):
+                return
+                
+            # Rate-limit Telegram dispatch: at most once per 60s
+            if now_ts - tracker.get("last_online_alert_ts", 0) < 60:
+                return
+            tracker["last_online_alert_ts"] = now_ts
 
-            # 2. Dispatch ONLINE alert to Telegram
+            # 3. Dispatch ONLINE alert to Telegram
             pol_res = await session.execute(
                 select(AlertPolicyModel).where(
                     (AlertPolicyModel.device_id == device.id) | (AlertPolicyModel.device_id == device.hostname)

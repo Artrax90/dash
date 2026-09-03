@@ -1339,8 +1339,12 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             pending_cmds.extend(pending_device_commands[k])
             pending_device_commands[k].clear()
 
-    # Filter pending commands by TTL (commands expire after 60s)
+    # Filter pending commands by TTL (commands expire after 60s) and fresh boot protection
     now_ts = time.time()
+    is_fresh_boot = False
+    if uptime_val and ("Только что" in str(uptime_val) or "0м" in str(uptime_val) or "0ч 0м" in str(uptime_val) or "0ч 1м" in str(uptime_val)):
+        is_fresh_boot = True
+
     unique_cmds = []
     seen_ids = set()
     for c in pending_cmds:
@@ -1352,9 +1356,14 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             except Exception:
                 c_time = now_ts
 
-        # 1. Expire stale commands older than 300 seconds (5 minutes)
-        if (now_ts - c_time) > 300:
+        # 1. Expire stale commands older than 60 seconds
+        if (now_ts - c_time) > 60:
             print(f"[Command Expired] Dropped stale command {c.get('action')} ({cid}) for {device_id} (age: {int(now_ts - c_time)}s)")
+            continue
+
+        # 2. Prevent executing stale shutdown on fresh boot
+        if is_fresh_boot and c.get("action") in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
+            print(f"[Command Dropped] Dropped shutdown command {cid} for {device_id} due to fresh boot")
             continue
 
         if cid not in seen_ids:

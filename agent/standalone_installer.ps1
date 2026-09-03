@@ -1,19 +1,12 @@
 ﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
-$ServerUrl = "__SERVER_URL__"
-$Token = "__TOKEN__"
+if (-not $ServerUrl -or $ServerUrl -eq "__SERVER_URL__") { $ServerUrl = "__SERVER_URL__" }
+if (-not $Token -or $Token -eq "__TOKEN__") { $Token = "__TOKEN__" }
 
 if ($args) {
     for ($i = 0; $i -lt $args.Count; $i++) {
         if ($args[$i] -eq '-ServerUrl' -and ($i + 1) -lt $args.Count) { $ServerUrl = $args[$i + 1] }
         if ($args[$i] -eq '-Token' -and ($i + 1) -lt $args.Count) { $Token = $args[$i + 1] }
     }
-}
-
-if ([string]::IsNullOrWhiteSpace($ServerUrl) -or $ServerUrl.StartsWith("__SERVER")) {
-    $ServerUrl = "http://localhost:2301"
-}
-if ([string]::IsNullOrWhiteSpace($Token) -or $Token.StartsWith("__TOKEN")) {
-    $Token = "wm_tok_live_7f8a92b3c4d5e6f7"
 }
 
 # ==============================================================================
@@ -695,17 +688,6 @@ public class WtsManagerService
 if (`$ServerUrl) {
     `$ServerUrl = `$ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
 }
-try {
-    if (-not `$ServerUrl -or `$ServerUrl -like "*localhost*" -or `$ServerUrl -like "*127.0.0.1*") {
-        `$cfgFile = Join-Path '$InstallDir' "config.json"
-        if (Test-Path `$cfgFile) {
-            `$cfgObj = Get-Content `$cfgFile -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
-            if (`$cfgObj -and `$cfgObj.server_url -and `$cfgObj.server_url -notlike "*localhost*" -and `$cfgObj.server_url -notlike "*127.0.0.1*") {
-                `$ServerUrl = `$cfgObj.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
-            }
-        }
-    }
-} catch {}
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
 `$AgentVersion = '2.9.2'
@@ -713,15 +695,11 @@ try {
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
 
-`$mutexAcquired = `$false
-try {
-    `$global:agentMutex = New-Object System.Threading.Mutex(`$false, "Global\WorkstationManagerAgentMutex")
-    `$mutexAcquired = `$global:agentMutex.WaitOne(200, `$false)
-} catch {
-    `$mutexAcquired = `$true
-}
-if (-not `$mutexAcquired) {
-    exit 0
+`$mutexName = "Global\WorkstationManagerAgentMutex"
+`$createdNew = `$false
+`$global:agentMutex = New-Object System.Threading.Mutex(`$true, `$mutexName, [ref]`$createdNew)
+if (-not `$createdNew) {
+    exit
 }
 
 try {
@@ -781,9 +759,13 @@ function Update-AgentService([string]`$targetVer = "2.9.2") {
                     try { `$global:agentMutex.Dispose() } catch {}
                 }
 
-                # Start updated service with 2-second detached delay to guarantee clean mutex release
+                # Start updated service
                 `$launcherVbs = Join-Path '$InstallDir' "launcher.vbs"
-                Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command', "Start-Sleep -Seconds 2; if (Test-Path `'$launcherVbs`') { Start-Process -FilePath `"`$env:SystemRoot\System32\wscript.exe`" -ArgumentList `'`"$launcherVbs`"`' -WindowStyle Hidden } else { Start-Process -FilePath powershell.exe -ArgumentList @(`'-NoProfile`', `'-WindowStyle`', `'Hidden`', `'-ExecutionPolicy`', `'Bypass`', `'-File`', `'`"$servicePath`"`') -WindowStyle Hidden }") -WindowStyle Hidden
+                if (Test-Path `$launcherVbs) {
+                    Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$launcherVbs`"" -WindowStyle Hidden
+                } else {
+                    Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$servicePath`"") -WindowStyle Hidden
+                }
                 exit 0
             }
         }
@@ -794,7 +776,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.9.2"
+        Update-AgentService "2.9.1"
         return
     }
 
@@ -803,18 +785,26 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         return
     }
 
+    # Guard: Do not execute queued shutdown if computer booted less than 90 seconds ago (prevents loop on startup)
+    if ((`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') -and -not `$isDirectSignal) {
+        try {
+            `$bt = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).LastBootUpTime
+            if (`$bt -and ((Get-Date) - `$bt).TotalSeconds -lt 90) {
+                return
+            }
+        } catch {}
+    }
+
     if (`$act -eq 'REBOOT' -or `$act -eq 'RESTART') {
-        try { Start-Process -FilePath "`$env:SystemRoot\System32\shutdown.exe" -ArgumentList @('/r', '/f', '/t', '0') -NoNewWindow } catch {}
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(6) } catch {}
         try { Restart-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0
+        & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0 /d p:0:0
     }
     elseif (`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') {
-        try { Start-Process -FilePath "`$env:SystemRoot\System32\shutdown.exe" -ArgumentList @('/s', '/f', '/t', '0') -NoNewWindow } catch {}
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(12) } catch {}
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(5) } catch {}
         try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0
+        & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 /d p:0:0
     }
     elseif (`$act -eq 'CLOSE_RDP' -or `$act -eq 'CLOSE_RDP_CLIENT' -or `$act -eq 'KILL_RDP' -or `$act -eq 'DISCONNECT_RDP') {
         `$targetPid = `$null
@@ -1797,7 +1787,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
         `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/heartbeat")
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
-        `$req.Timeout = 3000
+        `$req.Timeout = 10000
         `$stream = `$req.GetRequestStream()
         `$stream.Write(`$bytes, 0, `$bytes.Length)
         `$stream.Close()
@@ -1847,6 +1837,11 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                     }
                 }
             }
+            # Auto update check: if server announces newer version, auto-trigger update!
+            if (`$respObj -and `$respObj.latestVersion -and (`$respObj.latestVersion -ne `$AgentVersion)) {
+                Update-AgentService (`$respObj.latestVersion)
+                return `$true
+            }
             return `$true
         }
     } catch {}
@@ -1860,8 +1855,14 @@ try {
     `$udpListener.Client.ReceiveTimeout = 500
 } catch {}
 
-# Immediate startup heartbeat (non-blocking)
-Invoke-Heartbeat `$true | Out-Null
+# Initial fast retry loop on startup (wait for network/DHCP and backend to become available)
+`$initAttempts = 0
+while (`$initAttempts -lt 30) {
+    `$ok = Invoke-Heartbeat `$true
+    if (`$ok) { break }
+    `$initAttempts++
+    Start-Sleep -Seconds 2
+}
 
 `$lastHeartbeat = Get-Date
 
@@ -1873,9 +1874,6 @@ try {
                     `$remoteEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                     `$dataBytes = `$udpListener.Receive([ref]`$remoteEp)
                     `$msg = [System.Text.Encoding]::UTF8.GetString(`$dataBytes)
-                    if (`$remoteEp -and `$remoteEp.Address -and (`$ServerUrl -like "*localhost*" -or `$ServerUrl -like "*127.0.0.1*")) {
-                        `$ServerUrl = "http://" + `$remoteEp.Address.ToString() + ":2301"
-                    }
                     if (`$msg -like "WM_CMD:*") {
                         `$parts = `$msg.Split(":")
                         if (`$parts.Length -ge 2) {
@@ -2122,9 +2120,8 @@ try {
 
     # 6.5. Создание правил брандмауэра для приема Wake-on-LAN и управляющих сигналов
     try {
-        New-NetFirewallRule -DisplayName "Workstation Manager Wake-on-LAN (UDP 7, 9)" -Direction Inbound -Protocol UDP -LocalPort 7,9 -RemoteAddress Any -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
-        New-NetFirewallRule -DisplayName "Workstation Manager Direct Signal (UDP 48123)" -Direction Inbound -Protocol UDP -LocalPort 48123 -RemoteAddress Any -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
-        & netsh.exe advfirewall firewall add rule name="Workstation Manager Direct Signal (UDP 48123)" protocol=UDP localport=48123 dir=in action=allow 2>&1 | Out-Null
+        New-NetFirewallRule -DisplayName "Workstation Manager Wake-on-LAN (UDP 7, 9)" -Direction Inbound -Protocol UDP -LocalPort 7,9 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+        New-NetFirewallRule -DisplayName "Workstation Manager Direct Signal (UDP 48123)" -Direction Inbound -Protocol UDP -LocalPort 48123 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
         Write-Host "      [OK] Брандмауэр: открыты порты UDP 7, 9 (Magic Packet) и UDP 48123 (Direct LAN Signal)." -ForegroundColor Green
     } catch {}
 
