@@ -201,16 +201,16 @@ class AlertEngine:
             if tracker.get("state") == "OFFLINE":
                 return
                 
-            # Anti-flapping: ignore transient blips if device was marked ONLINE < 60s ago
-            # unless it is an explicit shutdown event from the OS
-            is_explicit = any(k in reason.upper() for k in ["ЗАВЕРШЕНИЕ", "SHUTDOWN", "ВЫКЛЮЧЕН ЛОКАЛЬНО"])
-            if not is_explicit and tracker.get("last_online_time", 0) > 0 and (now_ts - tracker.get("last_online_time", 0) < 60):
+            # Anti-flapping: ignore transient blips if device was marked ONLINE < 30s ago
+            # unless it is an explicit shutdown event
+            is_explicit = any(k in reason.upper() for k in ["ЗАВЕРШЕНИЕ", "SHUTDOWN", "ВЫКЛЮЧЕН", "ПРЕРВАНА", "НЕТ ОТКЛИКА", "НЕТ ПИНГА", "УДАЛЕННОЕ"])
+            if not is_explicit and tracker.get("last_online_time", 0) > 0 and (now_ts - tracker.get("last_online_time", 0) < 30):
                 return
                 
             tracker["state"] = "OFFLINE"
             tracker["last_offline_time"] = now_ts
 
-            # Deduplication in DB: do not create multiple open OFFLINE alerts
+            # Auto-resolve any existing open OFFLINE alerts in DB before creating a new one
             existing = await session.execute(
                 select(AlertModel).where(
                     (AlertModel.device_id == device.id) &
@@ -218,8 +218,9 @@ class AlertEngine:
                     (AlertModel.state == "Open")
                 )
             )
-            if existing.scalars().first():
-                return
+            for old_a in existing.scalars().all():
+                old_a.state = "Resolved"
+                old_a.resolved_at = datetime.utcnow()
                 
             now_utc = datetime.utcnow()
             dev_title = device.name or device.hostname or device.id
@@ -330,12 +331,12 @@ class AlertEngine:
                     a["state"] = "Resolved"
                     
             # 2. Anti-flapping: DO NOT spam Telegram if device was already online
-            # or was offline for less than 45 seconds (temporary glitch / service restart)
-            if prev_state == "ONLINE" or (last_off > 0 and offline_duration < 45):
+            # or was offline for less than 15 seconds (micro-glitch / service restart)
+            if prev_state == "ONLINE" or (last_off > 0 and offline_duration < 15):
                 return
                 
-            # Rate-limit Telegram dispatch: at most once per 60s
-            if now_ts - tracker.get("last_online_alert_ts", 0) < 60:
+            # Rate-limit Telegram dispatch: at most once per 30s
+            if now_ts - tracker.get("last_online_alert_ts", 0) < 30:
                 return
             tracker["last_online_alert_ts"] = now_ts
 

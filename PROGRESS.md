@@ -273,11 +273,15 @@
 
 | **2026-09-03 08:35** | System / Rollback | [`backend/app/services/scheduler_service.py`](file:///d:/antigravity/dash/backend/app/services/scheduler_service.py), [`backend/app/services/alert_engine.py`](file:///d:/antigravity/dash/backend/app/services/alert_engine.py), [`backend/app/api/v1/devices.py`](file:///d:/antigravity/dash/backend/app/api/v1/devices.py), [`backend/app/api/v1/agents.py`](file:///d:/antigravity/dash/backend/app/api/v1/agents.py), [`agent/standalone_installer.ps1`](file:///d:/antigravity/dash/agent/standalone_installer.ps1), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Откат системы на 6 сборок назад (к состоянию `df79e72`)**: По требованию пользователя выполнен полный откат кодовой базы на 6 сборок назад к коммиту `df79e72` (2026-09-02 15:50), в котором полностью работало управление питанием (выключение/перезагрузка) и служба агента. Все последующие экспериментальные правки сторожевого таймера и инсталлера аннулированы. |
 
+| **2026-09-03 08:55** | Backend / Alerts | [`backend/app/services/scheduler_service.py`](file:///d:/antigravity/dash/backend/app/services/scheduler_service.py), [`backend/app/services/alert_engine.py`](file:///d:/antigravity/dash/backend/app/services/alert_engine.py), [`backend/app/api/v1/devices.py`](file:///d:/antigravity/dash/backend/app/api/v1/devices.py), [`PROGRESS.md`](file:///d:/antigravity/dash/PROGRESS.md) | **Реализация Варианта 1: Гибридный Watchdog со строгим разделением питания и агента + Грейс-период**: 1. **Строгое разделение статусов**: `agent_status` определяется строго по Heartbeat агента (<60 сек); ICMP-пинг больше никогда не затирает `last_seen` и не меняет `agent_status`; 2. **Гибридный детектор питания (`power_status`)**: если агент шлет Heartbeat — ПК гарантированно ON; если Heartbeat прекратился — проверяется ICMP-пинг; при отсутствии пинга 6 циклов подряд (~30 секунд) фиксируется выключение и отправляется одиночный алерт в Telegram; при появлении пинга/Heartbeat после выключения фиксируется включение и отправляется алерт; 3. **Грейс-период для удаленных команд (45 сек)**: метод `set_power_grace` защищает ПК от преждевременного переключения статуса сторожевым таймером во время выключения Windows; 4. **Устранение блокировки повторных алертов**: в `alert_engine.py` убран глухой возврат `return` при наличии старых открытых алертов — они корректно закрываются, а новый алерт отправляется в Telegram без задержек. Скрипт агента (`standalone_installer.ps1`) не изменялся и сохранен в полностью рабочем виде. |
+
 ---
 
 ## 🔜 Следующие шаги
 1. Выполнить `docker compose down && git pull && docker compose up -d --build` на сервере.
-2. Проверить выполнение команд управления питанием на ПК.
+2. Проверить отправку оповещения в Telegram при ручном выключении ПК (приходит через ~30 сек).
+3. Проверить отправку оповещения в Telegram при включении ПК.
+4. Проверить удаленное выключение из веб-панели (работает штатно, подтверждение уходит сразу).
 
 ---
 

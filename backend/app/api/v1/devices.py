@@ -1584,17 +1584,49 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
             ip_address=device.ip_address
         )
         device.power_status = PowerStatus.ON
+        try:
+            from backend.app.services.alert_engine import alert_engine
+            await alert_engine.trigger_device_online(
+                session=db,
+                device=device,
+                reason=f"Отправлен сигнал включения (Wake-on-LAN) на станцию {device.name or device.hostname or device.id} (инициатор: {initiator})"
+            )
+        except Exception:
+            pass
     elif action in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
         queue_device_command(device.id, action, force=force, reason=reason)
         if device.hostname and device.hostname != device.id:
             queue_device_command(device.hostname, action, force=force, reason=reason)
         device.power_status = PowerStatus.OFF
         device.agent_status = AgentStatus.DISCONNECTED
+        try:
+            from backend.app.services.scheduler_service import scheduler_service
+            scheduler_service.set_power_grace(device.id, 45.0)
+            if device.hostname:
+                scheduler_service.set_power_grace(device.hostname, 45.0)
+        except Exception:
+            pass
+        try:
+            from backend.app.services.alert_engine import alert_engine
+            await alert_engine.trigger_device_offline(
+                session=db,
+                device=device,
+                reason=f"Удаленное выключение станции {device.name or device.hostname or device.id} (инициатор: {initiator})"
+            )
+        except Exception:
+            pass
     elif action in ["REBOOT", "RESTART"]:
         queue_device_command(device.id, "REBOOT", force=force, reason=reason)
         if device.hostname and device.hostname != device.id:
             queue_device_command(device.hostname, "REBOOT", force=force, reason=reason)
         device.power_status = PowerStatus.OFF
+        try:
+            from backend.app.services.scheduler_service import scheduler_service
+            scheduler_service.set_power_grace(device.id, 45.0)
+            if device.hostname:
+                scheduler_service.set_power_grace(device.hostname, 45.0)
+        except Exception:
+            pass
     elif action in ["SLEEP", "HIBERNATE", "LOGOFF"]:
         queue_device_command(device.id, action, force=force, reason=reason)
         if device.hostname and device.hostname != device.id:

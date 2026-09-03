@@ -12,6 +12,12 @@ class SchedulerService:
     def __init__(self):
         self._running = False
         self._last_executed_step: Dict[str, str] = {}
+        self._consecutive_ping_failures: Dict[str, int] = {}
+        self._power_action_grace_until: Dict[str, float] = {}
+
+    def set_power_grace(self, device_id: str, duration: float = 45.0):
+        if device_id:
+            self._power_action_grace_until[str(device_id).upper()] = time.time() + duration
 
     async def execute_action_for_devices(self, action: str, target_devs: List[Any], sch_name: str, sch_id: str, target_grp: str, trigger_type: str = "SCHEDULER_CRON"):
         """Dispatch low-level action on targeted devices via Direct LAN UDP + Heartbeat Queue, and create execution log entry."""
@@ -169,8 +175,17 @@ class SchedulerService:
                     from backend.app.api.v1.devices import log_device_power_event, device_power_logs, format_device_summary
                     
                     now_utc = datetime.utcnow()
+                    now_ts = time.time()
                     status_changed = False
                     for dev in devices:
+                        if not dev.id:
+                            continue
+                        dev_key = str(dev.id).upper()
+
+                        # Skip device if within power action grace period (e.g. 45s after clicking shutdown in panel)
+                        if now_ts < self._power_action_grace_until.get(dev_key, 0):
+                            continue
+
                         is_agentless = (
                             dev.agent_version == "Agentless" or 
                             dev.os_type == "ThinClient" or 
@@ -178,28 +193,57 @@ class SchedulerService:
                             "Agentless" in (dev.tags or []) or
                             "Тонкий клиент" in (dev.tags or [])
                         )
-                        if is_agentless:
-                            # Thin clients have no background agent.
-                            # Determine reachability through active network probing:
-                            # 1. Fast ICMP Ping (1.2s timeout)
-                            # 2. Common TCP ports (RDP 3389, HTTP 80, HTTPS 443, SSH 22, Web 8080, VNC 5900)
+
+                        sec_since_heartbeat = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
+                        agent_alive = (sec_since_heartbeat <= 60) if not is_agentless else False
+
+                        # 1. Update Agent Status strictly based on real Heartbeat (independent of power)
+                        if not is_agentless:
+                            if agent_alive:
+                                if dev.agent_status != AgentStatus.CONNECTED:
+                                    dev.agent_status = AgentStatus.CONNECTED
+                                    status_changed = True
+                                    await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+                            else:
+                                if dev.agent_status == AgentStatus.CONNECTED:
+                                    dev.agent_status = AgentStatus.DISCONNECTED
+                                    status_changed = True
+                                    await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+                        else:
+                            dev.agent_status = AgentStatus.CONNECTED if dev.power_status == PowerStatus.ON else AgentStatus.DISCONNECTED
+
+                        # 2. Update Power Status (Hybrid Watchdog)
+                        if agent_alive:
+                            # Agent is actively sending Heartbeat -> Hardware is 100% ON
+                            self._consecutive_ping_failures[dev_key] = 0
+                            if dev.power_status != PowerStatus.ON:
+                                dev.power_status = PowerStatus.ON
+                                status_changed = True
+                                
+                                from backend.app.services.alert_engine import alert_engine
+                                await alert_engine.trigger_device_online(
+                                    session=session,
+                                    device=dev,
+                                    reason=f"Компьютер {dev.name or dev.hostname or dev.id} включен (агент на связи)"
+                                )
+                                await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+                        else:
+                            # Agent is silent or device is ThinClient. Probe network reachability via ICMP Ping
                             ping_ok = False
-                            
-                            if dev.ip_address:
-                                # Layer 1: Fast ICMP Ping
+                            if dev.ip_address and dev.ip_address not in ["127.0.0.1", "0.0.0.0", ""]:
                                 try:
-                                    ping_cmd = ["ping", "-n", "1", "-w", "600", dev.ip_address] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", dev.ip_address]
+                                    ping_cmd = ["ping", "-n", "1", "-w", "500", dev.ip_address] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", dev.ip_address]
                                     proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                                    rc = await asyncio.wait_for(proc.wait(), timeout=1.4)
+                                    rc = await asyncio.wait_for(proc.wait(), timeout=1.0)
                                     ping_ok = (rc == 0)
                                 except Exception:
                                     pass
 
-                                # Layer 2: Common TCP ports if ICMP is blocked
-                                if not ping_ok:
+                                # If Thin Client ICMP failed, check common TCP ports
+                                if not ping_ok and is_agentless:
                                     for p in [3389, 80, 443, 22, 8080, 5900]:
                                         try:
-                                            _, writer = await asyncio.wait_for(asyncio.open_connection(dev.ip_address, p), timeout=0.3)
+                                            _, writer = await asyncio.wait_for(asyncio.open_connection(dev.ip_address, p), timeout=0.25)
                                             writer.close()
                                             await writer.wait_closed()
                                             ping_ok = True
@@ -207,20 +251,17 @@ class SchedulerService:
                                         except Exception:
                                             pass
 
-                            # If current IP is unreachable (or not set), check if device has migrated to another IP via MAC
-                            if not ping_ok and dev.mac_address and dev.mac_address != "00:00:00:00:00:00":
+                            # If Thin Client unreachable, check if migrated to another IP via MAC / ARP
+                            if not ping_ok and is_agentless and dev.mac_address and dev.mac_address != "00:00:00:00:00:00":
                                 clean_mac = dev.mac_address.replace("-", ":").upper().strip()
                                 from backend.app.api.v1.agents import fleet_mac_to_ip
                                 candidate_ip = None
-                                
-                                # 1. Check fleet MAC-to-IP table reported by online Windows agents across subnets
                                 m_info = fleet_mac_to_ip.get(clean_mac)
                                 if m_info and isinstance(m_info, dict):
                                     c_ip = m_info.get("ip")
                                     if c_ip and c_ip != dev.ip_address and (time.time() - m_info.get("timestamp", 0)) < 300:
                                         candidate_ip = c_ip
 
-                                # 2. Check local host ARP table (/proc/net/arp)
                                 if not candidate_ip and os.path.exists("/proc/net/arp"):
                                     try:
                                         with open("/proc/net/arp", "r") as f:
@@ -235,102 +276,78 @@ class SchedulerService:
                                     except Exception:
                                         pass
 
-                                # 3. If candidate IP found, verify with quick active probe
                                 if candidate_ip:
-                                    cand_ok = False
                                     try:
                                         c_cmd = ["ping", "-n", "1", "-w", "500", candidate_ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", candidate_ip]
                                         c_proc = await asyncio.create_subprocess_exec(*c_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                                        c_rc = await asyncio.wait_for(c_proc.wait(), timeout=1.2)
-                                        cand_ok = (c_rc == 0)
+                                        c_rc = await asyncio.wait_for(c_proc.wait(), timeout=1.0)
+                                        if c_rc == 0:
+                                            old_ip = dev.ip_address
+                                            dev.ip_address = candidate_ip
+                                            ping_ok = True
+                                            print(f"[Auto-Migrate IP] Device {dev.id} ({clean_mac}) auto-migrated: {old_ip} -> {candidate_ip}")
                                     except Exception:
                                         pass
-                                    if not cand_ok:
-                                        for p in [3389, 80, 443, 22, 8080, 5900]:
-                                            try:
-                                                _, w = await asyncio.wait_for(asyncio.open_connection(candidate_ip, p), timeout=0.25)
-                                                w.close()
-                                                await w.wait_closed()
-                                                cand_ok = True
-                                                break
-                                            except Exception:
-                                                pass
-
-                                    if cand_ok:
-                                        old_ip = dev.ip_address
-                                        dev.ip_address = candidate_ip
-                                        dev.last_seen = now_utc
-                                        dev.power_status = PowerStatus.ON
-                                        dev.agent_status = AgentStatus.CONNECTED
-                                        ping_ok = True
-                                        status_changed = True
-                                        print(f"[Auto-Migrate IP] Thin client {dev.id} ({clean_mac}) auto-migrated IP: {old_ip} -> {candidate_ip}")
-                                        await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
 
                             if ping_ok:
-                                dev.last_seen = now_utc
-                                if dev.power_status != PowerStatus.ON or dev.agent_status != AgentStatus.CONNECTED:
+                                # Network responds to ping -> Hardware is ON
+                                self._consecutive_ping_failures[dev_key] = 0
+                                if dev.power_status != PowerStatus.ON:
                                     dev.power_status = PowerStatus.ON
-                                    dev.agent_status = AgentStatus.CONNECTED
                                     status_changed = True
+                                    
+                                    from backend.app.services.alert_engine import alert_engine
+                                    await alert_engine.trigger_device_online(
+                                        session=session,
+                                        device=dev,
+                                        reason=f"Компьютер {dev.name or dev.hostname or dev.id} включен (есть сетевой отклик)"
+                                    )
                                     await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
-                                status_changed = True
                             else:
-                                sec_since_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
-                                # Fast offline switch: if unreachable for > 30 seconds, mark device as OFF
-                                if dev.power_status == PowerStatus.ON and sec_since_seen > 30:
+                                # Network does not respond to ping
+                                fail_count = self._consecutive_ping_failures.get(dev_key, 0) + 1
+                                self._consecutive_ping_failures[dev_key] = fail_count
+
+                                # 6 consecutive failures at 5s loop = ~30 seconds of confirmed silence
+                                if dev.power_status == PowerStatus.ON and fail_count >= 6:
                                     dev.power_status = PowerStatus.OFF
                                     dev.agent_status = AgentStatus.DISCONNECTED
                                     status_changed = True
+
+                                    curr_user = dev.current_user or "Пользователь"
+                                    dev_name_clean = dev.name or dev.hostname or dev.id
+
+                                    # Check if a shutdown was already logged recently (< 120s)
+                                    recent_logs = device_power_logs.get(dev.id.upper(), [])
+                                    has_recent = False
+                                    for entry in recent_logs[:5]:
+                                        if entry.get("action") in ["SHUTDOWN", "FORCE_SHUTDOWN", "POWEROFF"]:
+                                            try:
+                                                t_entry = datetime.fromisoformat(entry.get("timestamp", "").replace("Z", "+00:00"))
+                                                if (datetime.now(timezone.utc) - t_entry).total_seconds() < 120:
+                                                    has_recent = True
+                                                    break
+                                            except Exception:
+                                                pass
+
+                                    if not has_recent:
+                                        log_device_power_event(
+                                            device_id=dev.id,
+                                            action="SHUTDOWN",
+                                            details=f"Связь прервана (нет отклика более 30 сек, пользователь: {curr_user})",
+                                            status="Success",
+                                            initiator="Локальный пользователь (Выключение питания)",
+                                            source="LOCAL",
+                                            device_name=dev.name
+                                        )
+
+                                    from backend.app.services.alert_engine import alert_engine
+                                    await alert_engine.trigger_device_offline(
+                                        session=session,
+                                        device=dev,
+                                        reason=f"Связь со станцией {dev_name_clean} прервана (нет отклика более 30 сек, пользователь: {curr_user})"
+                                    )
                                     await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
-                            continue
-
-                        dev_interval = dev.heartbeat_interval or 30
-                        # Reliable watchdog: mark offline only after at least 3 missed heartbeats (minimum 90s)
-                        timeout_threshold = max(90, dev_interval * 3 + 15)
-                        sec_since_last_seen = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
-
-                        if dev.power_status == PowerStatus.ON and sec_since_last_seen > timeout_threshold:
-                            dev.power_status = PowerStatus.OFF
-                            dev.agent_status = AgentStatus.DISCONNECTED
-                            status_changed = True
-                            
-                            # Check if a shutdown was already logged in the last 180 seconds
-                            recent_logs = device_power_logs.get(dev.id.upper(), [])
-                            has_recent = False
-                            for entry in recent_logs[:5]:
-                                if entry.get("action") in ["SHUTDOWN", "FORCE_SHUTDOWN", "POWEROFF"]:
-                                    try:
-                                        from datetime import timezone
-                                        t_entry = datetime.fromisoformat(entry.get("timestamp", "").replace("Z", "+00:00"))
-                                        if (datetime.now(timezone.utc) - t_entry).total_seconds() < 180:
-                                            has_recent = True
-                                            break
-                                    except Exception:
-                                        pass
-                                        
-                            curr_user = dev.current_user or "Пользователь"
-                            dev_name_clean = dev.name or dev.hostname or dev.id
-                            if not has_recent:
-                                log_device_power_event(
-                                    device_id=dev.id,
-                                    action="SHUTDOWN",
-                                    details=f"Связь с агентом прервана (компьютер выключен локально, пользователь: {curr_user})",
-                                    status="Success",
-                                    initiator="Локальный пользователь (Завершение работы ОС / Кнопка)",
-                                    source="LOCAL",
-                                    device_name=dev.name
-                                )
-                            
-                            # Dispatch OFFLINE alert to alert engine (Telegram & Web UI)
-                            from backend.app.services.alert_engine import alert_engine
-                            await alert_engine.trigger_device_offline(
-                                session=session,
-                                device=dev,
-                                reason=f"Связь со станцией {dev_name_clean} прервана (компьютер выключен или недоступен в сети, пользователь: {curr_user})"
-                            )
-                            
-                            await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
                             
                     if status_changed:
                         await session.commit()
