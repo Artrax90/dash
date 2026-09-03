@@ -9511,6 +9511,7 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
   // Hierarchical Token Building / Floor / Room state
   const [hierarchyData, setHierarchyData] = useState<any[]>([]);
   const [buildingConfigs, setBuildingConfigs] = useState<BuildingConfig[]>([]);
+  const [allGroupsList, setAllGroupsList] = useState<any[]>([]);
   const [tokenBuilding, setTokenBuilding] = useState<string>('');
   const [tokenFloor, setTokenFloor] = useState<string>('1 этаж');
   const [tokenRoom, setTokenRoom] = useState<string>('');
@@ -9572,6 +9573,7 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     });
     groupsApi.list().then(list => {
       if (list && list.length > 0) {
+        setAllGroupsList(list);
         setAvailableGroups(prev => Array.from(new Set([...prev, ...list.map(g => g.name)])));
       }
     });
@@ -9652,35 +9654,152 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     hierarchyData.forEach(b => {
       if (b.name && b.name !== 'Общие группы' && !list.includes(b.name)) list.push(b.name);
     });
+    allGroupsList.forEach(g => {
+      let b = (g.building || '').trim();
+      if (!b && g.name && g.name.includes('/')) b = g.name.split('/')[0].trim();
+      if (b && b !== 'Общие группы' && !list.includes(b)) list.push(b);
+    });
+    availableGroups.forEach(gName => {
+      if (gName.includes('/')) {
+        const b = gName.split('/')[0].trim();
+        if (b && b !== 'Общие группы' && !list.includes(b)) list.push(b);
+      }
+    });
     return list.length > 0 ? list : ['Главный корпус', 'Учебный корпус'];
-  }, [buildingConfigs, hierarchyData]);
+  }, [buildingConfigs, hierarchyData, allGroupsList, availableGroups]);
 
   const activeTokenBuilding = tokenBuilding || availableBuildingsForToken[0] || 'Главный корпус';
 
   const availableFloorsForToken = useMemo(() => {
+    const set = new Set<string>();
     const bConfig = buildingConfigs.find(b => b.name.toLowerCase() === activeTokenBuilding.toLowerCase());
     if (bConfig && bConfig.floors && bConfig.floors.length > 0) {
-      return bConfig.floors;
+      bConfig.floors.forEach(f => set.add(f));
     }
     const bHier = hierarchyData.find(b => b.name.toLowerCase() === activeTokenBuilding.toLowerCase());
     if (bHier && bHier.floors && bHier.floors.length > 0) {
-      return bHier.floors.map((f: any) => f.name);
+      bHier.floors.forEach((f: any) => set.add(f.name));
     }
-    return generateBuildingFloors(3, false, false);
-  }, [buildingConfigs, hierarchyData, activeTokenBuilding]);
+    allGroupsList.forEach(g => {
+      let b = (g.building || '').trim();
+      let f = (g.floor || '').trim();
+      if (g.name && g.name.includes('/')) {
+        const parts = g.name.split('/').map((s: string) => s.trim());
+        if (parts.length >= 3) {
+          if (!b) b = parts[0];
+          if (!f) f = parts[1];
+        }
+      }
+      if (b.toLowerCase() === activeTokenBuilding.toLowerCase() && f) {
+        set.add(f);
+      }
+    });
+    availableGroups.forEach(gName => {
+      if (gName.includes('/')) {
+        const parts = gName.split('/').map(s => s.trim());
+        if (parts.length >= 3 && parts[0].toLowerCase() === activeTokenBuilding.toLowerCase()) {
+          set.add(parts[1]);
+        }
+      }
+    });
+    if (set.size === 0) {
+      generateBuildingFloors(3, false, false).forEach(f => set.add(f));
+    }
+    return Array.from(set);
+  }, [buildingConfigs, hierarchyData, activeTokenBuilding, allGroupsList, availableGroups]);
 
   const activeTokenFloor = tokenFloor || availableFloorsForToken[0] || '1 этаж';
 
-  const availableRoomsForToken = useMemo(() => {
+  // All rooms for this building across all floors
+  const allBuildingRooms = useMemo(() => {
+    const map = new Map<string, { room: string; floor: string }>();
+
+    // 1. From hierarchyData
     const bHier = hierarchyData.find(b => b.name.toLowerCase() === activeTokenBuilding.toLowerCase());
     if (bHier && bHier.floors) {
-      const fHier = bHier.floors.find((f: any) => f.name.toLowerCase() === activeTokenFloor.toLowerCase());
-      if (fHier && fHier.rooms) {
-        return fHier.rooms.map((r: any) => r.name);
-      }
+      bHier.floors.forEach((f: any) => {
+        if (f.rooms) {
+          f.rooms.forEach((r: any) => {
+            const rName = (r.name || r.roomName || '').trim();
+            if (rName && !map.has(`${f.name}-${rName}`)) {
+              map.set(`${f.name}-${rName}`, { room: rName, floor: f.name });
+            }
+          });
+        }
+      });
     }
-    return [];
-  }, [hierarchyData, activeTokenBuilding, activeTokenFloor]);
+
+    // 2. From allGroupsList
+    allGroupsList.forEach(g => {
+      let b = (g.building || '').trim();
+      let f = (g.floor || '').trim();
+      let r = (g.room || '').trim();
+      if (g.name && g.name.includes('/')) {
+        const parts = g.name.split('/').map((s: string) => s.trim());
+        if (parts.length >= 3) {
+          if (!b) b = parts[0];
+          if (!f) f = parts[1];
+          if (!r) r = parts[2];
+        }
+      }
+      if (b.toLowerCase() === activeTokenBuilding.toLowerCase() && r) {
+        const floorName = f || '1 этаж';
+        if (!map.has(`${floorName}-${r}`)) {
+          map.set(`${floorName}-${r}`, { room: r, floor: floorName });
+        }
+      }
+    });
+
+    // 3. From availableGroups
+    availableGroups.forEach(gName => {
+      if (gName.includes('/')) {
+        const parts = gName.split('/').map(s => s.trim());
+        if (parts.length >= 3 && parts[0].toLowerCase() === activeTokenBuilding.toLowerCase()) {
+          const f = parts[1];
+          const r = parts[2];
+          if (r && !map.has(`${f}-${r}`)) {
+            map.set(`${f}-${r}`, { room: r, floor: f });
+          }
+        }
+      }
+    });
+
+    return Array.from(map.values());
+  }, [hierarchyData, activeTokenBuilding, allGroupsList, availableGroups]);
+
+  // Rooms on currently selected floor
+  const activeFloorRooms = useMemo(() => {
+    return allBuildingRooms
+      .filter(item => item.floor.toLowerCase() === activeTokenFloor.toLowerCase())
+      .map(item => item.room);
+  }, [allBuildingRooms, activeTokenFloor]);
+
+  // Rooms on other floors of this building
+  const otherFloorsRooms = useMemo(() => {
+    return allBuildingRooms
+      .filter(item => item.floor.toLowerCase() !== activeTokenFloor.toLowerCase());
+  }, [allBuildingRooms, activeTokenFloor]);
+
+  const selectedRoomValue = useMemo(() => {
+    if (tokenRoom) {
+      if (activeFloorRooms.some(r => r.toLowerCase() === tokenRoom.toLowerCase())) {
+        return tokenRoom;
+      }
+      const foundOther = otherFloorsRooms.find(r => r.room.toLowerCase() === tokenRoom.toLowerCase());
+      if (foundOther) return foundOther.room;
+    }
+    if (activeFloorRooms.length > 0) {
+      return activeFloorRooms[0];
+    }
+    if (otherFloorsRooms.length > 0) {
+      return otherFloorsRooms[0].room;
+    }
+    return '';
+  }, [tokenRoom, activeFloorRooms, otherFloorsRooms]);
+
+  const effectiveRoom = isCustomTokenRoom
+    ? (customTokenRoomInput.trim() || 'Кабинет')
+    : (tokenRoom || selectedRoomValue || (customTokenRoomInput.trim() || 'Кабинет'));
 
   const handleGenerateToken = async () => {
     let expStr: string | undefined = undefined;
@@ -9701,8 +9820,8 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     } else if (tokenScopeMode === 'room') {
       bld = activeTokenBuilding;
       flr = activeTokenFloor;
-      rm = isCustomTokenRoom ? (customTokenRoomInput.trim() || 'Каб. 101') : (tokenRoom || availableRoomsForToken[0] || 'Каб. 101');
-      if (!rm) rm = 'Каб. 101';
+      rm = effectiveRoom;
+      if (!rm) rm = 'Кабинет';
       finalGroup = `${bld} / ${flr} / ${rm}`;
     } else {
       finalGroup = targetGroup === '__custom__' ? (customGroupInput.trim() || 'Office') : targetGroup;
@@ -9855,7 +9974,7 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
         eyebrow="DEPLOYMENT"
         title="Агенты и загрузки"
         description="Автоматическое развертывание и удаление агентов на рабочих станциях с автоподключением к серверу."
-        actions={<Button primary icon={<Key size={15} />} onClick={() => setShowTokenModal(true)}>Сгенерировать токен</Button>}
+        actions={<Button primary icon={<Key size={15} />} onClick={() => { loadData(); setShowTokenModal(true); }}>Сгенерировать токен</Button>}
       />
 
       <div className="panel" style={{ marginBottom: '20px', padding: '18px 21px' }}>
@@ -10515,9 +10634,18 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                     style={{ width: '100%' }}
                     value={activeTokenBuilding}
                     onChange={(e) => {
-                      setTokenBuilding(e.target.value);
+                      const newBld = e.target.value;
+                      setTokenBuilding(newBld);
                       setIsCustomTokenRoom(false);
                       setCustomTokenRoomInput('');
+                      // Find first floor with rooms in new building
+                      const bldRooms = allBuildingRooms.filter(r => r.floor);
+                      if (bldRooms.length > 0) {
+                        setTokenFloor(bldRooms[0].floor);
+                        setTokenRoom(bldRooms[0].room);
+                      } else {
+                        setTokenRoom('');
+                      }
                     }}
                   >
                     {availableBuildingsForToken.map(b => (
@@ -10535,9 +10663,16 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                     style={{ width: '100%' }}
                     value={activeTokenFloor}
                     onChange={(e) => {
-                      setTokenFloor(e.target.value);
+                      const newFlr = e.target.value;
+                      setTokenFloor(newFlr);
                       setIsCustomTokenRoom(false);
                       setCustomTokenRoomInput('');
+                      const matching = allBuildingRooms.filter(r => r.floor.toLowerCase() === newFlr.toLowerCase());
+                      if (matching.length > 0) {
+                        setTokenRoom(matching[0].room);
+                      } else {
+                        setTokenRoom('');
+                      }
                     }}
                   >
                     {availableFloorsForToken.map(f => (
@@ -10550,52 +10685,66 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                   <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
                     Кабинет / Помещение
                   </label>
-                  {availableRoomsForToken.length > 0 && !isCustomTokenRoom ? (
-                    <div style={{ display: 'flex', gap: '8px' }}>
-                      <select
-                        className="text-input"
-                        style={{ flex: 1 }}
-                        value={tokenRoom || availableRoomsForToken[0]}
-                        onChange={(e) => {
-                          if (e.target.value === '__custom__') {
-                            setIsCustomTokenRoom(true);
-                            setTokenRoom('');
-                          } else {
-                            setTokenRoom(e.target.value);
-                          }
-                        }}
-                      >
-                        {availableRoomsForToken.map((r: string) => (
-                          <option key={r} value={r}>{r}</option>
+                  <select
+                    className="text-input"
+                    style={{ width: '100%' }}
+                    value={isCustomTokenRoom ? '__new__' : (selectedRoomValue || '__new__')}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      if (val === '__new__') {
+                        setIsCustomTokenRoom(true);
+                        setTokenRoom('');
+                      } else {
+                        setIsCustomTokenRoom(false);
+                        setTokenRoom(val);
+                        // Auto-switch floor if this room belongs to a different floor
+                        const matching = allBuildingRooms.find(r => r.room.toLowerCase() === val.toLowerCase());
+                        if (matching && matching.floor && matching.floor.toLowerCase() !== activeTokenFloor.toLowerCase()) {
+                          setTokenFloor(matching.floor);
+                        }
+                      }
+                    }}
+                  >
+                    {activeFloorRooms.length > 0 && (
+                      <optgroup label={`Кабинеты (${activeTokenFloor})`}>
+                        {activeFloorRooms.map(r => (
+                          <option key={r} value={r}>Кабинет {r}</option>
                         ))}
-                        <option value="__custom__">+ Ввести новый кабинет...</option>
-                      </select>
-                      <Button onClick={() => setIsCustomTokenRoom(true)}>+ Новый</Button>
-                    </div>
-                  ) : (
-                    <div style={{ display: 'flex', gap: '8px' }}>
+                      </optgroup>
+                    )}
+
+                    {otherFloorsRooms.length > 0 && (
+                      <optgroup label="Кабинеты на других этажах здания">
+                        {otherFloorsRooms.map(r => (
+                          <option key={`${r.floor}-${r.room}`} value={r.room}>
+                            Кабинет {r.room} ({r.floor})
+                          </option>
+                        ))}
+                      </optgroup>
+                    )}
+
+                    <option value="__new__">+ Ввести новый кабинет...</option>
+                  </select>
+
+                  {isCustomTokenRoom && (
+                    <div style={{ marginTop: '8px' }}>
                       <input
                         className="text-input"
-                        style={{ flex: 1 }}
-                        value={customTokenRoomInput || tokenRoom}
+                        style={{ width: '100%' }}
+                        value={customTokenRoomInput}
                         onChange={(e) => {
                           setCustomTokenRoomInput(e.target.value);
                           setTokenRoom(e.target.value);
                         }}
-                        placeholder="Например: Каб. 204 или Бухгалтерия"
+                        placeholder="Например: 111, Каб. 204 или Бухгалтерия"
                         autoFocus
                       />
-                      {availableRoomsForToken.length > 0 && (
-                        <Button onClick={() => { setIsCustomTokenRoom(false); setTokenRoom(availableRoomsForToken[0]); }}>
-                          Выбрать из списка
-                        </Button>
-                      )}
                     </div>
                   )}
                 </div>
 
                 <div style={{ padding: '8px 12px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)' }}>
-                  📍 <strong>Назначение ПК:</strong> <code>{activeTokenBuilding} / {activeTokenFloor} / {(isCustomTokenRoom ? (customTokenRoomInput || 'Кабинет') : (tokenRoom || availableRoomsForToken[0] || 'Кабинет'))}</code>
+                  📍 <strong>Назначение ПК:</strong> <code>{activeTokenBuilding} / {activeTokenFloor} / {effectiveRoom}</code>
                 </div>
               </div>
             ) : tokenScopeMode === 'building' ? (
@@ -11654,7 +11803,7 @@ function Groups({
   const [selectedBuildingOption, setSelectedBuildingOption] = useState<string>('Главный корпус');
   const [isNewBuildingMode, setIsNewBuildingMode] = useState<boolean>(false);
   const [newBuildingNameInput, setNewBuildingNameInput] = useState<string>('');
-  const [newBuildingFloorsCount, setNewBuildingFloorsCount] = useState<number>(3);
+  const [newBuildingFloorsCount, setNewBuildingFloorsCount] = useState<string>('3');
   const [newBuildingHasBasement, setNewBuildingHasBasement] = useState<boolean>(false);
   const [newBuildingHasSubFloor, setNewBuildingHasSubFloor] = useState<boolean>(false);
 
@@ -11771,9 +11920,11 @@ function Groups({
     ? newBuildingNameInput.trim()
     : (selectedBuildingOption || availableBuildingOptions[0] || 'Главный корпус');
 
+  const parsedNewBuildingFloorsCount = Math.max(1, Math.min(50, parseInt(newBuildingFloorsCount, 10) || 1));
+
   const availableFloorsForActiveBuilding = useMemo(() => {
     if (isNewBuildingMode) {
-      return generateBuildingFloors(newBuildingFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor);
+      return generateBuildingFloors(parsedNewBuildingFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor);
     }
     const found = buildingConfigs.find(b => b.name.toLowerCase() === activeBuildingName.toLowerCase());
     if (found && found.floors && found.floors.length > 0) {
@@ -11785,7 +11936,7 @@ function Groups({
       if (keys.length > 0) return keys;
     }
     return generateBuildingFloors(3, false, false);
-  }, [isNewBuildingMode, newBuildingFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor, buildingConfigs, activeBuildingName, hierarchyData]);
+  }, [isNewBuildingMode, parsedNewBuildingFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor, buildingConfigs, activeBuildingName, hierarchyData]);
 
   const getBuildingStats = useCallback((bldName: string) => {
     const bld = hierarchyData[bldName];
@@ -11850,17 +12001,18 @@ function Groups({
           notify('Пожалуйста, укажите название нового корпуса');
           return;
         }
-        const genFloors = generateBuildingFloors(newBuildingFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor);
+        const parsedFloorsCount = Math.max(1, Math.min(50, parseInt(newBuildingFloorsCount, 10) || 1));
+        const genFloors = generateBuildingFloors(parsedFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor);
         await groupsApi.saveBuilding({
           name: bldVal,
-          floorsCount: newBuildingFloorsCount,
+          floorsCount: parsedFloorsCount,
           hasBasement: newBuildingHasBasement,
           hasSubFloor: newBuildingHasSubFloor,
           floors: genFloors
         });
         setBuildingConfigs(prev => [...prev.filter(b => b.name.toLowerCase() !== bldVal.toLowerCase()), {
           name: bldVal,
-          floorsCount: newBuildingFloorsCount,
+          floorsCount: parsedFloorsCount,
           hasBasement: newBuildingHasBasement,
           hasSubFloor: newBuildingHasSubFloor,
           floors: genFloors
@@ -11905,6 +12057,7 @@ function Groups({
     setNewGroupColor('blue');
     setIsNewBuildingMode(false);
     setNewBuildingNameInput('');
+    setNewBuildingFloorsCount('3');
     setIsCustomFloorMode(false);
     setCustomFloorInput('');
     loadData();
@@ -12777,7 +12930,12 @@ function Groups({
                             className="text-input"
                             style={{ width: '110px' }}
                             value={newBuildingFloorsCount}
-                            onChange={(e) => setNewBuildingFloorsCount(Math.max(1, parseInt(e.target.value) || 1))}
+                            onChange={(e) => setNewBuildingFloorsCount(e.target.value)}
+                            onBlur={() => {
+                              const val = parseInt(newBuildingFloorsCount, 10);
+                              if (isNaN(val) || val < 1) setNewBuildingFloorsCount('1');
+                              else if (val > 50) setNewBuildingFloorsCount('50');
+                            }}
                           />
                         </div>
 
