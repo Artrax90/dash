@@ -153,6 +153,7 @@ class BulkOperationRequestSchema(BaseModel):
 
 class DeviceProbeSchema(BaseModel):
     ip: str
+    deviceId: Optional[str] = None
 
 class AgentlessDeviceCreateSchema(BaseModel):
     name: str

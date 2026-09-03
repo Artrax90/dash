@@ -2,7 +2,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Query
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, delete
+from sqlalchemy import select, func, delete, or_, and_
 from backend.app.db.session import get_db
 from backend.app.models.device import Device, PowerStatus, HealthStatus, AgentStatus
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
@@ -484,6 +484,8 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
     # Sync DB record immediately: set ON if ping responded, or OFF if ping failed
     try:
         lookup_dev_conds = []
+        if getattr(payload, "deviceId", None) and payload.deviceId.strip():
+            lookup_dev_conds.append(func.lower(Device.id) == payload.deviceId.strip().lower())
         if ip:
             lookup_dev_conds.append(Device.ip_address == ip)
         if formatted_mac:

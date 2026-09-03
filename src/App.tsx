@@ -3172,13 +3172,18 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                     onClick={async () => {
                       notify(`Проверка связи с ${device.name} (${device.ip})...`);
                       try {
-                        const res = await devicesApi.probe(device.ip);
+                        const res = await devicesApi.probe(device.ip, device.id);
+                        const newPower = res.online ? 'On' : 'Off';
+                        const newAgent = res.online ? 'Connected' : 'Disconnected';
+                        setDevice(prev => prev ? { ...prev, powerStatus: newPower, agentStatus: newAgent } : prev);
+                        setDevices(prev => prev.map(d => d.id === device.id ? { ...d, powerStatus: newPower, agentStatus: newAgent } : d));
                         if (res.online) {
                           notify(`🟢 Устройство ${device.name} в сети (отвечает на пинг)`);
                         } else {
                           notify(`🔴 Устройство ${device.name} не отвечает на сетевой пинг`);
                         }
                         loadDeviceData();
+                        loadData();
                       } catch {
                         notify(`Ошибка проверки связи с ${device.name}`);
                       }

@@ -131,11 +131,11 @@ export const devicesApi = {
     }
     return wait(devices.find((device) => device.id === id));
   },
-  probe: async (ip: string): Promise<{ success: boolean; online: boolean; ip: string; mac?: string; hostname?: string; message: string; suggestedCommand?: string }> => {
+  probe: async (ip: string, deviceId?: string): Promise<{ success: boolean; online: boolean; ip: string; mac?: string; hostname?: string; message: string; suggestedCommand?: string }> => {
     const res = await fetch(`${API_BASE}/devices/probe`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ ip })
+      body: JSON.stringify({ ip, deviceId })
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({ detail: 'Ошибка проверки соединения' }));

@@ -251,13 +251,6 @@ class SchedulerService:
                                         except Exception:
                                             pass
 
-                                # If direct ping/TCP failed, check if active fleet agents recently saw this IP in ARP
-                                if not ping_ok and is_agentless:
-                                    from backend.app.api.v1.agents import fleet_arp_cache
-                                    c_info = fleet_arp_cache.get(dev.ip_address)
-                                    if c_info and isinstance(c_info, dict) and (now_ts - c_info.get("timestamp", 0)) < 90:
-                                        ping_ok = True
-
                             # If Thin Client unreachable, check if migrated to another IP via MAC / ARP
                             if not ping_ok and is_agentless and dev.mac_address and dev.mac_address != "00:00:00:00:00:00":
                                 clean_mac = dev.mac_address.replace("-", ":").upper().strip()
