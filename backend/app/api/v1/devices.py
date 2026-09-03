@@ -203,7 +203,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         if d.power_status == PowerStatus.OFF or str(d.power_status).lower() in ["off", "powerstatus.off"]:
             is_online = False
         else:
-            is_online = (sec_since_last_seen <= 45)
+            is_online = (sec_since_last_seen <= 120)
     else:
         is_online = (sec_since_last_seen <= timeout_threshold)
     

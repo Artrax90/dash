@@ -188,7 +188,7 @@ def load_devices() -> List[Dict[str, Any]]:
                         dev_id.startswith("TC-") or 
                         "тонкий" in grp_str.lower()
                     )
-                    timeout = 45 if is_agentless else 135
+                    timeout = 120 if is_agentless else 135
 
                     if p_raw in ["OFF", "POWERSTATUS.OFF"]:
                         is_online = False

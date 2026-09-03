@@ -232,9 +232,9 @@ class SchedulerService:
                             ping_ok = False
                             if dev.ip_address and dev.ip_address not in ["127.0.0.1", "0.0.0.0", ""]:
                                 try:
-                                    ping_cmd = ["ping", "-n", "1", "-w", "500", dev.ip_address] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", dev.ip_address]
+                                    ping_cmd = ["ping", "-n", "1", "-w", "600", dev.ip_address] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", dev.ip_address]
                                     proc = await asyncio.create_subprocess_exec(*ping_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                                    rc = await asyncio.wait_for(proc.wait(), timeout=1.0)
+                                    rc = await asyncio.wait_for(proc.wait(), timeout=1.5)
                                     ping_ok = (rc == 0)
                                 except Exception:
                                     pass
@@ -243,13 +243,20 @@ class SchedulerService:
                                 if not ping_ok and is_agentless:
                                     for p in [3389, 80, 443, 22, 8080, 5900]:
                                         try:
-                                            _, writer = await asyncio.wait_for(asyncio.open_connection(dev.ip_address, p), timeout=0.25)
+                                            _, writer = await asyncio.wait_for(asyncio.open_connection(dev.ip_address, p), timeout=0.4)
                                             writer.close()
                                             await writer.wait_closed()
                                             ping_ok = True
                                             break
                                         except Exception:
                                             pass
+
+                                # If direct ping/TCP failed, check if active fleet agents recently saw this IP in ARP
+                                if not ping_ok and is_agentless:
+                                    from backend.app.api.v1.agents import fleet_arp_cache
+                                    c_info = fleet_arp_cache.get(dev.ip_address)
+                                    if c_info and isinstance(c_info, dict) and (now_ts - c_info.get("timestamp", 0)) < 90:
+                                        ping_ok = True
 
                             # If Thin Client unreachable, check if migrated to another IP via MAC / ARP
                             if not ping_ok and is_agentless and dev.mac_address and dev.mac_address != "00:00:00:00:00:00":
@@ -278,9 +285,9 @@ class SchedulerService:
 
                                 if candidate_ip:
                                     try:
-                                        c_cmd = ["ping", "-n", "1", "-w", "500", candidate_ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", candidate_ip]
+                                        c_cmd = ["ping", "-n", "1", "-w", "600", candidate_ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", candidate_ip]
                                         c_proc = await asyncio.create_subprocess_exec(*c_cmd, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                                        c_rc = await asyncio.wait_for(c_proc.wait(), timeout=1.0)
+                                        c_rc = await asyncio.wait_for(c_proc.wait(), timeout=1.5)
                                         if c_rc == 0:
                                             old_ip = dev.ip_address
                                             dev.ip_address = candidate_ip
@@ -292,6 +299,11 @@ class SchedulerService:
                             if ping_ok:
                                 # Network responds to ping -> Hardware is ON
                                 self._consecutive_ping_failures[dev_key] = 0
+                                
+                                if is_agentless:
+                                    dev.last_seen = now_utc
+                                    dev.agent_status = AgentStatus.CONNECTED
+
                                 if dev.power_status != PowerStatus.ON:
                                     dev.power_status = PowerStatus.ON
                                     status_changed = True
@@ -302,6 +314,9 @@ class SchedulerService:
                                         device=dev,
                                         reason=f"Компьютер {dev.name or dev.hostname or dev.id} включен (есть сетевой отклик)"
                                     )
+                                    await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
+                                elif is_agentless and sec_since_heartbeat >= 15:
+                                    status_changed = True
                                     await ws_manager.broadcast_event("device.updated", format_device_summary(dev))
                             else:
                                 # Network does not respond to ping
