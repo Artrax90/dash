@@ -18,18 +18,38 @@ router = APIRouter(prefix="/schedules", tags=["schedules"])
 SCHEDULES_FILE = os.path.join(settings.DATA_DIR, "schedules.json")
 SCHEDULE_LOGS_FILE = os.path.join(settings.DATA_DIR, "schedule_logs.json")
 
+BACKUP_SCHEDULES_FILE = os.path.join(settings.DATA_DIR, "schedules.backup.json")
+
 def get_default_schedules() -> List[Dict[str, Any]]:
     return []
 
 def load_schedules() -> List[Dict[str, Any]]:
+    # 1. Try loading from main schedules.json
     if os.path.exists(SCHEDULES_FILE):
         try:
             with open(SCHEDULES_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list):
+                if isinstance(data, list) and len(data) > 0:
+                    try:
+                        with open(BACKUP_SCHEDULES_FILE, "w", encoding="utf-8") as bf:
+                            json.dump(data, bf, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
                     return data
         except Exception as e:
             print(f"Error loading schedules: {e}")
+
+    # 2. Resilient fallback: Check backup if schedules.json was reset or lost
+    if os.path.exists(BACKUP_SCHEDULES_FILE):
+        try:
+            with open(BACKUP_SCHEDULES_FILE, "r", encoding="utf-8") as bf:
+                data = json.load(bf)
+                if isinstance(data, list) and len(data) > 0:
+                    save_schedules(data)
+                    return data
+        except Exception:
+            pass
+
     return []
 
 def save_schedules(schedules: List[Dict[str, Any]]):
@@ -42,6 +62,13 @@ def save_schedules(schedules: List[Dict[str, Any]]):
             os.replace(tmp_file, SCHEDULES_FILE)
         else:
             os.rename(tmp_file, SCHEDULES_FILE)
+        # Always mirror to resilient backup
+        if schedules:
+            try:
+                with open(BACKUP_SCHEDULES_FILE, "w", encoding="utf-8") as bf:
+                    json.dump(schedules, bf, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
     except Exception as e:
         print(f"Error saving schedules: {e}")
 

@@ -47,6 +47,8 @@ def get_httpx_client(cfg: Dict[str, Any] = None, timeout: float = 8.0) -> httpx.
         return httpx.AsyncClient(proxy=proxy, timeout=timeout, follow_redirects=True)
     return httpx.AsyncClient(timeout=timeout, follow_redirects=True)
 
+BACKUP_CONFIG_FILE = os.path.join(settings.DATA_DIR, "telegram_config.backup.json")
+
 def load_config() -> Dict[str, Any]:
     default = {
         "enabled": True,
@@ -73,6 +75,7 @@ def load_config() -> Dict[str, Any]:
             "disconnectAlerts": True,
         },
     }
+    loaded = False
     if os.path.exists(CONFIG_FILE):
         try:
             with open(CONFIG_FILE, "r", encoding="utf-8") as f:
@@ -81,14 +84,42 @@ def load_config() -> Dict[str, Any]:
                     default["eventsConfig"].update(data["eventsConfig"])
                     data.pop("eventsConfig")
                 default.update(data)
+                loaded = True
+                if default.get("botToken"):
+                    try:
+                        with open(BACKUP_CONFIG_FILE, "w", encoding="utf-8") as bf:
+                            json.dump(default, bf, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
         except Exception:
             pass
+
+    # If telegram was not configured or lost, check backup
+    if not default.get("botToken") and os.path.exists(BACKUP_CONFIG_FILE):
+        try:
+            with open(BACKUP_CONFIG_FILE, "r", encoding="utf-8") as bf:
+                bdata = json.load(bf)
+                if bdata.get("botToken"):
+                    if "eventsConfig" in bdata and isinstance(bdata["eventsConfig"], dict):
+                        default["eventsConfig"].update(bdata["eventsConfig"])
+                        bdata.pop("eventsConfig")
+                    default.update(bdata)
+                    save_config(default)
+        except Exception:
+            pass
+
     return default
 
 def save_config(cfg: Dict[str, Any]):
     os.makedirs(settings.DATA_DIR, exist_ok=True)
     with open(CONFIG_FILE, "w", encoding="utf-8") as f:
         json.dump(cfg, f, ensure_ascii=False, indent=2)
+    if cfg and cfg.get("botToken"):
+        try:
+            with open(BACKUP_CONFIG_FILE, "w", encoding="utf-8") as bf:
+                json.dump(cfg, bf, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
 import sqlite3
 

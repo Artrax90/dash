@@ -22,7 +22,11 @@ dist-ssr
 *.sw?
 .env
 *.db
+*.sqlite*
 *.backup.json
+data/*.json
+data/*.backup.json
+!data/.gitkeep
 __pycache__/
 *.py[cod]
 *$py.class

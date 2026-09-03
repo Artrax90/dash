@@ -43,15 +43,35 @@ def get_default_tokens() -> List[Dict[str, Any]]:
         }
     ]
 
+BACKUP_TOKENS_FILE = os.path.join(settings.DATA_DIR, "tokens.backup.json")
+
 def load_tokens() -> List[Dict[str, Any]]:
+    # 1. Try loading from main tokens.json
     if os.path.exists(TOKENS_FILE):
         try:
             with open(TOKENS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list) and len(data) > 0:
+                    try:
+                        with open(BACKUP_TOKENS_FILE, "w", encoding="utf-8") as bf:
+                            json.dump(data, bf, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
                     return data
         except Exception as e:
             print(f"Error loading tokens file: {e}")
+
+    # 2. Resilient fallback: Check backup if tokens.json was reset or lost
+    if os.path.exists(BACKUP_TOKENS_FILE):
+        try:
+            with open(BACKUP_TOKENS_FILE, "r", encoding="utf-8") as bf:
+                data = json.load(bf)
+                if isinstance(data, list) and len(data) > 0:
+                    save_tokens(data)
+                    return data
+        except Exception:
+            pass
+
     defaults = get_default_tokens()
     save_tokens(defaults)
     return defaults
@@ -66,6 +86,13 @@ def save_tokens(tokens: List[Dict[str, Any]]):
             os.replace(tmp_file, TOKENS_FILE)
         else:
             os.rename(tmp_file, TOKENS_FILE)
+        # Always mirror to resilient backup
+        if tokens:
+            try:
+                with open(BACKUP_TOKENS_FILE, "w", encoding="utf-8") as bf:
+                    json.dump(tokens, bf, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
     except Exception as e:
         print(f"Error saving tokens file: {e}")
 

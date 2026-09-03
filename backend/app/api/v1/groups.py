@@ -19,15 +19,36 @@ def get_default_groups() -> List[Dict[str, Any]]:
         {"name": "Servers", "desc": "Серверное оборудование и гипервизоры", "color": "red", "schedule": "Круглосуточно (24/7)"},
     ]
 
+BACKUP_GROUPS_FILE = os.path.join(settings.DATA_DIR, "groups.backup.json")
+
 def load_groups() -> List[Dict[str, Any]]:
+    # 1. Try loading from main groups.json
     if os.path.exists(GROUPS_FILE):
         try:
             with open(GROUPS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list) and len(data) > 0:
+                    # Update backup if valid
+                    try:
+                        with open(BACKUP_GROUPS_FILE, "w", encoding="utf-8") as bf:
+                            json.dump(data, bf, ensure_ascii=False, indent=2)
+                    except Exception:
+                        pass
                     return data
         except Exception as e:
             print(f"Error loading groups: {e}")
+
+    # 2. Resilient fallback: Check backup if main groups.json was reset or lost
+    if os.path.exists(BACKUP_GROUPS_FILE):
+        try:
+            with open(BACKUP_GROUPS_FILE, "r", encoding="utf-8") as bf:
+                data = json.load(bf)
+                if isinstance(data, list) and len(data) > 0:
+                    save_groups(data)
+                    return data
+        except Exception:
+            pass
+
     defaults = get_default_groups()
     save_groups(defaults)
     return defaults
@@ -42,6 +63,13 @@ def save_groups(groups: List[Dict[str, Any]]):
             os.replace(tmp_file, GROUPS_FILE)
         else:
             os.rename(tmp_file, GROUPS_FILE)
+        # Always mirror to resilient backup
+        if groups:
+            try:
+                with open(BACKUP_GROUPS_FILE, "w", encoding="utf-8") as bf:
+                    json.dump(groups, bf, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
     except Exception as e:
         print(f"Error saving groups: {e}")
 
