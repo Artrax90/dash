@@ -104,6 +104,9 @@ class DeviceBase(BaseModel):
     name: str
     hostname: str
     group: str = "Default"
+    building: Optional[str] = ""
+    floor: Optional[str] = ""
+    room: Optional[str] = ""
     ip: str
     mac: str
     osType: str = "Windows"

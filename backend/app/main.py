@@ -48,6 +48,9 @@ async def startup_event():
             for col_sql in [
                 "ALTER TABLE devices ADD COLUMN boot_time DATETIME",
                 "ALTER TABLE devices ADD COLUMN uptime_seconds INTEGER DEFAULT 0",
+                "ALTER TABLE devices ADD COLUMN building VARCHAR(100) DEFAULT ''",
+                "ALTER TABLE devices ADD COLUMN floor VARCHAR(50) DEFAULT ''",
+                "ALTER TABLE devices ADD COLUMN room VARCHAR(100) DEFAULT ''",
             ]:
                 try:
                     connection.execute(text(col_sql))

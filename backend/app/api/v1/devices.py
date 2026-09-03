@@ -274,12 +274,25 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     real_rdp_sessions = [s for s in raw_sessions if is_real_rdp_session(s)]
     rdp_status_str = f"Активен ({len(real_rdp_sessions)})" if (is_online and len(real_rdp_sessions) > 0) else "Stopped"
 
+    b_val = getattr(d, 'building', '') or ''
+    f_val = getattr(d, 'floor', '') or ''
+    r_val = getattr(d, 'room', '') or ''
+    if not b_val and d.group_name and "/" in d.group_name:
+        parts = [p.strip() for p in d.group_name.split("/")]
+        if len(parts) >= 3:
+            b_val, f_val, r_val = parts[0], parts[1], parts[2]
+        elif len(parts) == 2:
+            b_val, r_val = parts[0], parts[1]
+
     return {
         "id": d.id,
         "name": d.name,
         "hostname": d.hostname,
         "group": raw_groups[0] if raw_groups else "",
         "groups": raw_groups,
+        "building": b_val,
+        "floor": f_val,
+        "room": r_val,
         "ip": d.ip_address,
         "mac": d.mac_address,
         "osType": d.os_type or ("ThinClient" if is_agentless else "Windows"),
@@ -1187,6 +1200,21 @@ async def update_device(device_id: str, payload: Dict[str, Any], request: Reques
         device.group_name = ", ".join([str(g).strip() for g in payload["groups"] if str(g).strip()])
     elif "group" in payload:
         device.group_name = payload["group"]
+    if "building" in payload:
+        device.building = str(payload["building"]).strip()
+    if "floor" in payload:
+        device.floor = str(payload["floor"]).strip()
+    if "room" in payload:
+        device.room = str(payload["room"]).strip()
+
+    if device.building and device.floor and device.room and ("groups" not in payload and "group" not in payload):
+        device.group_name = f"{device.building} / {device.floor} / {device.room}"
+    elif device.group_name and "/" in device.group_name and not device.building:
+        parts = [p.strip() for p in device.group_name.split("/")]
+        if len(parts) >= 3:
+            device.building, device.floor, device.room = parts[0], parts[1], parts[2]
+        elif len(parts) == 2:
+            device.building, device.room = parts[0], parts[1]
     if "tags" in payload:
         device.tags = payload["tags"]
     if "maintenance" in payload:

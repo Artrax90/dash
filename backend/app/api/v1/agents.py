@@ -326,10 +326,25 @@ async def create_token(payload: Dict[str, Any]):
     import urllib.parse
     creator = urllib.parse.unquote(raw_creator) if "%" in raw_creator else raw_creator
 
+    t_type = payload.get("targetType", "room")
+    b_val = str(payload.get("targetBuilding", "")).strip()
+    f_val = str(payload.get("targetFloor", "")).strip()
+    r_val = str(payload.get("targetRoom", "")).strip()
+    target_grp = payload.get("targetGroup", "Office")
+
+    if b_val and f_val and r_val:
+        target_grp = f"{b_val} / {f_val} / {r_val}"
+    elif b_val and not r_val:
+        target_grp = b_val
+
     new_token = {
         "id": f"TOK-{secrets.token_hex(2).upper()}",
         "token": f"wm_tok_{secrets.token_hex(8)}",
-        "targetGroup": payload.get("targetGroup", "Office"),
+        "targetType": t_type,
+        "targetBuilding": b_val,
+        "targetFloor": f_val,
+        "targetRoom": r_val,
+        "targetGroup": target_grp,
         "serverUrl": payload.get("serverUrl", f"http://localhost:{settings.PORT}"),
         "createdAt": datetime.utcnow().strftime("%Y-%m-%d %H:%M"),
         "expiresAt": expires_at,
@@ -350,6 +365,14 @@ async def update_token(token_id: str, payload: Dict[str, Any]):
 
     if "targetGroup" in payload:
         matched["targetGroup"] = payload["targetGroup"]
+    if "targetBuilding" in payload:
+        matched["targetBuilding"] = payload["targetBuilding"]
+    if "targetFloor" in payload:
+        matched["targetFloor"] = payload["targetFloor"]
+    if "targetRoom" in payload:
+        matched["targetRoom"] = payload["targetRoom"]
+    if "targetType" in payload:
+        matched["targetType"] = payload["targetType"]
     if "expiresAt" in payload:
         matched["expiresAt"] = payload["expiresAt"]
     if "isReusable" in payload:
@@ -382,6 +405,26 @@ async def enroll_agent(payload: Dict[str, Any], db: AsyncSession = Depends(get_d
         raise HTTPException(status_code=401, detail="Invalid or expired enrollment token")
     
     target_group = matched["targetGroup"] if matched else "Office"
+    b_val = matched.get("targetBuilding", "") if matched else ""
+    f_val = matched.get("targetFloor", "") if matched else ""
+    r_val = matched.get("targetRoom", "") if matched else ""
+
+    # Override with explicit payload if agent passed custom params
+    if payload.get("building"): b_val = str(payload["building"]).strip()
+    if payload.get("floor"): f_val = str(payload["floor"]).strip()
+    if payload.get("room"): r_val = str(payload["room"]).strip()
+
+    if b_val and f_val and r_val:
+        target_group = f"{b_val} / {f_val} / {r_val}"
+    elif b_val and not r_val:
+        target_group = f"{b_val} / Нераспределенные"
+    elif not b_val and target_group and "/" in target_group:
+        parts = [p.strip() for p in target_group.split("/")]
+        if len(parts) >= 3:
+            b_val, f_val, r_val = parts[0], parts[1], parts[2]
+        elif len(parts) == 2:
+            b_val, r_val = parts[0], parts[1]
+
     if matched:
         matched["usedCount"] += 1
         save_tokens(tokens_store)
@@ -414,6 +457,9 @@ async def enroll_agent(payload: Dict[str, Any], db: AsyncSession = Depends(get_d
             name=hostname,
             hostname=hostname,
             group_name=target_group,
+            building=b_val,
+            floor=f_val,
+            room=r_val,
             ip_address=ip,
             mac_address=mac,
             broadcast_ip="255.255.255.255",
@@ -443,6 +489,11 @@ async def enroll_agent(payload: Dict[str, Any], db: AsyncSession = Depends(get_d
         device.power_status = PowerStatus.ON
         device.agent_status = AgentStatus.CONNECTED
         device.last_seen = datetime.utcnow()
+        if target_group and target_group != "Office":
+            device.group_name = target_group
+            if b_val: device.building = b_val
+            if f_val: device.floor = f_val
+            if r_val: device.room = r_val
         device_id = device.id
 
     await db.commit()

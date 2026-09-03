@@ -152,19 +152,94 @@ class AlertEngine:
                         icon = "ℹ️"
                         header = "СИСТЕМНОЕ ОПОВЕЩЕНИЕ"
 
+                    # Find device metadata for location and details
+                    dev_id = alert.get("deviceId") or alert.get("device_id") or ""
+                    dev_obj = None
+                    if dev_id:
+                        try:
+                            from backend.app.api.v1.telegram import load_devices
+                            for d in load_devices():
+                                if str(d.get("id", "")).upper() == str(dev_id).upper():
+                                    dev_obj = d
+                                    break
+                        except Exception:
+                            pass
+
+                    ip = (dev_obj.get("ip") or dev_obj.get("ip_address") or "") if dev_obj else ""
+                    mac = (dev_obj.get("mac") or dev_obj.get("mac_address") or "") if dev_obj else ""
+                    grp = (dev_obj.get("group") or dev_obj.get("group_name") or "") if dev_obj else ""
+                    b_val = (dev_obj.get("building") or "") if dev_obj else ""
+                    f_val = (dev_obj.get("floor") or "") if dev_obj else ""
+                    r_val = (dev_obj.get("room") or "") if dev_obj else ""
+
+                    if not b_val and grp and "/" in grp:
+                        parts = [p.strip() for p in grp.split("/")]
+                        if len(parts) >= 3:
+                            b_val, f_val, r_val = parts[0], parts[1], parts[2]
+                        elif len(parts) == 2:
+                            b_val, r_val = parts[0], parts[1]
+
+                    loc_parts = []
+                    if b_val: loc_parts.append(f"🏢 {b_val}")
+                    if f_val: loc_parts.append(f"🏬 {f_val}")
+                    if r_val: loc_parts.append(f"🚪 {r_val}")
+                    loc_str = " → ".join(loc_parts) if loc_parts else (grp or "")
+
+                    # Tagging of responsible persons
+                    mentions = []
+                    matched_group_lowers = {g.lower() for g in [grp, b_val, f_val, r_val] if g}
+                    try:
+                        from backend.app.api.v1.users import load_users
+                        for u in load_users():
+                            if not u.get("enabled", True):
+                                continue
+                            u_scope = u.get("scope", "Все устройства")
+                            u_groups = [g.lower().strip() for g in u.get("allowedGroups", [])]
+                            is_match = (u_scope == "Все устройства") or any(g in matched_group_lowers for g in u_groups)
+                            if is_match:
+                                tg = str(u.get("telegramChatId", "")).strip()
+                                if tg.startswith("@"):
+                                    mentions.append(tg)
+                                elif tg and (tg.isdigit() or (tg.startswith("-") and tg[1:].isdigit())):
+                                    u_display = u.get("displayName") or u.get("username") or "Оператор"
+                                    mentions.append(f'<a href="tg://user?id={tg}">@{u_display}</a>')
+                    except Exception:
+                        pass
+
                     text = (
                         f"{icon} <b>{header}</b> [{sev}]\n\n"
                         f"🖥 <b>Устройство:</b> <code>{dev_name}</code>\n"
-                        f"🏷 <b>Категория:</b> {alert.get('category', 'Hardware')}\n"
-                        f"📝 <b>Событие:</b> {desc}\n"
-                        f"⏱ <b>Время:</b> <i>{now_str}</i>"
+                        + (f"📍 <b>Локация:</b> {loc_str}\n" if loc_str else "")
+                        + (f"🌐 <b>IP / MAC:</b> <code>{ip}</code> | <code>{mac}</code>\n" if (ip or mac) else "")
+                        + f"🏷 <b>Категория:</b> {alert.get('category', 'Hardware')}\n"
+                        + f"📝 <b>Событие:</b> {desc}\n"
+                        + f"⏱ <b>Время:</b> <i>{now_str}</i>"
+                        + (f"\n\n👥 <b>Ответственные:</b> {' '.join(mentions[:6])}" if mentions else "")
                     )
+
+                    # Build interactive inline action buttons
+                    inline_keyboard = []
+                    if dev_id:
+                        act_row = []
+                        if a_type in ["OFFLINE", "AGENT_DISCONNECTED", "POWER_FAILED", "EMERGENCY_SHUTDOWN"]:
+                            act_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"})
+                        elif a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT"]:
+                            act_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"})
+                            act_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"})
+                        else:
+                            act_row.append({"text": "⚡️ WoL", "callback_data": f"do:wake:{dev_id}"})
+                        act_row.append({"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}"})
+                        inline_keyboard.append(act_row)
+                        inline_keyboard.append([{"text": f"🖥 Управление {dev_name}", "callback_data": f"dev:{dev_id}"}])
 
                     async with get_httpx_client(cfg, timeout=15.0) as client:
                         for cid in target_chats:
                             try:
                                 url = f"https://api.telegram.org/bot{token}/sendMessage"
-                                resp = await client.post(url, json={"chat_id": cid, "text": text, "parse_mode": "HTML"})
+                                msg_payload = {"chat_id": cid, "text": text, "parse_mode": "HTML"}
+                                if inline_keyboard:
+                                    msg_payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+                                resp = await client.post(url, json=msg_payload)
                                 if resp.status_code == 200:
                                     print(f"[Telegram Alert] Sent notification to chat {cid}: {desc}")
                                 else:

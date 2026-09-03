@@ -80,12 +80,95 @@ groups_store: List[Dict[str, Any]] = load_groups()
 async def list_groups():
     return groups_store
 
+@router.get("/hierarchy")
+async def get_groups_hierarchy():
+    buildings_map: Dict[str, Dict[str, Any]] = {}
+    
+    for g in groups_store:
+        b = str(g.get("building") or "").strip()
+        f = str(g.get("floor") or "").strip()
+        r = str(g.get("room") or "").strip()
+        name = g.get("name", "")
+
+        # Auto-parse if not explicitly stored
+        if (not b or not r) and "/" in name:
+            parts = [p.strip() for p in name.split("/")]
+            if len(parts) >= 3:
+                b, f, r = parts[0], parts[1], parts[2]
+            elif len(parts) == 2:
+                b, r = parts[0], parts[1]
+
+        if not b:
+            b = "Общие группы"
+        if not f:
+            f = "1 этаж"
+        if not r:
+            r = name
+
+        if b not in buildings_map:
+            buildings_map[b] = {
+                "name": b,
+                "floors": {}
+            }
+        
+        if f not in buildings_map[b]["floors"]:
+            buildings_map[b]["floors"][f] = {
+                "name": f,
+                "building": b,
+                "rooms": []
+            }
+
+        buildings_map[b]["floors"][f]["rooms"].append({
+            "name": r,
+            "fullName": name,
+            "building": b,
+            "floor": f,
+            "desc": g.get("desc", ""),
+            "color": g.get("color", "blue"),
+            "schedule": g.get("schedule", "Без расписания")
+        })
+
+    # Convert to clean nested arrays
+    result = []
+    for b_name, b_data in buildings_map.items():
+        floors_list = []
+        for f_name, f_data in b_data["floors"].items():
+            floors_list.append({
+                "name": f_name,
+                "building": b_name,
+                "rooms": f_data["rooms"]
+            })
+        result.append({
+            "name": b_name,
+            "floors": floors_list
+        })
+    return result
+
 @router.post("", response_model=Dict[str, Any])
 async def create_group(payload: Dict[str, Any]):
-    name = str(payload.get("name", "")).strip()
+    b = str(payload.get("building") or "").strip()
+    f = str(payload.get("floor") or "").strip()
+    r = str(payload.get("room") or "").strip()
+    raw_name = str(payload.get("name", "")).strip()
+
+    if b and f and r:
+        name = raw_name or f"{b} / {f} / {r}"
+    elif b and r:
+        name = raw_name or f"{b} / {r}"
+    else:
+        name = raw_name
+
     if not name:
         raise HTTPException(status_code=400, detail="Group name is required")
     
+    # Auto-parse if name has slashes and building wasn't set
+    if not b and "/" in name:
+        parts = [p.strip() for p in name.split("/")]
+        if len(parts) >= 3:
+            b, f, r = parts[0], parts[1], parts[2]
+        elif len(parts) == 2:
+            b, r = parts[0], parts[1]
+
     # Check if group already exists
     existing = next((g for g in groups_store if g["name"].lower() == name.lower()), None)
     if existing:
@@ -93,13 +176,19 @@ async def create_group(payload: Dict[str, Any]):
         existing.update({
             "desc": payload.get("desc", existing.get("desc", "")),
             "color": payload.get("color", existing.get("color", "blue")),
-            "schedule": payload.get("schedule", existing.get("schedule", "Без расписания"))
+            "schedule": payload.get("schedule", existing.get("schedule", "Без расписания")),
+            "building": b or existing.get("building", ""),
+            "floor": f or existing.get("floor", ""),
+            "room": r or existing.get("room", "")
         })
         save_groups(groups_store)
         return existing
 
     new_group = {
         "name": name,
+        "building": b,
+        "floor": f,
+        "room": r,
         "desc": payload.get("desc", "Пользовательская группа рабочих станций"),
         "color": payload.get("color", "blue"),
         "schedule": payload.get("schedule", "Без расписания")
@@ -122,6 +211,17 @@ async def update_group(name: str, payload: Dict[str, Any]):
         existing["color"] = payload["color"]
     if "schedule" in payload:
         existing["schedule"] = payload["schedule"]
+    if "building" in payload:
+        existing["building"] = payload["building"]
+    if "floor" in payload:
+        existing["floor"] = payload["floor"]
+    if "room" in payload:
+        existing["room"] = payload["room"]
+
+    # Re-sync if building/floor/room changed
+    if existing.get("building") and existing.get("floor") and existing.get("room") and ("name" not in payload or not payload["name"]):
+        existing["name"] = f"{existing['building']} / {existing['floor']} / {existing['room']}"
+
     save_groups(groups_store)
     return existing
 

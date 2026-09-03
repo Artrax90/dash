@@ -1,3 +1,4 @@
+import collections
 import json
 import os
 import socket
@@ -136,7 +137,13 @@ def load_devices() -> List[Dict[str, Any]]:
                 conn = sqlite3.connect(db_path)
                 conn.row_factory = sqlite3.Row
                 cursor = conn.cursor()
-                cursor.execute("SELECT id, name, hostname, ip_address, mac_address, group_name, power_status, agent_version, last_seen FROM devices")
+                cursor.execute("PRAGMA table_info(devices)")
+                cols = {c[1] for c in cursor.fetchall()}
+                select_cols = ["id", "name", "hostname", "ip_address", "mac_address", "group_name", "power_status", "agent_version", "last_seen"]
+                if "building" in cols: select_cols.append("building")
+                if "floor" in cols: select_cols.append("floor")
+                if "room" in cols: select_cols.append("room")
+                cursor.execute(f"SELECT {', '.join(select_cols)} FROM devices")
                 rows = cursor.fetchall()
                 conn.close()
                 devs = []
@@ -144,6 +151,16 @@ def load_devices() -> List[Dict[str, Any]]:
                 for r in rows:
                     grp_str = r["group_name"] or "Office"
                     grps = [g.strip() for g in grp_str.split(",") if g.strip()]
+                    b_val = str(r["building"]).strip() if "building" in r.keys() and r["building"] else ""
+                    f_val = str(r["floor"]).strip() if "floor" in r.keys() and r["floor"] else ""
+                    r_val = str(r["room"]).strip() if "room" in r.keys() and r["room"] else ""
+
+                    if not b_val and grp_str and "/" in grp_str:
+                        parts = [p.strip() for p in grp_str.split("/")]
+                        if len(parts) >= 3:
+                            b_val, f_val, r_val = parts[0], parts[1], parts[2]
+                        elif len(parts) == 2:
+                            b_val, r_val = parts[0], parts[1]
                     
                     last_seen_val = r["last_seen"]
                     sec_since = 999999
@@ -190,6 +207,9 @@ def load_devices() -> List[Dict[str, Any]]:
                         "mac": r["mac_address"] or "",
                         "group": grps[0] if grps else "Office",
                         "groups": grps,
+                        "building": b_val or "Общие группы",
+                        "floor": f_val or "1 этаж",
+                        "room": r_val or (grps[0] if grps else "Без кабинета"),
                         "powerStatus": effective_power,
                         "isOnline": is_online,
                         "agentVersion": agent_ver or "2.9.1",
@@ -302,19 +322,138 @@ def build_main_menu(user_name: str, role: str, scope_desc: str) -> Dict[str, Any
             f"👤 Оператор: <b>{user_name}</b>\n"
             f"🔰 Роль: <b>{role}</b>\n"
             f"🌐 Зона ответственности: <b>{scope_desc}</b>\n\n"
-            f"<i>Выберите нужный раздел с помощью кнопок ниже:</i>"
+            f"<i>Выберите нужный раздел с помощью кнопок или введите номер кабинета / имя ПК для быстрого поиска:</i>"
         ),
         "reply_markup": {
             "inline_keyboard": [
                 [
-                    {"text": "📊 Сводка сети", "callback_data": "menu:status"},
-                    {"text": "🖥 Список ПК", "callback_data": "menu:devices:0"}
+                    {"text": "🏢 Корпуса и кабинеты", "callback_data": "menu:buildings"},
+                    {"text": "📊 Сводка сети", "callback_data": "menu:status"}
                 ],
                 [
-                    {"text": "🔄 Обновить меню", "callback_data": "menu:main"}
+                    {"text": "🖥 Все ПК (общий список)", "callback_data": "menu:devices:0"},
+                    {"text": "🔄 Обновить", "callback_data": "menu:main"}
                 ]
             ]
         }
+    }
+
+def build_hierarchy_buildings_view(user_devices: List[Dict[str, Any]], scope_desc: str) -> Dict[str, Any]:
+    bld_map = collections.defaultdict(list)
+    for d in user_devices:
+        b = d.get("building") or "Общие группы"
+        bld_map[b].append(d)
+
+    keyboard = []
+    for b_name, b_devs in sorted(bld_map.items()):
+        total = len(b_devs)
+        online = sum(1 for d in b_devs if d.get("isOnline") or d.get("powerStatus") == "On")
+        keyboard.append([{"text": f"🏢 {b_name} ({total} ПК | {online} 🟢)", "callback_data": f"bld:{b_name}"}])
+
+    keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main"}])
+    return {
+        "text": f"🏢 <b>Выберите корпус или филиал</b> ({scope_desc}):\n<i>Нажмите на корпус для перехода к этажам и кабинетам:</i>",
+        "reply_markup": {"inline_keyboard": keyboard}
+    }
+
+def build_hierarchy_floors_view(building: str, user_devices: List[Dict[str, Any]], role: str) -> Dict[str, Any]:
+    bld_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == building]
+    flr_map = collections.defaultdict(list)
+    for d in bld_devs:
+        f = d.get("floor") or "1 этаж"
+        flr_map[f].append(d)
+
+    keyboard = []
+    for f_name, f_devs in sorted(flr_map.items()):
+        total = len(f_devs)
+        online = sum(1 for d in f_devs if d.get("isOnline") or d.get("powerStatus") == "On")
+        keyboard.append([{"text": f"🏬 {f_name} ({total} ПК | {online} 🟢)", "callback_data": f"flr:{building}:{f_name}"}])
+
+    if role != "Наблюдатель" and bld_devs:
+        keyboard.append([
+            {"text": f"⚡️ Включить весь {building} (WoL)", "callback_data": f"confirm:wakebld:{building}"},
+            {"text": f"🛑 Выключить весь {building}", "callback_data": f"confirm:shutbld:{building}"}
+        ])
+
+    keyboard.append([
+        {"text": "⬅️ К списку корпусов", "callback_data": "menu:buildings"},
+        {"text": "🏠 Главное меню", "callback_data": "menu:main"}
+    ])
+    return {
+        "text": f"🏢 <b>{building}</b> (всего {len(bld_devs)} ПК)\n<i>Выберите этаж или выполните действие для всего корпуса:</i>",
+        "reply_markup": {"inline_keyboard": keyboard}
+    }
+
+def build_hierarchy_rooms_view(building: str, floor: str, user_devices: List[Dict[str, Any]], role: str) -> Dict[str, Any]:
+    target_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == building and (d.get("floor") or "1 этаж") == floor]
+    rm_map = collections.defaultdict(list)
+    for d in target_devs:
+        r = d.get("room") or d.get("group") or "Без кабинета"
+        rm_map[r].append(d)
+
+    keyboard = []
+    row = []
+    for r_name, r_devs in sorted(rm_map.items()):
+        total = len(r_devs)
+        online = sum(1 for d in r_devs if d.get("isOnline") or d.get("powerStatus") == "On")
+        row.append({"text": f"🚪 {r_name} ({online}/{total} 🟢)", "callback_data": f"rm:{building}:{floor}:{r_name}"})
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    if role != "Наблюдатель" and target_devs:
+        keyboard.append([
+            {"text": f"⚡️ Включить весь {floor} (WoL)", "callback_data": f"confirm:wakeflr:{building}:{floor}"},
+            {"text": f"🛑 Выключить весь {floor}", "callback_data": f"confirm:shutflr:{building}:{floor}"}
+        ])
+
+    keyboard.append([
+        {"text": "⬅️ Назад к этажам", "callback_data": f"bld:{building}"},
+        {"text": "🏠 Главное меню", "callback_data": "menu:main"}
+    ])
+    return {
+        "text": f"🏢 <b>{building}</b> → 🏬 <b>{floor}</b> ({len(target_devs)} ПК)\n<i>Выберите кабинет для управления:</i>",
+        "reply_markup": {"inline_keyboard": keyboard}
+    }
+
+def build_hierarchy_room_devices_view(building: str, floor: str, room: str, user_devices: List[Dict[str, Any]], role: str) -> Dict[str, Any]:
+    rm_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == building and (d.get("floor") or "1 этаж") == floor and (d.get("room") or d.get("group") or "Без кабинета") == room]
+    total = len(rm_devs)
+    online = sum(1 for d in rm_devs if d.get("isOnline") or d.get("powerStatus") == "On")
+    offline = total - online
+
+    keyboard = []
+    row = []
+    for d in rm_devs:
+        is_on = (d.get("powerStatus") == "On" or d.get("isOnline") is True)
+        icon = "🟢" if is_on else "🔴"
+        row.append({"text": f"{icon} {d.get('name')}", "callback_data": f"dev:{d.get('id')}"})
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+
+    if role != "Наблюдатель" and rm_devs:
+        keyboard.append([
+            {"text": "⚡️ Включить весь кабинет (WoL)", "callback_data": f"confirm:wakerm:{building}:{floor}:{room}"},
+            {"text": "🛑 Выключить кабинет", "callback_data": f"confirm:shutrm:{building}:{floor}:{room}"}
+        ])
+
+    keyboard.append([
+        {"text": "⬅️ Назад к кабинетам", "callback_data": f"flr:{building}:{floor}"},
+        {"text": "🏠 Главное меню", "callback_data": "menu:main"}
+    ])
+
+    return {
+        "text": (
+            f"🏢 <b>{building}</b> → 🏬 <b>{floor}</b> → 🚪 <b>{room}</b>\n\n"
+            f"🖥 Всего ПК: <b>{total}</b>  |  🟢 В сети: <b>{online}</b>  |  🔴 Выключено: <b>{offline}</b>\n\n"
+            f"<i>Выберите станцию для индивидуального управления или воспользуйтесь групповыми кнопками:</i>"
+        ),
+        "reply_markup": {"inline_keyboard": keyboard}
     }
 
 def build_status_view(user_devices: List[Dict[str, Any]], scope_desc: str) -> Dict[str, Any]:
@@ -498,6 +637,167 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         res = build_status_view(user_devices, scope_desc)
         res["alert"] = "Сводка обновлена"
         return res
+
+    if data == "menu:buildings":
+        res = build_hierarchy_buildings_view(user_devices, scope_desc)
+        res["alert"] = "Корпуса"
+        return res
+
+    if data.startswith("bld:"):
+        bld_name = data.split(":", 1)[1]
+        res = build_hierarchy_floors_view(bld_name, user_devices, role)
+        res["alert"] = f"Корпус {bld_name}"
+        return res
+
+    if data.startswith("flr:"):
+        _, bld_name, flr_name = data.split(":", 2)
+        res = build_hierarchy_rooms_view(bld_name, flr_name, user_devices, role)
+        res["alert"] = f"Этаж {flr_name}"
+        return res
+
+    if data.startswith("rm:"):
+        _, bld_name, flr_name, rm_name = data.split(":", 3)
+        res = build_hierarchy_room_devices_view(bld_name, flr_name, rm_name, user_devices, role)
+        res["alert"] = f"Кабинет {rm_name}"
+        return res
+
+    # Bulk room power actions
+    if data.startswith("confirm:wakerm:"):
+        _, _, bld_name, flr_name, rm_name = data.split(":", 4)
+        return {
+            "text": f"⚡️ <b>Подтверждение включения</b>\n\nВы действительно хотите отправить сигнал Wake-on-LAN на <b>все ПК кабинета {rm_name}</b> ({bld_name} / {flr_name})?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "⚡️ Да, включить кабинет", "callback_data": f"do:wakerm:{bld_name}:{flr_name}:{rm_name}"},
+                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("confirm:shutrm:"):
+        _, _, bld_name, flr_name, rm_name = data.split(":", 4)
+        return {
+            "text": f"🛑 <b>Подтверждение выключения</b>\n\nВы действительно хотите выключить <b>все компьютеры кабинета {rm_name}</b> ({bld_name} / {flr_name})?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "🛑 Да, выключить кабинет", "callback_data": f"do:shutrm:{bld_name}:{flr_name}:{rm_name}"},
+                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("do:wakerm:"):
+        _, _, bld_name, flr_name, rm_name = data.split(":", 4)
+        target_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == bld_name and (d.get("floor") or "1 этаж") == flr_name and (d.get("room") or d.get("group") or "Без кабинета") == rm_name]
+        woken = 0
+        for d in target_devs:
+            if d.get("mac"):
+                send_wol_packet(d["mac"])
+                woken += 1
+        record_audit(operator_label, "BULK_WAKE", f"ROOM_{rm_name}", "SUCCESS", f"WoL отправлен на {woken} ПК в {bld_name}/{flr_name}/{rm_name}")
+        return {
+            "text": f"✅ <b>Сигнал Wake-on-LAN отправлен!</b>\n\n⚡️ Разбужено компьютеров: <b>{woken}</b> из {len(target_devs)}\n📍 Локация: <b>{bld_name} → {flr_name} → {rm_name}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🚪 К кабинету", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}]]
+            },
+            "alert": f"WoL отправлен на {woken} ПК"
+        }
+
+    if data.startswith("do:shutrm:"):
+        _, _, bld_name, flr_name, rm_name = data.split(":", 4)
+        if role == "Наблюдатель":
+            return {"text": "🚫 Роль «Наблюдатель» имеет доступ только для чтения.", "alert": "Отказ: роль Наблюдатель"}
+        target_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == bld_name and (d.get("floor") or "1 этаж") == flr_name and (d.get("room") or d.get("group") or "Без кабинета") == rm_name]
+        from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+        shut = 0
+        for d in target_devs:
+            if d.get("ip"):
+                send_direct_lan_power_signal(ip_address=d["ip"], action="SHUTDOWN", device_id=d.get("id"), mac_address=d.get("mac", ""), hostname=d.get("hostname", ""))
+            queue_device_command(d.get("id"), "SHUTDOWN", force=True, reason=f"Telegram room shutdown by {operator_label}")
+            shut += 1
+        record_audit(operator_label, "BULK_SHUTDOWN", f"ROOM_{rm_name}", "SUCCESS", f"Выключение {shut} ПК в {bld_name}/{flr_name}/{rm_name}")
+        return {
+            "text": f"✅ <b>Команда выключения отправлена!</b>\n\n🛑 Выключено станций: <b>{shut}</b>\n📍 Локация: <b>{bld_name} → {flr_name} → {rm_name}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🚪 К кабинету", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}]]
+            },
+            "alert": f"Выключение {shut} ПК"
+        }
+
+    # Bulk building power actions
+    if data.startswith("confirm:wakebld:"):
+        bld_name = data.split(":", 2)[2]
+        return {
+            "text": f"⚡️ <b>Подтверждение включения корпуса</b>\n\nВы действительно хотите отправить Wake-on-LAN на <b>ВСЕ компьютеры корпуса {bld_name}</b>?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "⚡️ Да, включить весь корпус", "callback_data": f"do:wakebld:{bld_name}"},
+                        {"text": "❌ Отмена", "callback_data": f"bld:{bld_name}"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("confirm:shutbld:"):
+        bld_name = data.split(":", 2)[2]
+        return {
+            "text": f"🛑 <b>Подтверждение выключения корпуса</b>\n\nВы действительно хотите выключить <b>ВСЕ компьютеры корпуса {bld_name}</b>?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "🛑 Да, выключить корпус", "callback_data": f"do:shutbld:{bld_name}"},
+                        {"text": "❌ Отмена", "callback_data": f"bld:{bld_name}"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("do:wakebld:"):
+        bld_name = data.split(":", 2)[2]
+        target_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == bld_name]
+        woken = 0
+        for d in target_devs:
+            if d.get("mac"):
+                send_wol_packet(d["mac"])
+                woken += 1
+        record_audit(operator_label, "BULK_WAKE", f"BLD_{bld_name}", "SUCCESS", f"WoL отправлен на {woken} ПК в корпусе {bld_name}")
+        return {
+            "text": f"✅ <b>Wake-on-LAN отправлен!</b>\n\n⚡️ Разбужено ПК: <b>{woken}</b> из {len(target_devs)} в <b>{bld_name}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🏢 К корпусу", "callback_data": f"bld:{bld_name}"}]]
+            },
+            "alert": f"WoL на {woken} ПК"
+        }
+
+    if data.startswith("do:shutbld:"):
+        bld_name = data.split(":", 2)[2]
+        if role == "Наблюдатель":
+            return {"text": "🚫 Роль «Наблюдатель» имеет доступ только для чтения.", "alert": "Отказ: роль Наблюдатель"}
+        target_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == bld_name]
+        from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+        shut = 0
+        for d in target_devs:
+            if d.get("ip"):
+                send_direct_lan_power_signal(ip_address=d["ip"], action="SHUTDOWN", device_id=d.get("id"), mac_address=d.get("mac", ""), hostname=d.get("hostname", ""))
+            queue_device_command(d.get("id"), "SHUTDOWN", force=True, reason=f"Telegram building shutdown by {operator_label}")
+            shut += 1
+        record_audit(operator_label, "BULK_SHUTDOWN", f"BLD_{bld_name}", "SUCCESS", f"Выключение {shut} ПК в {bld_name}")
+        return {
+            "text": f"✅ <b>Команда выключения отправлена!</b>\n\n🛑 Выключено ПК: <b>{shut}</b> в <b>{bld_name}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🏢 К корпусу", "callback_data": f"bld:{bld_name}"}]]
+            },
+            "alert": f"Выключение {shut} ПК"
+        }
 
     if data.startswith("menu:devices"):
         parts = data.split(":")
@@ -759,6 +1059,34 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
                 "reply_markup": {
                     "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}"}]]
                 }
+            }
+
+    # 5. Smart search by room number, cabinet name, device name, IP, or building
+    q = cmd_raw.strip().lower()
+    if q and not q.startswith("/"):
+        matches = [
+            d for d in user_devices
+            if q in str(d.get("room", "")).lower()
+            or q in str(d.get("name", "")).lower()
+            or q in str(d.get("hostname", "")).lower()
+            or q in str(d.get("ip", "")).lower()
+            or q in str(d.get("group", "")).lower()
+            or q in str(d.get("building", "")).lower()
+        ]
+        if matches:
+            if len(matches) == 1:
+                return build_device_card(matches[0], can_manage_device(matches[0]), role)
+            
+            keyboard = []
+            for d in matches[:10]:
+                is_on = (d.get("powerStatus") == "On" or d.get("isOnline") is True)
+                icon = "🟢" if is_on else "🔴"
+                loc = f"{d.get('building')} / {d.get('room')}" if d.get('room') else d.get('group')
+                keyboard.append([{"text": f"{icon} {d.get('name')} ({loc})", "callback_data": f"dev:{d.get('id')}"}])
+            keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main"}])
+            return {
+                "text": f"🔍 <b>Найдено совпадений: {len(matches)}</b> по запросу «{cmd_raw}»:\n<i>Выберите станцию для перехода к управлению:</i>",
+                "reply_markup": {"inline_keyboard": keyboard}
             }
 
     return f"❓ Неизвестная команда <code>{cmd}</code>. Напишите <code>/help</code> или <code>/menu</code> для открытия меню."

@@ -5,7 +5,7 @@ import {
   LoaderCircle, LogOut, Menu, Monitor, Moon, MoreHorizontal, Network, Power, RefreshCw, Search, Send, Server,
   Settings, ShieldCheck, Sun, Tag, Terminal, UserRound, Users as UsersIcon, Wifi, X, Zap, Plus, Trash2, Play,
   Edit3, Lock, Download, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
-  Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb
+  Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb, Building, Layers, MapPin
 } from 'lucide-react';
 import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, getActiveUserName, wsClient, notificationService } from '@/api';
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
@@ -9487,6 +9487,10 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
   const [showTokenModal, setShowTokenModal] = useState(false);
   const [targetGroup, setTargetGroup] = useState('Office');
   const [customGroupInput, setCustomGroupInput] = useState('');
+  const [tokenScopeMode, setTokenScopeMode] = useState<'room' | 'building' | 'flat'>('room');
+  const [tokenBuilding, setTokenBuilding] = useState('Главный корпус');
+  const [tokenFloor, setTokenFloor] = useState('1 этаж');
+  const [tokenRoom, setTokenRoom] = useState('');
   const [expiryOption, setExpiryOption] = useState('30d');
   const [customExpiryDate, setCustomExpiryDate] = useState('');
   const [maxUsesOption, setMaxUsesOption] = useState('unlimited');
@@ -9616,11 +9620,30 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
       expStr = 'Бессрочно';
     }
 
-    const finalGroup = targetGroup === '__custom__' ? (customGroupInput.trim() || 'Office') : targetGroup;
+    let finalGroup = 'Office';
+    let bld = '';
+    let flr = '';
+    let rm = '';
+
+    if (tokenScopeMode === 'building') {
+      bld = tokenBuilding.trim() || 'Главный корпус';
+      finalGroup = bld;
+    } else if (tokenScopeMode === 'room') {
+      bld = tokenBuilding.trim() || 'Главный корпус';
+      flr = tokenFloor.trim() || '1 этаж';
+      rm = tokenRoom.trim() || 'Каб. 101';
+      finalGroup = `${bld} / ${flr} / ${rm}`;
+    } else {
+      finalGroup = targetGroup === '__custom__' ? (customGroupInput.trim() || 'Office') : targetGroup;
+    }
 
     const maxU = maxUsesOption === 'unlimited' ? undefined : (maxUsesOption === '1' ? 1 : parseInt(customMaxUses) || undefined);
 
     const newToken = await agentsApi.createToken({
+      targetType: tokenScopeMode,
+      targetBuilding: bld,
+      targetFloor: flr,
+      targetRoom: rm,
       targetGroup: finalGroup,
       expiry: expiryOption,
       expiresAt: expStr,
@@ -9631,13 +9654,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     setTokens(prev => [newToken, ...prev]);
     setSelectedInstallerToken(newToken.token);
     setAvailableGroups(prev => Array.from(new Set([...prev, finalGroup])));
-    groupsApi.create({ name: finalGroup }).catch(() => {});
+    groupsApi.create({ name: finalGroup, building: bld, floor: flr, room: rm }).catch(() => {});
 
-    notify(`Токен для группы "${finalGroup}" успешно создан!`);
+    notify(`Токен для "${finalGroup}" успешно создан!`);
     setShowTokenModal(false);
     setExpiryOption('30d');
     setCustomExpiryDate('');
     setCustomGroupInput('');
+    setTokenRoom('');
     setMaxUsesOption('unlimited');
   };
 
@@ -10379,36 +10403,121 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
             <h2>Генерация токена регистрации</h2>
             <p>Новый токен позволяет фоновому агенту автоматически зарегистрировать станцию на сервере {serverAddress}.</p>
             
-            <div className="setting-row" style={{ padding: '8px 0' }}>
-              <div><strong>Рабочая группа</strong></div>
-              <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '60%' }}>
-                <select
-                  className="text-input"
-                  value={targetGroup}
-                  onChange={(e) => {
-                    setTargetGroup(e.target.value);
-                    if (e.target.value !== '__custom__') {
-                      setCustomGroupInput('');
-                    }
-                  }}
-                >
-                  {availableGroups.map((grp) => (
-                    <option key={grp} value={grp}>{grp}</option>
-                  ))}
-                  <option value="__custom__">+ Ввести новую группу...</option>
-                </select>
-                {targetGroup === '__custom__' && (
-                  <input
-                    type="text"
-                    className="text-input"
-                    placeholder="Введите название новой группы"
-                    value={customGroupInput}
-                    onChange={(e) => setCustomGroupInput(e.target.value)}
-                    autoFocus
-                  />
-                )}
-              </div>
+            {/* Token Target Scope Mode */}
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', padding: '3px', background: 'var(--bg)', borderRadius: '8px', border: '1px solid var(--line)' }}>
+              <button
+                type="button"
+                className={`button ${tokenScopeMode === 'room' ? 'button-primary' : ''}`}
+                style={{ flex: 1, padding: '5px', fontSize: '11px' }}
+                onClick={() => setTokenScopeMode('room')}
+              >
+                🚪 На кабинет
+              </button>
+              <button
+                type="button"
+                className={`button ${tokenScopeMode === 'building' ? 'button-primary' : ''}`}
+                style={{ flex: 1, padding: '5px', fontSize: '11px' }}
+                onClick={() => setTokenScopeMode('building')}
+              >
+                🏢 На корпус
+              </button>
+              <button
+                type="button"
+                className={`button ${tokenScopeMode === 'flat' ? 'button-primary' : ''}`}
+                style={{ flex: 1, padding: '5px', fontSize: '11px' }}
+                onClick={() => setTokenScopeMode('flat')}
+              >
+                📁 Простая группа
+              </button>
             </div>
+
+            {tokenScopeMode === 'room' ? (
+              <>
+                <div className="setting-row" style={{ padding: '6px 0' }}>
+                  <div><strong>Корпус и этаж</strong></div>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', width: '60%' }}>
+                    <input
+                      className="text-input"
+                      value={tokenBuilding}
+                      onChange={(e) => setTokenBuilding(e.target.value)}
+                      placeholder="Главный корпус"
+                    />
+                    <input
+                      className="text-input"
+                      value={tokenFloor}
+                      onChange={(e) => setTokenFloor(e.target.value)}
+                      placeholder="1 этаж"
+                    />
+                  </div>
+                </div>
+                <div className="setting-row" style={{ padding: '6px 0' }}>
+                  <div><strong>Кабинет / Помещение</strong></div>
+                  <div style={{ width: '60%' }}>
+                    <input
+                      className="text-input"
+                      style={{ width: '100%' }}
+                      value={tokenRoom}
+                      onChange={(e) => setTokenRoom(e.target.value)}
+                      placeholder="Например: Каб. 204 или Бухгалтерия"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+                <div style={{ padding: '6px 10px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)', marginBottom: '8px' }}>
+                  📍 <strong>Назначение ПК:</strong> <code>{tokenBuilding || 'Главный корпус'} / {tokenFloor || '1 этаж'} / {tokenRoom || 'Кабинет'}</code>
+                </div>
+              </>
+            ) : tokenScopeMode === 'building' ? (
+              <>
+                <div className="setting-row" style={{ padding: '6px 0' }}>
+                  <div><strong>Корпус / Здание</strong></div>
+                  <div style={{ width: '60%' }}>
+                    <input
+                      className="text-input"
+                      style={{ width: '100%' }}
+                      value={tokenBuilding}
+                      onChange={(e) => setTokenBuilding(e.target.value)}
+                      placeholder="Главный корпус"
+                      autoFocus
+                    />
+                  </div>
+                </div>
+                <div style={{ padding: '6px 10px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)', marginBottom: '8px' }}>
+                  🏢 <strong>Назначение ПК:</strong> Все ПК с этим токеном будут привязаны к корпусу <code>{tokenBuilding || 'Главный корпус'}</code> в категорию <code>Нераспределенные</code>.
+                </div>
+              </>
+            ) : (
+              <div className="setting-row" style={{ padding: '8px 0' }}>
+                <div><strong>Рабочая группа</strong></div>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', width: '60%' }}>
+                  <select
+                    className="text-input"
+                    value={targetGroup}
+                    onChange={(e) => {
+                      setTargetGroup(e.target.value);
+                      if (e.target.value !== '__custom__') {
+                        setCustomGroupInput('');
+                      }
+                    }}
+                  >
+                    {availableGroups.map((grp) => (
+                      <option key={grp} value={grp}>{grp}</option>
+                    ))}
+                    <option value="__custom__">+ Ввести новую группу...</option>
+                  </select>
+                  {targetGroup === '__custom__' && (
+                    <input
+                      type="text"
+                      className="text-input"
+                      placeholder="Введите название новой группы"
+                      value={customGroupInput}
+                      onChange={(e) => setCustomGroupInput(e.target.value)}
+                      autoFocus
+                    />
+                  )}
+                </div>
+              </div>
+            )}
 
             <div className="setting-row" style={{ padding: '8px 0' }}>
               <div><strong>Срок действия</strong></div>
@@ -11399,6 +11508,43 @@ function Groups({
   const [showAddPcModal, setShowAddPcModal] = useState(false);
   const [selectedPcToAssign, setSelectedPcToAssign] = useState<string>('');
 
+  // 3-Level Hierarchy Drill-Down State (Cards / Tiles)
+  const [drillBuilding, setDrillBuilding] = useState<string | null>(null);
+  const [drillFloor, setDrillFloor] = useState<string | null>(null);
+  const [drillSearch, setDrillSearch] = useState<string>('');
+
+  // 3-Level Creation Form State
+  const [isHierarchicalCreate, setIsHierarchicalCreate] = useState<boolean>(true);
+  const [createBuilding, setCreateBuilding] = useState<string>('Главный корпус');
+  const [createFloor, setCreateFloor] = useState<string>('1 этаж');
+  const [createRoom, setCreateRoom] = useState<string>('');
+
+  const parseGroupHierarchy = useCallback((gName: string, bld?: string, flr?: string, rm?: string) => {
+    let b = (bld || '').trim();
+    let f = (flr || '').trim();
+    let r = (rm || '').trim();
+
+    if ((!b || !r) && gName.includes('/')) {
+      const parts = gName.split('/').map(s => s.trim());
+      if (parts.length >= 3) {
+        b = parts[0];
+        f = parts[1];
+        r = parts[2];
+      } else if (parts.length === 2) {
+        b = parts[0];
+        f = '1 этаж';
+        r = parts[1];
+      }
+    }
+
+    return {
+      building: b || 'Общие группы',
+      floor: f || '1 этаж',
+      room: r || gName,
+      isHierarchical: Boolean(b && b !== 'Общие группы')
+    };
+  }, []);
+
   const loadData = () => {
     groupsApi.list().then((serverGroups) => {
       if (serverGroups && serverGroups.length > 0) {
@@ -11407,8 +11553,11 @@ function Groups({
           count: 0,
           desc: g.desc || 'Рабочая группа',
           color: (g.color || 'blue') as GroupData['color'],
-          schedule: g.schedule || 'Без расписания'
-        })));
+          schedule: g.schedule || 'Без расписания',
+          building: (g as any).building || '',
+          floor: (g as any).floor || '',
+          room: (g as any).room || ''
+        } as any)));
       }
     });
     devicesApi.list().then((devList) => {
@@ -11434,6 +11583,75 @@ function Groups({
     return groups;
   }, [groups, hasRestrictedScope, allowedGroupNames]);
 
+  const hierarchyData = useMemo(() => {
+    const buildingsMap: Record<string, {
+      name: string;
+      floors: Record<string, {
+        name: string;
+        rooms: (GroupData & { roomName: string })[];
+      }>;
+    }> = {};
+
+    visibleGroups.forEach(g => {
+      const { building, floor, room } = parseGroupHierarchy(g.name, (g as any).building, (g as any).floor, (g as any).room);
+      if (!buildingsMap[building]) {
+        buildingsMap[building] = { name: building, floors: {} };
+      }
+      if (!buildingsMap[building].floors[floor]) {
+        buildingsMap[building].floors[floor] = { name: floor, rooms: [] };
+      }
+      buildingsMap[building].floors[floor].rooms.push({
+        ...g,
+        roomName: room
+      });
+    });
+
+    return buildingsMap;
+  }, [visibleGroups, parseGroupHierarchy]);
+
+  const existingBuildingNames = useMemo(() => {
+    const names = Object.keys(hierarchyData).filter(b => b !== 'Общие группы');
+    return names.length > 0 ? names : ['Главный корпус', 'Учебный корпус', 'Филиал'];
+  }, [hierarchyData]);
+
+  const existingFloorNames = useMemo(() => {
+    const set = new Set<string>();
+    Object.values(hierarchyData).forEach(b => {
+      Object.keys(b.floors).forEach(f => set.add(f));
+    });
+    const list = Array.from(set);
+    return list.length > 0 ? list : ['1 этаж', '2 этаж', '3 этаж', 'Цоколь'];
+  }, [hierarchyData]);
+
+  const getBuildingStats = useCallback((bldName: string) => {
+    const bld = hierarchyData[bldName];
+    if (!bld) return { floorsCount: 0, roomsCount: 0, totalPcs: 0, onlinePcs: 0, groupNames: [] as string[] };
+    const floors = Object.values(bld.floors);
+    const floorsCount = floors.length;
+    let roomsCount = 0;
+    const groupNames: string[] = [];
+    floors.forEach(f => {
+      roomsCount += f.rooms.length;
+      f.rooms.forEach(r => groupNames.push(r.name.toLowerCase()));
+    });
+    const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => groupNames.includes(grp.toLowerCase())));
+    const totalPcs = bldDevs.length;
+    const onlinePcs = bldDevs.filter(d => d.powerStatus === 'On').length;
+    return { floorsCount, roomsCount, totalPcs, onlinePcs, groupNames };
+  }, [hierarchyData, devices]);
+
+  const getFloorStats = useCallback((bldName: string, flrName: string) => {
+    const bld = hierarchyData[bldName];
+    const flr = bld?.floors[flrName];
+    if (!flr) return { roomsCount: 0, totalPcs: 0, onlinePcs: 0, groupNames: [] as string[] };
+    const roomsCount = flr.rooms.length;
+    const groupNames = flr.rooms.map(r => r.name.toLowerCase());
+    const flrDevs = devices.filter(d => getDeviceGroups(d).some(grp => groupNames.includes(grp.toLowerCase())));
+    const totalPcs = flrDevs.length;
+    const onlinePcs = flrDevs.filter(d => d.powerStatus === 'On').length;
+    return { roomsCount, totalPcs, onlinePcs, groupNames };
+  }, [hierarchyData, devices]);
+
   useEffect(() => {
     if (hasRestrictedScope && selectedGroupName && !canManageGroup(selectedGroupName)) {
       const fallback = visibleGroups[0]?.name || null;
@@ -11455,21 +11673,49 @@ function Groups({
       notify('Отказ в доступе: создание групп разрешено только Суперадминистратору');
       return;
     }
-    if (!newGroupName) return;
+
+    let finalName = '';
+    let bldVal = '';
+    let flrVal = '';
+    let rmVal = '';
+
+    if (isHierarchicalCreate) {
+      bldVal = createBuilding.trim() || 'Главный корпус';
+      flrVal = createFloor.trim() || '1 этаж';
+      rmVal = createRoom.trim() || newGroupName.trim();
+      if (!rmVal) {
+        notify('Пожалуйста, укажите название или номер кабинета');
+        return;
+      }
+      finalName = `${bldVal} / ${flrVal} / ${rmVal}`;
+    } else {
+      finalName = newGroupName.trim();
+      if (!finalName) {
+        notify('Пожалуйста, укажите название группы');
+        return;
+      }
+    }
+
     const created: GroupData = {
-      name: newGroupName.trim(),
+      name: finalName,
       count: 0,
-      desc: newGroupDesc || 'Пользовательская группа рабочих станций',
+      desc: newGroupDesc || (isHierarchicalCreate ? `Кабинет ${rmVal} (${bldVal}, ${flrVal})` : 'Пользовательская группа рабочих станций'),
       color: newGroupColor,
-      schedule: newGroupSchedule
-    };
+      schedule: newGroupSchedule,
+      building: bldVal,
+      floor: flrVal,
+      room: rmVal
+    } as any;
+
     setGroups(prev => [...prev, created]);
     await groupsApi.create(created);
     notify(`Группа "${created.name}" успешно создана!`);
     setShowCreateGroup(false);
     setNewGroupName('');
+    setCreateRoom('');
     setNewGroupDesc('');
     setNewGroupColor('blue');
+    loadData();
   };
 
   const handleOpenEditGroupModal = (g: GroupData) => {
@@ -11871,108 +12117,496 @@ function Groups({
           );
         })()
       ) : (
-        /* ================= GROUPS LIST VIEW ================= */
+        /* ================= GROUPS LIST VIEW (3-LEVEL DRILL-DOWN TILES) ================= */
         <>
           <PageHeader
             eyebrow="FLEET MANAGEMENT"
-            title="Группы станций"
-            description="Организация парка компьютеров по локациям, отделам и назначение групповых политик питания."
-            actions={isSuperAdmin ? <Button primary icon={<Plus size={15} />} onClick={() => setShowCreateGroup(true)}>Создать группу</Button> : undefined}
+            title={
+              drillBuilding && drillFloor
+                ? `Кабинеты: ${drillBuilding} → ${drillFloor}`
+                : drillBuilding
+                  ? `Этажи корпуса: ${drillBuilding}`
+                  : "Группы и локации станций"
+            }
+            description="Трёхуровневая иерархия парка: Корпус → Этаж → Кабинет с групповым управлением питанием."
+            actions={
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                {isSuperAdmin && (
+                  <Button primary icon={<Plus size={15} />} onClick={() => setShowCreateGroup(true)}>
+                    Создать группу / кабинет
+                  </Button>
+                )}
+              </div>
+            }
           />
 
-          <div className="group-grid">
-            {visibleGroups.map(group => (
-              <section
-                className="panel group-card"
-                key={group.name}
-                onClick={() => onSelectGroup(group.name)}
-                style={{ cursor: 'pointer', transition: '0.2s', border: '1px solid var(--line)' }}
-                title={`Нажмите, чтобы открыть подробности группы ${group.name}`}
+          {/* Navigation Breadcrumbs & Fast Search Bar */}
+          <div className="panel" style={{ marginBottom: '20px', padding: '12px 18px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13px', flexWrap: 'wrap' }}>
+              <button
+                className={`button ${!drillBuilding ? 'button-primary' : ''}`}
+                style={{ padding: '6px 12px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                onClick={() => { setDrillBuilding(null); setDrillFloor(null); setDrillSearch(''); }}
               >
-                <div className={`group-hero ${group.color}`}>
-                  <div className="group-symbol"><Server size={20} /></div>
-                  {canManageGroup(group.name) && !isObserver && (
-                    <button
-                      className="hero-more"
-                      onClick={async (e) => {
-                        e.stopPropagation();
-                        const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === group.name.toLowerCase()));
-                        const devIds = gDevs.map(d => d.id);
-                        if (devIds.length > 0) {
-                          await devicesApi.bulkOperation(devIds, 'WAKE');
-                          notify(`Групповой Wake-on-LAN отправлен на ${devIds.length} ПК группы ${group.name}`);
-                          setTimeout(loadData, 1200);
-                        } else {
-                          notify(`В группе "${group.name}" нет добавленных ПК`);
-                        }
-                      }}
-                      title="Включить все ПК группы (WoL)"
-                    >
-                      <Zap size={16} />
-                    </button>
-                  )}
-                </div>
-                <div className="group-body">
-                  <div className="group-title">
-                    <div>
-                      <h2 style={{ fontSize: '15px', fontWeight: 700 }}>{group.name}</h2>
-                      <p style={{ lineHeight: 1.4 }}>{group.desc}</p>
-                    </div>
-                    <span style={{ fontSize: '20px', fontWeight: 700 }}>{group.count}</span>
-                  </div>
-                  <div className="group-info">
-                    <span><Monitor size={14} /> {group.count} {t('common.devices')}</span>
-                    <span><Clock3 size={14} /> {group.schedule}</span>
-                  </div>
-                  <Button onClick={(e) => { e.stopPropagation(); onSelectGroup(group.name); }}>
-                    Открыть группу ({group.name}) <ChevronRight size={14} />
-                  </Button>
-                </div>
-              </section>
-            ))}
+                <Building size={14} /> Все корпуса ({Object.keys(hierarchyData).length})
+              </button>
+
+              {drillBuilding && (
+                <>
+                  <ChevronRight size={14} style={{ color: 'var(--muted)' }} />
+                  <button
+                    className={`button ${drillBuilding && !drillFloor ? 'button-primary' : ''}`}
+                    style={{ padding: '6px 12px', fontSize: '12px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}
+                    onClick={() => { setDrillFloor(null); setDrillSearch(''); }}
+                  >
+                    <Layers size={14} /> {drillBuilding}
+                  </button>
+                </>
+              )}
+
+              {drillBuilding && drillFloor && (
+                <>
+                  <ChevronRight size={14} style={{ color: 'var(--muted)' }} />
+                  <span className="badge match" style={{ fontSize: '12px', padding: '6px 10px', display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                    🚪 {drillFloor}
+                  </span>
+                </>
+              )}
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <div style={{ position: 'relative', width: '280px' }}>
+                <input
+                  type="text"
+                  className="text-input"
+                  style={{ width: '100%', paddingLeft: '32px' }}
+                  placeholder="Быстрый поиск кабинета или ПК..."
+                  value={drillSearch}
+                  onChange={(e) => setDrillSearch(e.target.value)}
+                />
+                <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
+                {drillSearch && (
+                  <button
+                    onClick={() => setDrillSearch('')}
+                    style={{ position: 'absolute', right: '8px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', cursor: 'pointer', color: 'var(--muted)' }}
+                  >
+                    <X size={14} />
+                  </button>
+                )}
+              </div>
+            </div>
           </div>
+
+          {/* Search Result Overlay if Searching */}
+          {drillSearch.trim() ? (
+            (() => {
+              const q = drillSearch.trim().toLowerCase();
+              const matchedGroups = visibleGroups.filter(g =>
+                g.name.toLowerCase().includes(q) ||
+                g.desc.toLowerCase().includes(q)
+              );
+              return (
+                <div style={{ marginBottom: '24px' }}>
+                  <div style={{ marginBottom: '12px', color: 'var(--muted)', fontSize: '13px' }}>
+                    Найдено кабинетов и групп: <strong>{matchedGroups.length}</strong>
+                  </div>
+                  <div className="group-grid">
+                    {matchedGroups.map(group => (
+                      <section
+                        className="panel group-card"
+                        key={group.name}
+                        onClick={() => onSelectGroup(group.name)}
+                        style={{ cursor: 'pointer', transition: '0.2s', border: '1px solid var(--line)' }}
+                      >
+                        <div className={`group-hero ${group.color}`}>
+                          <div className="group-symbol"><Server size={20} /></div>
+                        </div>
+                        <div className="group-body">
+                          <div className="group-title">
+                            <div>
+                              <h2 style={{ fontSize: '15px', fontWeight: 700 }}>{group.name}</h2>
+                              <p style={{ lineHeight: 1.4 }}>{group.desc}</p>
+                            </div>
+                            <span style={{ fontSize: '20px', fontWeight: 700 }}>{group.count}</span>
+                          </div>
+                          <div className="group-info">
+                            <span><Monitor size={14} /> {group.count} {t('common.devices')}</span>
+                            <span><Clock3 size={14} /> {group.schedule}</span>
+                          </div>
+                          <Button onClick={(e) => { e.stopPropagation(); onSelectGroup(group.name); }}>
+                            Открыть ({group.name}) <ChevronRight size={14} />
+                          </Button>
+                        </div>
+                      </section>
+                    ))}
+                  </div>
+                </div>
+              );
+            })()
+          ) : !drillBuilding ? (
+            /* ================= LEVEL 1: BUILDINGS TILES (КОРПУСА) ================= */
+            <div className="group-grid">
+              {Object.keys(hierarchyData).map(bldName => {
+                const stats = getBuildingStats(bldName);
+                return (
+                  <section
+                    className="panel group-card"
+                    key={bldName}
+                    onClick={() => setDrillBuilding(bldName)}
+                    style={{ cursor: 'pointer', transition: '0.2s', border: '1px solid var(--line)' }}
+                    title={`Открыть корпус ${bldName}`}
+                  >
+                    <div className="group-hero blue">
+                      <div className="group-symbol"><Building size={24} /></div>
+                      {isSuperAdmin && (
+                        <button
+                          className="hero-more"
+                          onClick={async (e) => {
+                            e.stopPropagation();
+                            const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => stats.groupNames.includes(grp.toLowerCase())));
+                            const devIds = bldDevs.map(d => d.id);
+                            if (devIds.length > 0) {
+                              await devicesApi.bulkOperation(devIds, 'WAKE');
+                              notify(`Wake-on-LAN отправлен на ${devIds.length} ПК корпуса "${bldName}"`);
+                              setTimeout(loadData, 1200);
+                            } else {
+                              notify(`В корпусе "${bldName}" нет ПК`);
+                            }
+                          }}
+                          title={`Включить все ПК корпуса "${bldName}" (WoL)`}
+                        >
+                          <Zap size={16} />
+                        </button>
+                      )}
+                    </div>
+                    <div className="group-body">
+                      <div className="group-title">
+                        <div>
+                          <div className="eyebrow" style={{ color: 'var(--blue)', fontSize: '10px' }}>КОРПУС / ЗДАНИЕ</div>
+                          <h2 style={{ fontSize: '18px', fontWeight: 700, marginTop: '2px' }}>{bldName}</h2>
+                          <p style={{ lineHeight: 1.4 }}>{stats.floorsCount} этажей · {stats.roomsCount} кабинетов</p>
+                        </div>
+                        <span style={{ fontSize: '20px', fontWeight: 700, color: 'var(--blue)' }}>{stats.totalPcs}</span>
+                      </div>
+                      <div className="group-info">
+                        <span style={{ color: 'var(--green)', fontWeight: 600 }}>
+                          <Wifi size={13} style={{ verticalAlign: '-1px' }} /> {stats.onlinePcs} в сети
+                        </span>
+                        <span>
+                          <Power size={13} style={{ verticalAlign: '-1px' }} /> {stats.totalPcs - stats.onlinePcs} выключено
+                        </span>
+                      </div>
+                      <Button onClick={(e) => { e.stopPropagation(); setDrillBuilding(bldName); }}>
+                        Открыть корпус ({bldName}) <ChevronRight size={14} />
+                      </Button>
+                    </div>
+                  </section>
+                );
+              })}
+            </div>
+          ) : !drillFloor ? (
+            /* ================= LEVEL 2: FLOORS TILES (ЭТАЖИ) ================= */
+            <>
+              {(() => {
+                const bldStats = getBuildingStats(drillBuilding);
+                const bldFloors = hierarchyData[drillBuilding]?.floors || {};
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                        Корпус <strong>{drillBuilding}</strong>: {bldStats.floorsCount} этажей, {bldStats.roomsCount} кабинетов, {bldStats.totalPcs} ПК ({bldStats.onlinePcs} в сети)
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        {isSuperAdmin && (
+                          <Button
+                            icon={<Zap size={14} />}
+                            onClick={async () => {
+                              const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => bldStats.groupNames.includes(grp.toLowerCase())));
+                              const devIds = bldDevs.map(d => d.id);
+                              if (devIds.length > 0) {
+                                await devicesApi.bulkOperation(devIds, 'WAKE');
+                                notify(`WoL отправлен на ${devIds.length} ПК корпуса "${drillBuilding}"`);
+                                setTimeout(loadData, 1200);
+                              }
+                            }}
+                          >
+                            Включить весь корпус (WoL)
+                          </Button>
+                        )}
+                        <Button onClick={() => setDrillBuilding(null)}>
+                          ⬅️ К выбору корпуса
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="group-grid">
+                      {Object.keys(bldFloors).map(flrName => {
+                        const fStats = getFloorStats(drillBuilding, flrName);
+                        return (
+                          <section
+                            className="panel group-card"
+                            key={flrName}
+                            onClick={() => setDrillFloor(flrName)}
+                            style={{ cursor: 'pointer', transition: '0.2s', border: '1px solid var(--line)' }}
+                            title={`Открыть ${flrName}`}
+                          >
+                            <div className="group-hero purple">
+                              <div className="group-symbol"><Layers size={24} /></div>
+                              {isSuperAdmin && (
+                                <button
+                                  className="hero-more"
+                                  onClick={async (e) => {
+                                    e.stopPropagation();
+                                    const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
+                                    const devIds = fDevs.map(d => d.id);
+                                    if (devIds.length > 0) {
+                                      await devicesApi.bulkOperation(devIds, 'WAKE');
+                                      notify(`WoL отправлен на ${devIds.length} ПК этажа "${flrName}"`);
+                                      setTimeout(loadData, 1200);
+                                    }
+                                  }}
+                                  title={`Включить все ПК этажа "${flrName}" (WoL)`}
+                                >
+                                  <Zap size={16} />
+                                </button>
+                              )}
+                            </div>
+                            <div className="group-body">
+                              <div className="group-title">
+                                <div>
+                                  <div className="eyebrow" style={{ color: 'var(--purple)', fontSize: '10px' }}>ЭТАЖ / СЕКЦИЯ</div>
+                                  <h2 style={{ fontSize: '18px', fontWeight: 700, marginTop: '2px' }}>{flrName}</h2>
+                                  <p style={{ lineHeight: 1.4 }}>{fStats.roomsCount} кабинетов на этаже</p>
+                                </div>
+                                <span style={{ fontSize: '20px', fontWeight: 700, color: 'var(--purple)' }}>{fStats.totalPcs}</span>
+                              </div>
+                              <div className="group-info">
+                                <span style={{ color: 'var(--green)', fontWeight: 600 }}>
+                                  <Wifi size={13} style={{ verticalAlign: '-1px' }} /> {fStats.onlinePcs} в сети
+                                </span>
+                                <span>
+                                  <Power size={13} style={{ verticalAlign: '-1px' }} /> {fStats.totalPcs - fStats.onlinePcs} выключено
+                                </span>
+                              </div>
+                              <Button onClick={(e) => { e.stopPropagation(); setDrillFloor(flrName); }}>
+                                Открыть этаж ({flrName}) <ChevronRight size={14} />
+                              </Button>
+                            </div>
+                          </section>
+                        );
+                      })}
+                    </div>
+                  </>
+                );
+              })()}
+            </>
+          ) : (
+            /* ================= LEVEL 3: ROOMS TILES (КАБИНЕТЫ) ================= */
+            <>
+              {(() => {
+                const floorRooms = hierarchyData[drillBuilding]?.floors[drillFloor]?.rooms || [];
+                const fStats = getFloorStats(drillBuilding, drillFloor);
+                return (
+                  <>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px', flexWrap: 'wrap', gap: '8px' }}>
+                      <div style={{ fontSize: '13px', color: 'var(--muted)' }}>
+                        Локация: <strong>{drillBuilding}</strong> → <strong>{drillFloor}</strong> ({floorRooms.length} кабинетов, {fStats.totalPcs} ПК)
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px' }}>
+                        {isSuperAdmin && (
+                          <Button
+                            icon={<Zap size={14} />}
+                            onClick={async () => {
+                              const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
+                              const devIds = fDevs.map(d => d.id);
+                              if (devIds.length > 0) {
+                                await devicesApi.bulkOperation(devIds, 'WAKE');
+                                notify(`WoL отправлен на ${devIds.length} ПК этажа "${drillFloor}"`);
+                                setTimeout(loadData, 1200);
+                              }
+                            }}
+                          >
+                            Включить весь этаж (WoL)
+                          </Button>
+                        )}
+                        <Button onClick={() => setDrillFloor(null)}>
+                          ⬅️ К выбору этажа
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="group-grid">
+                      {floorRooms.map(roomGroup => (
+                        <section
+                          className="panel group-card"
+                          key={roomGroup.name}
+                          onClick={() => onSelectGroup(roomGroup.name)}
+                          style={{ cursor: 'pointer', transition: '0.2s', border: '1px solid var(--line)' }}
+                          title={`Открыть кабинет ${roomGroup.roomName}`}
+                        >
+                          <div className={`group-hero ${roomGroup.color}`}>
+                            <div className="group-symbol"><Server size={20} /></div>
+                            {canManageGroup(roomGroup.name) && !isObserver && (
+                              <button
+                                className="hero-more"
+                                onClick={async (e) => {
+                                  e.stopPropagation();
+                                  const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === roomGroup.name.toLowerCase()));
+                                  const devIds = gDevs.map(d => d.id);
+                                  if (devIds.length > 0) {
+                                    await devicesApi.bulkOperation(devIds, 'WAKE');
+                                    notify(`WoL отправлен на ${devIds.length} ПК кабинета "${roomGroup.roomName}"`);
+                                    setTimeout(loadData, 1200);
+                                  } else {
+                                    notify(`В кабинете "${roomGroup.roomName}" нет добавленных ПК`);
+                                  }
+                                }}
+                                title="Включить все ПК кабинета (WoL)"
+                              >
+                                <Zap size={16} />
+                              </button>
+                            )}
+                          </div>
+                          <div className="group-body">
+                            <div className="group-title">
+                              <div>
+                                <div className="eyebrow" style={{ fontSize: '10px', textTransform: 'uppercase' }}>КАБИНЕТ</div>
+                                <h2 style={{ fontSize: '16px', fontWeight: 700 }}>{roomGroup.roomName}</h2>
+                                <p style={{ lineHeight: 1.4 }}>{roomGroup.desc}</p>
+                              </div>
+                              <span style={{ fontSize: '20px', fontWeight: 700 }}>{roomGroup.count}</span>
+                            </div>
+                            <div className="group-info">
+                              <span><Monitor size={14} /> {roomGroup.count} ПК</span>
+                              <span><Clock3 size={14} /> {roomGroup.schedule}</span>
+                            </div>
+                            <Button onClick={(e) => { e.stopPropagation(); onSelectGroup(roomGroup.name); }}>
+                              Открыть кабинет ({roomGroup.roomName}) <ChevronRight size={14} />
+                            </Button>
+                          </div>
+                        </section>
+                      ))}
+                    </div>
+                  </>
+                );
+              })()}
+            </>
+          )}
         </>
       )}
 
       {/* ================= MODALS (Always rendered in Groups) ================= */}
 
-      {/* Create Group Modal */}
+      {/* Create Group Modal with 3-Level Support */}
       {showCreateGroup && (
         <div className="modal-backdrop" onClick={() => setShowCreateGroup(false)}>
-          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '520px', textAlign: 'left' }}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '540px', textAlign: 'left' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
               <div className="confirm-icon" style={{ background: 'var(--blue-soft)', color: 'var(--blue)', margin: 0 }}><Database size={22} /></div>
               <div>
-                <h2 style={{ fontSize: '17px', margin: 0 }}>Создать новую группу ПК</h2>
-                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>Объединение станций для применения групповых правил</p>
+                <h2 style={{ fontSize: '17px', margin: 0 }}>Создать новую группу / кабинет</h2>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>Объединение станций в корпус, этаж и кабинет</p>
               </div>
             </div>
 
+            {/* Switcher: Hierarchical vs Flat */}
+            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', padding: '4px', background: 'var(--bg)', borderRadius: '8px', border: '1px solid var(--line)' }}>
+              <button
+                type="button"
+                className={`button ${isHierarchicalCreate ? 'button-primary' : ''}`}
+                style={{ flex: 1, padding: '6px', fontSize: '12px' }}
+                onClick={() => setIsHierarchicalCreate(true)}
+              >
+                🏢 Трёхуровневая структура
+              </button>
+              <button
+                type="button"
+                className={`button ${!isHierarchicalCreate ? 'button-primary' : ''}`}
+                style={{ flex: 1, padding: '6px', fontSize: '12px' }}
+                onClick={() => setIsHierarchicalCreate(false)}
+              >
+                📁 Простая плоская группа
+              </button>
+            </div>
+
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Название группы</label>
-                <input
-                  className="text-input"
-                  style={{ width: '100%' }}
-                  value={newGroupName}
-                  onChange={(e) => setNewGroupName(e.target.value)}
-                  placeholder="Например: Marketing или Серверная"
-                />
-              </div>
+              {isHierarchicalCreate ? (
+                <>
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                    <div>
+                      <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Корпус / Здание</label>
+                      <input
+                        className="text-input"
+                        style={{ width: '100%' }}
+                        value={createBuilding}
+                        onChange={(e) => setCreateBuilding(e.target.value)}
+                        placeholder="Например: Главный корпус"
+                        list="buildings-datalist"
+                      />
+                      <datalist id="buildings-datalist">
+                        {existingBuildingNames.map(b => <option key={b} value={b} />)}
+                      </datalist>
+                    </div>
+
+                    <div>
+                      <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Этаж / Секция</label>
+                      <input
+                        className="text-input"
+                        style={{ width: '100%' }}
+                        value={createFloor}
+                        onChange={(e) => setCreateFloor(e.target.value)}
+                        placeholder="Например: 2 этаж"
+                        list="floors-datalist"
+                      />
+                      <datalist id="floors-datalist">
+                        {existingFloorNames.map(f => <option key={f} value={f} />)}
+                      </datalist>
+                    </div>
+                  </div>
+
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Кабинет / Помещение</label>
+                    <input
+                      className="text-input"
+                      style={{ width: '100%' }}
+                      value={createRoom}
+                      onChange={(e) => setCreateRoom(e.target.value)}
+                      placeholder="Например: Каб. 204 или Бухгалтерия"
+                      autoFocus
+                    />
+                  </div>
+
+                  <div style={{ padding: '8px 12px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)' }}>
+                    📍 <strong>Итоговое имя в системе:</strong>{' '}
+                    <code>{createBuilding || 'Главный корпус'} / {createFloor || '1 этаж'} / {createRoom || 'Кабинет'}</code>
+                  </div>
+                </>
+              ) : (
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Название группы</label>
+                  <input
+                    className="text-input"
+                    style={{ width: '100%' }}
+                    value={newGroupName}
+                    onChange={(e) => setNewGroupName(e.target.value)}
+                    placeholder="Например: Marketing или Серверная"
+                  />
+                </div>
+              )}
 
               <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Описание группы</label>
+                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Описание назначения</label>
                 <input
                   className="text-input"
                   style={{ width: '100%' }}
                   value={newGroupDesc}
                   onChange={(e) => setNewGroupDesc(e.target.value)}
-                  placeholder="Назначение и размещение рабочих станций"
+                  placeholder="Например: Компьютерный класс или Отдел продаж"
                 />
               </div>
 
               <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Цветовая метка группы</label>
+                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Цветовая метка</label>
                 <div className="color-picker">
                   {colorOptions.map(opt => (
                     <div
@@ -11988,7 +12622,7 @@ function Groups({
               </div>
 
               <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Расписание питания по умолчанию</label>
+                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Расписание питания</label>
                 <select className="text-input" style={{ width: '100%' }} value={newGroupSchedule} onChange={(e) => setNewGroupSchedule(e.target.value)}>
                   <option value="Без расписания">Без расписания</option>
                   <option value="Office Working Day">Office Working Day (07:50 - 22:00)</option>
@@ -12001,8 +12635,8 @@ function Groups({
 
             <div className="modal-actions" style={{ marginTop: '20px' }}>
               <Button onClick={() => setShowCreateGroup(false)}>{t('common.cancel')}</Button>
-              <Button primary onClick={handleCreateGroup} disabled={!newGroupName}>
-                Создать группу
+              <Button primary onClick={handleCreateGroup} disabled={isHierarchicalCreate ? !createRoom.trim() : !newGroupName.trim()}>
+                Создать
               </Button>
             </div>
           </div>
