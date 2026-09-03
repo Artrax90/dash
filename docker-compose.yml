@@ -10,6 +10,7 @@ services:
     environment:
       - HOST=0.0.0.0
       - PORT=${PORT:-2301}
+      - SERVER_URL=${SERVER_URL:-}
       - WOL_BROADCAST_IP=255.255.255.255
       - WOL_PORT=9
     volumes:

@@ -1,6 +1,13 @@
 ﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
-if (-not $ServerUrl -or $ServerUrl -eq "__SERVER_URL__") { $ServerUrl = "__SERVER_URL__" }
-if (-not $Token -or $Token -eq "__TOKEN__") { $Token = "__TOKEN__" }
+$embeddedServer = "__SERVER_URL__"
+$embeddedToken = "__TOKEN__"
+
+if ($embeddedServer -and $embeddedServer -notmatch "^_{2}") {
+    $ServerUrl = $embeddedServer
+}
+if ($embeddedToken -and $embeddedToken -notmatch "^_{2}") {
+    $Token = $embeddedToken
+}
 
 if ($args) {
     for ($i = 0; $i -lt $args.Count; $i++) {

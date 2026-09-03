@@ -22,7 +22,7 @@ if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or $ServerUrl -like "*local
     } catch {}
 }
 if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__") {
-    $ServerUrl = "http://localhost:2301"
+    $ServerUrl = ""
 }
 
 # Check Admin elevation
