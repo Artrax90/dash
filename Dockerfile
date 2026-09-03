@@ -53,5 +53,5 @@ ENV PORT=2301
 # Expose web & API port
 EXPOSE 2301
 
-# Run FastAPI production server
-CMD ["sh", "-c", "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-2301}"]
+# Run FastAPI production server with proxy headers enabled
+CMD ["sh", "-c", "python -m uvicorn backend.app.main:app --host 0.0.0.0 --port ${PORT:-2301} --proxy-headers --forwarded-allow-ips='*'"]

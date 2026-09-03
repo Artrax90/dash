@@ -104,6 +104,79 @@ else:
             "docs": "/docs"
         }
 
+def resolve_request_base_url(request: Request, server_url: str = "") -> str:
+    """
+    Resolve the real, publicly reachable base URL of this server.
+    Guarantees that remote clients NEVER receive 'http://localhost' or '127.0.0.1'.
+    """
+    if server_url and server_url.strip():
+        clean = server_url.strip().rstrip("/").replace("/api/v1", "").rstrip("/")
+        if clean and not clean.startswith("http://localhost") and not clean.startswith("http://127.0.0.1"):
+            return clean
+
+    # 1. Check explicit headers forwarded by reverse proxies (Nginx, Traefik, Apache, Docker)
+    for hdr in ["x-forwarded-host", "x-original-host", "x-forwarded-server"]:
+        val = request.headers.get(hdr)
+        if val:
+            host_val = val.split(",")[0].strip()
+            if host_val and not host_val.startswith("localhost") and not host_val.startswith("127.0.0.1") and not host_val.startswith("0.0.0.0"):
+                proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+                return f"{proto}://{host_val}".replace("/api/v1", "").rstrip("/")
+
+    # 2. Check the standard Host header
+    host_header = request.headers.get("host") or ""
+    if host_header:
+        host_val = host_header.split(",")[0].strip()
+        if host_val and not host_val.startswith("localhost") and not host_val.startswith("127.0.0.1") and not host_val.startswith("0.0.0.0"):
+            proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "http"
+            return f"{proto}://{host_val}".replace("/api/v1", "").rstrip("/")
+
+    # 3. Check Referer or Origin headers (e.g. from browser UI)
+    for hdr in ["referer", "origin"]:
+        val = request.headers.get(hdr)
+        if val:
+            import urllib.parse
+            parsed = urllib.parse.urlparse(val)
+            if parsed.netloc and not parsed.netloc.startswith("localhost") and not parsed.netloc.startswith("127.0.0.1"):
+                return f"{parsed.scheme}://{parsed.netloc}".replace("/api/v1", "").rstrip("/")
+
+    # 4. Check tokens_store for any saved token with a real remote serverUrl
+    try:
+        from backend.app.api.v1.agents import tokens_store
+        for t in tokens_store:
+            s_url = t.get("serverUrl", "")
+            if s_url and not s_url.startswith("http://localhost") and not s_url.startswith("http://127.0.0.1"):
+                return s_url.strip().rstrip("/").replace("/api/v1", "").rstrip("/")
+    except Exception:
+        pass
+
+    # 5. Check environment variable (SERVER_URL / WM_SERVER / APP_URL)
+    env_server = os.getenv("SERVER_URL") or os.getenv("WM_SERVER") or os.getenv("APP_URL") or ""
+    if env_server and "localhost" not in env_server and "127.0.0.1" not in env_server:
+        return env_server.strip().rstrip("/").replace("/api/v1", "").rstrip("/")
+
+    # 6. Fallback: Detect the server's local LAN IP communicating with the client
+    client_ip = (request.headers.get("x-forwarded-for") or "").split(",")[0].strip()
+    if not client_ip and request.client:
+        client_ip = request.client.host
+
+    if client_ip and not client_ip.startswith("127."):
+        import socket
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((client_ip, 80))
+            real_ip = s.getsockname()[0]
+            s.close()
+            if real_ip and real_ip not in ["127.0.0.1", "0.0.0.0"] and not real_ip.startswith("172.17.") and not real_ip.startswith("172.18."):
+                port = getattr(settings, "PORT", 2301) or 2301
+                return f"http://{real_ip}:{port}"
+        except Exception:
+            pass
+
+    # 7. Final fallback to request.base_url
+    raw_base = str(request.base_url).rstrip("/")
+    return raw_base.replace("/api/v1", "").rstrip("/")
+
 def get_windows_installer_ps1(base_url: str, token: str) -> str:
     template_path = os.path.join(os.path.dirname(__file__), "..", "..", "agent", "standalone_installer.ps1")
     if not os.path.exists(template_path):
@@ -130,8 +203,7 @@ async def get_windows_batch_installer(request: Request, token: str = "", server_
     Double-clicking this file executes the PowerShell collector in-place with guaranteed output and pause.
     """
     import urllib.parse
-    base_url = server_url or str(request.base_url).rstrip("/")
-    base_url = base_url.replace("/api/v1", "").rstrip("/")
+    base_url = resolve_request_base_url(request, server_url)
     
     effective_token = token or "wm_tok_live_7f8a92b3c4d5e6f7"
 
@@ -191,9 +263,7 @@ async def get_windows_installer_full_ps1_endpoint(request: Request, token: str =
     """
     Serve raw, complete Windows installer script for direct execution.
     """
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
     clean_token = token.split("_0123")[0] if token else "wm_tok_live_7f8a92b3c4d5e6f7"
     content = get_windows_installer_ps1(base_url, clean_token)
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
@@ -210,8 +280,7 @@ async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", 
     Allows one-liner: irm "http://<server>:2301/install.ps1?token=XYZ" | iex
     """
     import urllib.parse
-    base_url = server_url or str(request.base_url).rstrip("/")
-    base_url = base_url.replace("/api/v1", "").rstrip("/")
+    base_url = resolve_request_base_url(request, server_url)
     
     effective_token = token or "wm_tok_live_7f8a92b3c4d5e6f7"
     content = get_windows_installer_ps1(base_url, effective_token)
@@ -252,9 +321,7 @@ async def get_windows_service_script_endpoint(request: Request, server_url: str 
     """
     Serve pure, lightweight Windows Agent Service runtime script for instant OTA update.
     """
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
     content = get_windows_agent_service_ps1(base_url, deviceId, mac)
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
 
@@ -264,9 +331,7 @@ async def get_windows_uninstaller_ps1_endpoint(request: Request, server_url: str
     Serve pure Windows uninstaller script.
     Allows one-liner: irm "http://<server>:2301/uninstall.ps1" | iex
     """
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
     content = get_windows_uninstaller_ps1(base_url)
     headers = {}
     if download:
@@ -280,9 +345,7 @@ async def get_windows_uninstaller_batch(request: Request, server_url: str = ""):
     Serve a single standalone 1-Click Windows Uninstaller (.bat).
     Double-clicking this file cleanly stops the agent process, removes scheduled tasks, and wipes agent files.
     """
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
 
     uninstaller_bat = f"""@echo off
 setlocal
@@ -326,9 +389,7 @@ async def get_linux_installer(request: Request, token: str = "", server_url: str
     Allows one-liner: curl -fsSL "http://<server>:2301/install.sh?token=XYZ" | sudo bash
     """
     import urllib.parse
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
 
     # Auto-detect group from tokens_store if not supplied
     if not group and token:
@@ -370,9 +431,7 @@ async def get_linux_uninstaller_endpoint(request: Request, server_url: str = "",
     Serve pure Linux uninstaller script with dynamic SERVER_URL.
     Allows one-liner: curl -fsSL "http://<server>:2301/uninstall.sh" | sudo bash
     """
-    base_url = server_url or str(request.base_url).rstrip("/")
-    if base_url.endswith("/"):
-        base_url = base_url[:-1]
+    base_url = resolve_request_base_url(request, server_url)
 
     script_path = os.path.join(os.path.dirname(__file__), "..", "..", "agent", "uninstall_linux.sh")
     if not os.path.exists(script_path):

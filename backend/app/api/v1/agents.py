@@ -34,7 +34,7 @@ def get_default_tokens() -> List[Dict[str, Any]]:
             "id": "TOK-01",
             "token": "wm_tok_live_7f8a92b3c4d5e6f7",
             "targetGroup": "Office",
-            "serverUrl": f"http://localhost:{settings.PORT}",
+            "serverUrl": "",
             "createdAt": "2026-08-20 10:00",
             "expiresAt": "2026-09-20 10:00",
             "isReusable": True,

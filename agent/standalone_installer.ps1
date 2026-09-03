@@ -18,6 +18,20 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 if ($ServerUrl) {
     $ServerUrl = $ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
 }
+if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or $ServerUrl -like "*localhost*" -or $ServerUrl -like "*127.0.0.1*") {
+    try {
+        $candidatePaths = @("C:\Program Files\WorkstationManagerAgent\config.json", (Join-Path $env:LOCALAPPDATA "WorkstationManagerAgent\config.json"))
+        foreach ($cp in $candidatePaths) {
+            if (Test-Path $cp) {
+                $prevCfg = Get-Content $cp -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+                if ($prevCfg -and $prevCfg.server_url -and $prevCfg.server_url -notmatch "localhost|127\.0\.0\.1") {
+                    $ServerUrl = $prevCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+                    break
+                }
+            }
+        }
+    } catch {}
+}
 if (-not $Token) { $Token = "__TOKEN__" }
 
 # Installation directory

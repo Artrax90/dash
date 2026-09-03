@@ -1,4 +1,4 @@
-# ==============================================================================
+﻿# ==============================================================================
 # Workstation Manager - Clean Standalone Uninstaller Script (PowerShell Core)
 # ==============================================================================
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
@@ -7,6 +7,20 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Continue'
 
 $ServerUrl = "__SERVER_URL__".TrimEnd('/')
+if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or $ServerUrl -like "*localhost*" -or $ServerUrl -like "*127.0.0.1*") {
+    try {
+        $candidatePaths = @("C:\Program Files\WorkstationManagerAgent\config.json", (Join-Path $env:LOCALAPPDATA "WorkstationManagerAgent\config.json"))
+        foreach ($cp in $candidatePaths) {
+            if (Test-Path $cp) {
+                $prevCfg = Get-Content $cp -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+                if ($prevCfg -and $prevCfg.server_url -and $prevCfg.server_url -notmatch "localhost|127\.0\.0\.1") {
+                    $ServerUrl = $prevCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+                    break
+                }
+            }
+        }
+    } catch {}
+}
 if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__") {
     $ServerUrl = "http://localhost:2301"
 }
