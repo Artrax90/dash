@@ -73,17 +73,151 @@ def save_groups(groups: List[Dict[str, Any]]):
     except Exception as e:
         print(f"Error saving groups: {e}")
 
-# Persistent groups storage
+BUILDINGS_FILE = os.path.join(settings.DATA_DIR, "buildings.json")
+BACKUP_BUILDINGS_FILE = os.path.join(settings.DATA_DIR, "buildings.backup.json")
+
+def generate_building_floors(floors_count: int = 3, has_basement: bool = False, has_sub_floor: bool = False) -> List[str]:
+    res = []
+    if has_sub_floor:
+        res.append("-1 этаж")
+    if has_basement:
+        res.append("Цоколь")
+    count = max(1, min(100, int(floors_count or 1)))
+    for i in range(1, count + 1):
+        res.append(f"{i} этаж")
+    return res
+
+def get_default_buildings() -> List[Dict[str, Any]]:
+    return [
+        {
+            "name": "Главный корпус",
+            "floorsCount": 3,
+            "hasBasement": True,
+            "hasSubFloor": False,
+            "floors": generate_building_floors(3, True, False)
+        },
+        {
+            "name": "Учебный корпус",
+            "floorsCount": 4,
+            "hasBasement": False,
+            "hasSubFloor": False,
+            "floors": generate_building_floors(4, False, False)
+        }
+    ]
+
+def load_buildings() -> List[Dict[str, Any]]:
+    if os.path.exists(BUILDINGS_FILE):
+        try:
+            with open(BUILDINGS_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, list) and len(data) > 0:
+                    return data
+        except Exception:
+            pass
+    if os.path.exists(BACKUP_BUILDINGS_FILE):
+        try:
+            with open(BACKUP_BUILDINGS_FILE, "r", encoding="utf-8") as bf:
+                data = json.load(bf)
+                if isinstance(data, list) and len(data) > 0:
+                    save_buildings(data)
+                    return data
+        except Exception:
+            pass
+    defaults = get_default_buildings()
+    save_buildings(defaults)
+    return defaults
+
+def save_buildings(buildings: List[Dict[str, Any]]):
+    try:
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        tmp_file = BUILDINGS_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(buildings, f, ensure_ascii=False, indent=2)
+        if os.path.exists(BUILDINGS_FILE):
+            os.replace(tmp_file, BUILDINGS_FILE)
+        else:
+            os.rename(tmp_file, BUILDINGS_FILE)
+        if buildings:
+            try:
+                with open(BACKUP_BUILDINGS_FILE, "w", encoding="utf-8") as bf:
+                    json.dump(buildings, bf, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+    except Exception as e:
+        print(f"Error saving buildings: {e}")
+
+# Persistent groups and buildings storage
 groups_store: List[Dict[str, Any]] = load_groups()
+buildings_store: List[Dict[str, Any]] = load_buildings()
 
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_groups():
     return groups_store
 
+@router.get("/buildings", response_model=List[Dict[str, Any]])
+async def list_buildings():
+    # Sync with any new buildings mentioned in groups
+    existing = {b["name"].lower() for b in buildings_store}
+    changed = False
+    for g in groups_store:
+        b_name = g.get("building")
+        if not b_name and "/" in g.get("name", ""):
+            b_name = g["name"].split("/")[0].strip()
+        if b_name and b_name != "Общие группы" and b_name.lower() not in existing:
+            new_item = {
+                "name": b_name,
+                "floorsCount": 3,
+                "hasBasement": False,
+                "hasSubFloor": False,
+                "floors": generate_building_floors(3, False, False)
+            }
+            buildings_store.append(new_item)
+            existing.add(b_name.lower())
+            changed = True
+    if changed:
+        save_buildings(buildings_store)
+    return buildings_store
+
+@router.post("/buildings", response_model=Dict[str, Any])
+async def create_or_update_building(payload: Dict[str, Any]):
+    name = str(payload.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="Название корпуса обязательно")
+    
+    floors_count = int(payload.get("floorsCount") or 3)
+    has_basement = bool(payload.get("hasBasement", False))
+    has_sub_floor = bool(payload.get("hasSubFloor", False))
+    floors = payload.get("floors") or generate_building_floors(floors_count, has_basement, has_sub_floor)
+    
+    item = {
+        "name": name,
+        "floorsCount": floors_count,
+        "hasBasement": has_basement,
+        "hasSubFloor": has_sub_floor,
+        "floors": floors
+    }
+    
+    idx = next((i for i, b in enumerate(buildings_store) if b["name"].lower() == name.lower()), -1)
+    if idx >= 0:
+        buildings_store[idx] = item
+    else:
+        buildings_store.append(item)
+    save_buildings(buildings_store)
+    return item
+
 @router.get("/hierarchy")
 async def get_groups_hierarchy():
     buildings_map: Dict[str, Dict[str, Any]] = {}
     
+    # 1. Pre-populate from configured buildings so all floors exist
+    for b in buildings_store:
+        b_name = b["name"]
+        buildings_map[b_name] = {
+            "name": b_name,
+            "floors": {f_name: {"name": f_name, "building": b_name, "rooms": []} for f_name in b.get("floors", [])}
+        }
+
+    # 2. Populate rooms from groups_store
     for g in groups_store:
         b = str(g.get("building") or "").strip()
         f = str(g.get("floor") or "").strip()

@@ -860,6 +860,34 @@ export const groupsApi = {
       if (res.ok) return true;
     } catch {}
     return true;
+  },
+  getHierarchy: async (): Promise<any[]> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/hierarchy`);
+      if (res.ok) return await res.json();
+    } catch {}
+    return [];
+  },
+  getBuildings: async (): Promise<any[]> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/buildings`);
+      if (res.ok) return await res.json();
+    } catch {}
+    return [
+      { name: 'Главный корпус', floorsCount: 3, hasBasement: true, hasSubFloor: false, floors: ['Цоколь', '1 этаж', '2 этаж', '3 этаж'] },
+      { name: 'Учебный корпус', floorsCount: 4, hasBasement: false, hasSubFloor: false, floors: ['1 этаж', '2 этаж', '3 этаж', '4 этаж'] }
+    ];
+  },
+  saveBuilding: async (payload: any): Promise<any> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/buildings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload)
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return payload;
   }
 };
 

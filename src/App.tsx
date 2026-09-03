@@ -90,6 +90,25 @@ export function formatDeviceLastSeen(lastSeen?: string, lastSeenIso?: string, po
   return lastSeen && lastSeen !== 'Только что' && lastSeen !== 'В сети' ? lastSeen : 'Не в сети';
 }
 
+export interface BuildingConfig {
+  name: string;
+  floorsCount: number;
+  hasBasement: boolean;
+  hasSubFloor: boolean;
+  floors: string[];
+}
+
+export function generateBuildingFloors(floorsCount: number = 3, hasBasement: boolean = false, hasSubFloor: boolean = false): string[] {
+  const res: string[] = [];
+  if (hasSubFloor) res.push('-1 этаж');
+  if (hasBasement) res.push('Цоколь');
+  const count = Math.max(1, Math.min(100, Math.floor(floorsCount || 1)));
+  for (let i = 1; i <= count; i++) {
+    res.push(`${i} этаж`);
+  }
+  return res;
+}
+
 class ErrorBoundary extends Component<{ children: ReactNode }, { hasError: boolean; error?: Error }> {
   constructor(props: { children: ReactNode }) {
     super(props);
@@ -9488,9 +9507,16 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
   const [targetGroup, setTargetGroup] = useState('Office');
   const [customGroupInput, setCustomGroupInput] = useState('');
   const [tokenScopeMode, setTokenScopeMode] = useState<'room' | 'building' | 'flat'>('room');
-  const [tokenBuilding, setTokenBuilding] = useState('Главный корпус');
-  const [tokenFloor, setTokenFloor] = useState('1 этаж');
-  const [tokenRoom, setTokenRoom] = useState('');
+  
+  // Hierarchical Token Building / Floor / Room state
+  const [hierarchyData, setHierarchyData] = useState<any[]>([]);
+  const [buildingConfigs, setBuildingConfigs] = useState<BuildingConfig[]>([]);
+  const [tokenBuilding, setTokenBuilding] = useState<string>('');
+  const [tokenFloor, setTokenFloor] = useState<string>('1 этаж');
+  const [tokenRoom, setTokenRoom] = useState<string>('');
+  const [isCustomTokenRoom, setIsCustomTokenRoom] = useState<boolean>(false);
+  const [customTokenRoomInput, setCustomTokenRoomInput] = useState<string>('');
+
   const [expiryOption, setExpiryOption] = useState('30d');
   const [customExpiryDate, setCustomExpiryDate] = useState('');
   const [maxUsesOption, setMaxUsesOption] = useState('unlimited');
@@ -9538,6 +9564,12 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     agentsApi.getBuilds().then(setBuilds);
     agentsApi.getVersionInfo().then(setVersionInfo);
     agentsApi.getUpdateLogs().then(setUpdateLogs);
+    groupsApi.getHierarchy().then(h => {
+      if (h && h.length > 0) setHierarchyData(h);
+    });
+    groupsApi.getBuildings().then(b => {
+      if (b && b.length > 0) setBuildingConfigs(b);
+    });
     groupsApi.list().then(list => {
       if (list && list.length > 0) {
         setAvailableGroups(prev => Array.from(new Set([...prev, ...list.map(g => g.name)])));
@@ -9612,6 +9644,44 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     notify('Команда скопирована в буфер обмена!');
   };
 
+  const availableBuildingsForToken = useMemo(() => {
+    const list: string[] = [];
+    buildingConfigs.forEach(b => {
+      if (b.name && !list.includes(b.name)) list.push(b.name);
+    });
+    hierarchyData.forEach(b => {
+      if (b.name && b.name !== 'Общие группы' && !list.includes(b.name)) list.push(b.name);
+    });
+    return list.length > 0 ? list : ['Главный корпус', 'Учебный корпус'];
+  }, [buildingConfigs, hierarchyData]);
+
+  const activeTokenBuilding = tokenBuilding || availableBuildingsForToken[0] || 'Главный корпус';
+
+  const availableFloorsForToken = useMemo(() => {
+    const bConfig = buildingConfigs.find(b => b.name.toLowerCase() === activeTokenBuilding.toLowerCase());
+    if (bConfig && bConfig.floors && bConfig.floors.length > 0) {
+      return bConfig.floors;
+    }
+    const bHier = hierarchyData.find(b => b.name.toLowerCase() === activeTokenBuilding.toLowerCase());
+    if (bHier && bHier.floors && bHier.floors.length > 0) {
+      return bHier.floors.map((f: any) => f.name);
+    }
+    return generateBuildingFloors(3, false, false);
+  }, [buildingConfigs, hierarchyData, activeTokenBuilding]);
+
+  const activeTokenFloor = tokenFloor || availableFloorsForToken[0] || '1 этаж';
+
+  const availableRoomsForToken = useMemo(() => {
+    const bHier = hierarchyData.find(b => b.name.toLowerCase() === activeTokenBuilding.toLowerCase());
+    if (bHier && bHier.floors) {
+      const fHier = bHier.floors.find((f: any) => f.name.toLowerCase() === activeTokenFloor.toLowerCase());
+      if (fHier && fHier.rooms) {
+        return fHier.rooms.map((r: any) => r.name);
+      }
+    }
+    return [];
+  }, [hierarchyData, activeTokenBuilding, activeTokenFloor]);
+
   const handleGenerateToken = async () => {
     let expStr: string | undefined = undefined;
     if (expiryOption === 'custom' && customExpiryDate) {
@@ -9626,12 +9696,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     let rm = '';
 
     if (tokenScopeMode === 'building') {
-      bld = tokenBuilding.trim() || 'Главный корпус';
+      bld = activeTokenBuilding;
       finalGroup = bld;
     } else if (tokenScopeMode === 'room') {
-      bld = tokenBuilding.trim() || 'Главный корпус';
-      flr = tokenFloor.trim() || '1 этаж';
-      rm = tokenRoom.trim() || 'Каб. 101';
+      bld = activeTokenBuilding;
+      flr = activeTokenFloor;
+      rm = isCustomTokenRoom ? (customTokenRoomInput.trim() || 'Каб. 101') : (tokenRoom || availableRoomsForToken[0] || 'Каб. 101');
+      if (!rm) rm = 'Каб. 101';
       finalGroup = `${bld} / ${flr} / ${rm}`;
     } else {
       finalGroup = targetGroup === '__custom__' ? (customGroupInput.trim() || 'Office') : targetGroup;
@@ -9662,6 +9733,8 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     setCustomExpiryDate('');
     setCustomGroupInput('');
     setTokenRoom('');
+    setIsCustomTokenRoom(false);
+    setCustomTokenRoomInput('');
     setMaxUsesOption('unlimited');
   };
 
@@ -10398,17 +10471,17 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
       {/* CREATE TOKEN MODAL */}
       {showTokenModal && (
         <div className="modal-backdrop" onClick={() => setShowTokenModal(false)}>
-          <div className="confirm-modal" style={{ maxWidth: '460px' }} onClick={(e) => e.stopPropagation()}>
+          <div className="confirm-modal" style={{ maxWidth: '540px', width: '100%', textAlign: 'left' }} onClick={(e) => e.stopPropagation()}>
             <div className="confirm-icon" style={{ background: 'var(--blue-soft)', color: 'var(--blue)' }}><Key size={23} /></div>
             <h2>Генерация токена регистрации</h2>
             <p>Новый токен позволяет фоновому агенту автоматически зарегистрировать станцию на сервере {serverAddress}.</p>
             
             {/* Token Target Scope Mode */}
-            <div style={{ display: 'flex', gap: '6px', marginBottom: '14px', padding: '3px', background: 'var(--bg)', borderRadius: '8px', border: '1px solid var(--line)' }}>
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '16px', padding: '3px', background: 'var(--bg)', borderRadius: '8px', border: '1px solid var(--line)' }}>
               <button
                 type="button"
                 className={`button ${tokenScopeMode === 'room' ? 'button-primary' : ''}`}
-                style={{ flex: 1, padding: '5px', fontSize: '11px' }}
+                style={{ flex: 1, padding: '6px', fontSize: '12px' }}
                 onClick={() => setTokenScopeMode('room')}
               >
                 🚪 На кабинет
@@ -10416,7 +10489,7 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
               <button
                 type="button"
                 className={`button ${tokenScopeMode === 'building' ? 'button-primary' : ''}`}
-                style={{ flex: 1, padding: '5px', fontSize: '11px' }}
+                style={{ flex: 1, padding: '6px', fontSize: '12px' }}
                 onClick={() => setTokenScopeMode('building')}
               >
                 🏢 На корпус
@@ -10424,7 +10497,7 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
               <button
                 type="button"
                 className={`button ${tokenScopeMode === 'flat' ? 'button-primary' : ''}`}
-                style={{ flex: 1, padding: '5px', fontSize: '11px' }}
+                style={{ flex: 1, padding: '6px', fontSize: '12px' }}
                 onClick={() => setTokenScopeMode('flat')}
               >
                 📁 Простая группа
@@ -10432,60 +10505,120 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
             </div>
 
             {tokenScopeMode === 'room' ? (
-              <>
-                <div className="setting-row" style={{ padding: '6px 0' }}>
-                  <div><strong>Корпус и этаж</strong></div>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '8px', width: '60%' }}>
-                    <input
-                      className="text-input"
-                      value={tokenBuilding}
-                      onChange={(e) => setTokenBuilding(e.target.value)}
-                      placeholder="Главный корпус"
-                    />
-                    <input
-                      className="text-input"
-                      value={tokenFloor}
-                      onChange={(e) => setTokenFloor(e.target.value)}
-                      placeholder="1 этаж"
-                    />
-                  </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '14px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                    Корпус / Здание
+                  </label>
+                  <select
+                    className="text-input"
+                    style={{ width: '100%' }}
+                    value={activeTokenBuilding}
+                    onChange={(e) => {
+                      setTokenBuilding(e.target.value);
+                      setIsCustomTokenRoom(false);
+                      setCustomTokenRoomInput('');
+                    }}
+                  >
+                    {availableBuildingsForToken.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
                 </div>
-                <div className="setting-row" style={{ padding: '6px 0' }}>
-                  <div><strong>Кабинет / Помещение</strong></div>
-                  <div style={{ width: '60%' }}>
-                    <input
-                      className="text-input"
-                      style={{ width: '100%' }}
-                      value={tokenRoom}
-                      onChange={(e) => setTokenRoom(e.target.value)}
-                      placeholder="Например: Каб. 204 или Бухгалтерия"
-                      autoFocus
-                    />
-                  </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                    Этаж / Секция
+                  </label>
+                  <select
+                    className="text-input"
+                    style={{ width: '100%' }}
+                    value={activeTokenFloor}
+                    onChange={(e) => {
+                      setTokenFloor(e.target.value);
+                      setIsCustomTokenRoom(false);
+                      setCustomTokenRoomInput('');
+                    }}
+                  >
+                    {availableFloorsForToken.map(f => (
+                      <option key={f} value={f}>{f}</option>
+                    ))}
+                  </select>
                 </div>
-                <div style={{ padding: '6px 10px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)', marginBottom: '8px' }}>
-                  📍 <strong>Назначение ПК:</strong> <code>{tokenBuilding || 'Главный корпус'} / {tokenFloor || '1 этаж'} / {tokenRoom || 'Кабинет'}</code>
+
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                    Кабинет / Помещение
+                  </label>
+                  {availableRoomsForToken.length > 0 && !isCustomTokenRoom ? (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <select
+                        className="text-input"
+                        style={{ flex: 1 }}
+                        value={tokenRoom || availableRoomsForToken[0]}
+                        onChange={(e) => {
+                          if (e.target.value === '__custom__') {
+                            setIsCustomTokenRoom(true);
+                            setTokenRoom('');
+                          } else {
+                            setTokenRoom(e.target.value);
+                          }
+                        }}
+                      >
+                        {availableRoomsForToken.map((r: string) => (
+                          <option key={r} value={r}>{r}</option>
+                        ))}
+                        <option value="__custom__">+ Ввести новый кабинет...</option>
+                      </select>
+                      <Button onClick={() => setIsCustomTokenRoom(true)}>+ Новый</Button>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <input
+                        className="text-input"
+                        style={{ flex: 1 }}
+                        value={customTokenRoomInput || tokenRoom}
+                        onChange={(e) => {
+                          setCustomTokenRoomInput(e.target.value);
+                          setTokenRoom(e.target.value);
+                        }}
+                        placeholder="Например: Каб. 204 или Бухгалтерия"
+                        autoFocus
+                      />
+                      {availableRoomsForToken.length > 0 && (
+                        <Button onClick={() => { setIsCustomTokenRoom(false); setTokenRoom(availableRoomsForToken[0]); }}>
+                          Выбрать из списка
+                        </Button>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </>
+
+                <div style={{ padding: '8px 12px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)' }}>
+                  📍 <strong>Назначение ПК:</strong> <code>{activeTokenBuilding} / {activeTokenFloor} / {(isCustomTokenRoom ? (customTokenRoomInput || 'Кабинет') : (tokenRoom || availableRoomsForToken[0] || 'Кабинет'))}</code>
+                </div>
+              </div>
             ) : tokenScopeMode === 'building' ? (
-              <>
-                <div className="setting-row" style={{ padding: '6px 0' }}>
-                  <div><strong>Корпус / Здание</strong></div>
-                  <div style={{ width: '60%' }}>
-                    <input
-                      className="text-input"
-                      style={{ width: '100%' }}
-                      value={tokenBuilding}
-                      onChange={(e) => setTokenBuilding(e.target.value)}
-                      placeholder="Главный корпус"
-                      autoFocus
-                    />
-                  </div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '14px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                    Корпус / Здание
+                  </label>
+                  <select
+                    className="text-input"
+                    style={{ width: '100%' }}
+                    value={activeTokenBuilding}
+                    onChange={(e) => setTokenBuilding(e.target.value)}
+                  >
+                    {availableBuildingsForToken.map(b => (
+                      <option key={b} value={b}>{b}</option>
+                    ))}
+                  </select>
                 </div>
-                <div style={{ padding: '6px 10px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)', marginBottom: '8px' }}>
-                  🏢 <strong>Назначение ПК:</strong> Все ПК с этим токеном будут привязаны к корпусу <code>{tokenBuilding || 'Главный корпус'}</code> в категорию <code>Нераспределенные</code>.
+                <div style={{ padding: '8px 12px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)' }}>
+                  🏢 <strong>Назначение ПК:</strong> Все ПК с этим токеном будут зачислены в корпус <code>{activeTokenBuilding}</code> в категорию <code>Нераспределенные</code>.
                 </div>
-              </>
+              </div>
             ) : (
               <div className="setting-row" style={{ padding: '8px 0' }}>
                 <div><strong>Рабочая группа</strong></div>
@@ -11513,10 +11646,21 @@ function Groups({
   const [drillFloor, setDrillFloor] = useState<string | null>(null);
   const [drillSearch, setDrillSearch] = useState<string>('');
 
+  // Building Configurations (loaded from backend)
+  const [buildingConfigs, setBuildingConfigs] = useState<BuildingConfig[]>([]);
+
   // 3-Level Creation Form State
   const [isHierarchicalCreate, setIsHierarchicalCreate] = useState<boolean>(true);
-  const [createBuilding, setCreateBuilding] = useState<string>('Главный корпус');
-  const [createFloor, setCreateFloor] = useState<string>('1 этаж');
+  const [selectedBuildingOption, setSelectedBuildingOption] = useState<string>('Главный корпус');
+  const [isNewBuildingMode, setIsNewBuildingMode] = useState<boolean>(false);
+  const [newBuildingNameInput, setNewBuildingNameInput] = useState<string>('');
+  const [newBuildingFloorsCount, setNewBuildingFloorsCount] = useState<number>(3);
+  const [newBuildingHasBasement, setNewBuildingHasBasement] = useState<boolean>(false);
+  const [newBuildingHasSubFloor, setNewBuildingHasSubFloor] = useState<boolean>(false);
+
+  const [selectedFloorOption, setSelectedFloorOption] = useState<string>('1 этаж');
+  const [isCustomFloorMode, setIsCustomFloorMode] = useState<boolean>(false);
+  const [customFloorInput, setCustomFloorInput] = useState<string>('');
   const [createRoom, setCreateRoom] = useState<string>('');
 
   const parseGroupHierarchy = useCallback((gName: string, bld?: string, flr?: string, rm?: string) => {
@@ -11559,6 +11703,9 @@ function Groups({
           room: (g as any).room || ''
         } as any)));
       }
+    });
+    groupsApi.getBuildings().then(blds => {
+      if (blds && blds.length > 0) setBuildingConfigs(blds);
     });
     devicesApi.list().then((devList) => {
       setDevices(devList);
@@ -11609,19 +11756,36 @@ function Groups({
     return buildingsMap;
   }, [visibleGroups, parseGroupHierarchy]);
 
-  const existingBuildingNames = useMemo(() => {
-    const names = Object.keys(hierarchyData).filter(b => b !== 'Общие группы');
-    return names.length > 0 ? names : ['Главный корпус', 'Учебный корпус', 'Филиал'];
-  }, [hierarchyData]);
-
-  const existingFloorNames = useMemo(() => {
-    const set = new Set<string>();
-    Object.values(hierarchyData).forEach(b => {
-      Object.keys(b.floors).forEach(f => set.add(f));
+  const availableBuildingOptions = useMemo(() => {
+    const list: string[] = [];
+    buildingConfigs.forEach(b => {
+      if (b.name && !list.includes(b.name)) list.push(b.name);
     });
-    const list = Array.from(set);
-    return list.length > 0 ? list : ['1 этаж', '2 этаж', '3 этаж', 'Цоколь'];
-  }, [hierarchyData]);
+    Object.keys(hierarchyData).forEach(bName => {
+      if (bName && bName !== 'Общие группы' && !list.includes(bName)) list.push(bName);
+    });
+    return list.length > 0 ? list : ['Главный корпус', 'Учебный корпус'];
+  }, [buildingConfigs, hierarchyData]);
+
+  const activeBuildingName = isNewBuildingMode
+    ? newBuildingNameInput.trim()
+    : (selectedBuildingOption || availableBuildingOptions[0] || 'Главный корпус');
+
+  const availableFloorsForActiveBuilding = useMemo(() => {
+    if (isNewBuildingMode) {
+      return generateBuildingFloors(newBuildingFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor);
+    }
+    const found = buildingConfigs.find(b => b.name.toLowerCase() === activeBuildingName.toLowerCase());
+    if (found && found.floors && found.floors.length > 0) {
+      return found.floors;
+    }
+    const fromHierarchy = hierarchyData[activeBuildingName]?.floors;
+    if (fromHierarchy) {
+      const keys = Object.keys(fromHierarchy);
+      if (keys.length > 0) return keys;
+    }
+    return generateBuildingFloors(3, false, false);
+  }, [isNewBuildingMode, newBuildingFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor, buildingConfigs, activeBuildingName, hierarchyData]);
 
   const getBuildingStats = useCallback((bldName: string) => {
     const bld = hierarchyData[bldName];
@@ -11680,8 +11844,32 @@ function Groups({
     let rmVal = '';
 
     if (isHierarchicalCreate) {
-      bldVal = createBuilding.trim() || 'Главный корпус';
-      flrVal = createFloor.trim() || '1 этаж';
+      if (isNewBuildingMode) {
+        bldVal = newBuildingNameInput.trim();
+        if (!bldVal) {
+          notify('Пожалуйста, укажите название нового корпуса');
+          return;
+        }
+        const genFloors = generateBuildingFloors(newBuildingFloorsCount, newBuildingHasBasement, newBuildingHasSubFloor);
+        await groupsApi.saveBuilding({
+          name: bldVal,
+          floorsCount: newBuildingFloorsCount,
+          hasBasement: newBuildingHasBasement,
+          hasSubFloor: newBuildingHasSubFloor,
+          floors: genFloors
+        });
+        setBuildingConfigs(prev => [...prev.filter(b => b.name.toLowerCase() !== bldVal.toLowerCase()), {
+          name: bldVal,
+          floorsCount: newBuildingFloorsCount,
+          hasBasement: newBuildingHasBasement,
+          hasSubFloor: newBuildingHasSubFloor,
+          floors: genFloors
+        }]);
+      } else {
+        bldVal = selectedBuildingOption.trim() || availableBuildingOptions[0] || 'Главный корпус';
+      }
+
+      flrVal = (isCustomFloorMode ? customFloorInput.trim() : (selectedFloorOption || availableFloorsForActiveBuilding[0] || '1 этаж')).trim();
       rmVal = createRoom.trim() || newGroupName.trim();
       if (!rmVal) {
         notify('Пожалуйста, укажите название или номер кабинета');
@@ -11715,6 +11903,10 @@ function Groups({
     setCreateRoom('');
     setNewGroupDesc('');
     setNewGroupColor('blue');
+    setIsNewBuildingMode(false);
+    setNewBuildingNameInput('');
+    setIsCustomFloorMode(false);
+    setCustomFloorInput('');
     loadData();
   };
 
@@ -12532,53 +12724,139 @@ function Groups({
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               {isHierarchicalCreate ? (
                 <>
-                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Корпус / Здание</label>
-                      <input
-                        className="text-input"
-                        style={{ width: '100%' }}
-                        value={createBuilding}
-                        onChange={(e) => setCreateBuilding(e.target.value)}
-                        placeholder="Например: Главный корпус"
-                        list="buildings-datalist"
-                      />
-                      <datalist id="buildings-datalist">
-                        {existingBuildingNames.map(b => <option key={b} value={b} />)}
-                      </datalist>
-                    </div>
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                      Корпус / Здание
+                    </label>
+                    <select
+                      className="text-input"
+                      style={{ width: '100%' }}
+                      value={isNewBuildingMode ? '__new__' : selectedBuildingOption}
+                      onChange={(e) => {
+                        if (e.target.value === '__new__') {
+                          setIsNewBuildingMode(true);
+                        } else {
+                          setIsNewBuildingMode(false);
+                          setSelectedBuildingOption(e.target.value);
+                          setIsCustomFloorMode(false);
+                        }
+                      }}
+                    >
+                      {availableBuildingOptions.map(b => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                      <option value="__new__">+ Создать новый корпус...</option>
+                    </select>
+                  </div>
 
-                    <div>
-                      <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Этаж / Секция</label>
-                      <input
+                  {isNewBuildingMode && (
+                    <div style={{ padding: '12px', background: 'var(--bg)', borderRadius: '8px', border: '1px dashed var(--line)', display: 'flex', flexDirection: 'column', gap: '10px' }}>
+                      <div>
+                        <label style={{ fontSize: '11px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                          Название нового корпуса
+                        </label>
+                        <input
+                          className="text-input"
+                          style={{ width: '100%' }}
+                          value={newBuildingNameInput}
+                          onChange={(e) => setNewBuildingNameInput(e.target.value)}
+                          placeholder="Например: Инженерный корпус"
+                          autoFocus
+                        />
+                      </div>
+
+                      <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                        <div>
+                          <label style={{ fontSize: '11px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>
+                            Количество этажей
+                          </label>
+                          <input
+                            type="number"
+                            min={1}
+                            max={50}
+                            className="text-input"
+                            style={{ width: '110px' }}
+                            value={newBuildingFloorsCount}
+                            onChange={(e) => setNewBuildingFloorsCount(Math.max(1, parseInt(e.target.value) || 1))}
+                          />
+                        </div>
+
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', paddingTop: '10px' }}>
+                          <label style={{ fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={newBuildingHasBasement}
+                              onChange={(e) => setNewBuildingHasBasement(e.target.checked)}
+                            />
+                            Цокольный этаж (Цоколь)
+                          </label>
+                          <label style={{ fontSize: '11px', display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer' }}>
+                            <input
+                              type="checkbox"
+                              checked={newBuildingHasSubFloor}
+                              onChange={(e) => setNewBuildingHasSubFloor(e.target.checked)}
+                            />
+                            Подвальный этаж (-1 этаж)
+                          </label>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                      Этаж / Секция
+                    </label>
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <select
                         className="text-input"
-                        style={{ width: '100%' }}
-                        value={createFloor}
-                        onChange={(e) => setCreateFloor(e.target.value)}
-                        placeholder="Например: 2 этаж"
-                        list="floors-datalist"
-                      />
-                      <datalist id="floors-datalist">
-                        {existingFloorNames.map(f => <option key={f} value={f} />)}
-                      </datalist>
+                        style={{ flex: 1 }}
+                        value={isCustomFloorMode ? '__custom__' : (selectedFloorOption || availableFloorsForActiveBuilding[0])}
+                        onChange={(e) => {
+                          if (e.target.value === '__custom__') {
+                            setIsCustomFloorMode(true);
+                          } else {
+                            setIsCustomFloorMode(false);
+                            setSelectedFloorOption(e.target.value);
+                          }
+                        }}
+                      >
+                        {availableFloorsForActiveBuilding.map(f => (
+                          <option key={f} value={f}>{f}</option>
+                        ))}
+                        <option value="__custom__">+ Другой этаж...</option>
+                      </select>
+                      {isCustomFloorMode && (
+                        <input
+                          className="text-input"
+                          style={{ flex: 1 }}
+                          value={customFloorInput}
+                          onChange={(e) => setCustomFloorInput(e.target.value)}
+                          placeholder="Например: Мансарда"
+                          autoFocus
+                        />
+                      )}
                     </div>
                   </div>
 
                   <div>
-                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Кабинет / Помещение</label>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>
+                      Кабинет / Помещение
+                    </label>
                     <input
                       className="text-input"
                       style={{ width: '100%' }}
                       value={createRoom}
                       onChange={(e) => setCreateRoom(e.target.value)}
                       placeholder="Например: Каб. 204 или Бухгалтерия"
-                      autoFocus
                     />
                   </div>
 
                   <div style={{ padding: '8px 12px', background: 'var(--blue-soft)', borderRadius: '6px', fontSize: '11px', color: 'var(--blue)' }}>
                     📍 <strong>Итоговое имя в системе:</strong>{' '}
-                    <code>{createBuilding || 'Главный корпус'} / {createFloor || '1 этаж'} / {createRoom || 'Кабинет'}</code>
+                    <code>
+                      {(isNewBuildingMode ? (newBuildingNameInput || 'Новый корпус') : activeBuildingName)} / {(isCustomFloorMode ? (customFloorInput || 'Этаж') : (selectedFloorOption || availableFloorsForActiveBuilding[0] || '1 этаж'))} / {createRoom || 'Кабинет'}
+                    </code>
                   </div>
                 </>
               ) : (
@@ -12635,7 +12913,7 @@ function Groups({
 
             <div className="modal-actions" style={{ marginTop: '20px' }}>
               <Button onClick={() => setShowCreateGroup(false)}>{t('common.cancel')}</Button>
-              <Button primary onClick={handleCreateGroup} disabled={isHierarchicalCreate ? !createRoom.trim() : !newGroupName.trim()}>
+              <Button primary onClick={handleCreateGroup} disabled={isHierarchicalCreate ? (isNewBuildingMode ? (!newBuildingNameInput.trim() || !createRoom.trim()) : !createRoom.trim()) : !newGroupName.trim()}>
                 Создать
               </Button>
             </div>
