@@ -206,32 +206,48 @@ class AlertEngine:
                     except Exception:
                         pass
 
+                    net_parts = []
+                    if ip:
+                        net_parts.append(f"IP <code>{ip}</code>")
+                    if mac:
+                        net_parts.append(f"MAC <code>{mac}</code>")
+                    net_str = f"• 🌐 <b>Сеть:</b> {' | '.join(net_parts)}\n" if net_parts else ""
+
                     text = (
                         f"{icon} <b>{header}</b> [{sev}]\n\n"
                         f"🖥 <b>Устройство:</b> <code>{dev_name}</code>\n"
                         f"📝 <b>Событие:</b> {desc}\n\n"
                         f"<blockquote expandable>📋 <b>Технические детали инцидента:</b>\n"
                         + (f"• 📍 <b>Локация:</b> {loc_str}\n" if loc_str else "")
-                        + (f"• 🌐 <b>Сеть:</b> IP <code>{ip}</code> | MAC <code>{mac}</code>\n" if (ip or mac) else "")
+                        + net_str
                         + f"• 🏷 <b>Категория:</b> {alert.get('category', 'Hardware')}\n"
                         + f"• ⏱ <b>Время:</b> <i>{now_str}</i>"
                         + (f"\n• 👥 <b>Ответственные:</b> {' '.join(mentions[:6])}" if mentions else "")
                         + "</blockquote>"
                     )
 
-                    # Build interactive inline action buttons (clean semi-transparent style)
+                    # Build interactive inline action buttons (clean semi-transparent style, max 2 buttons per row to prevent text cutoff)
                     inline_keyboard = []
                     if dev_id:
-                        act_row = []
-                        if a_type in ["OFFLINE", "AGENT_DISCONNECTED", "POWER_FAILED", "EMERGENCY_SHUTDOWN"]:
-                            act_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"})
-                        elif a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT"]:
-                            act_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"})
-                            act_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"})
+                        is_dev_online = False
+                        if dev_obj:
+                            is_dev_online = (dev_obj.get("powerStatus") == "On" or dev_obj.get("isOnline") is True)
+                        if not is_dev_online and a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT", "USB_INSERTED", "USB_REMOVED"]:
+                            is_dev_online = True
+
+                        if is_dev_online:
+                            # 2 buttons row: full words 'Выключить' and 'Перезагрузить' without '...' cutoff
+                            inline_keyboard.append([
+                                {"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"},
+                                {"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"}
+                            ])
                         else:
-                            act_row.append({"text": "⚡️ WoL", "callback_data": f"do:wake:{dev_id}"})
-                        act_row.append({"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}"})
-                        inline_keyboard.append(act_row)
+                            # Single clean WoL button
+                            inline_keyboard.append([
+                                {"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"}
+                            ])
+
+                        # Card & controls navigation button
                         inline_keyboard.append([{"text": f"🖥 Управление {dev_name}", "callback_data": f"dev:{dev_id}"}])
 
                     # Select message effect: Flame 🔥 for critical/failure, Confetti 🎉 for recovery/online
