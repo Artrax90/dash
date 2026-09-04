@@ -90,8 +90,11 @@ def log_device_power_event(
     status: str = "Success",
     initiator: str = "Оператор",
     source: str = "MANUAL",
-    device_name: Optional[str] = None
+    device_name: Optional[str] = None,
+    **kwargs
 ):
+    if not device_name and "target_name" in kwargs:
+        device_name = kwargs["target_name"]
     import urllib.parse
     if initiator and "%" in initiator:
         try:
@@ -127,6 +130,15 @@ def log_device_power_event(
             title = "Локальный переход в спящий режим"
         else:
             title = f"Локальное событие питания: {action}"
+    elif str(source).upper() in ["TELEGRAM", "TG", "ТЕЛЕГРАМ", "ТЕЛЕГРАМ БОТ"]:
+        if act_upper == "WAKE":
+            title = "Включение через Telegram (WoL)"
+        elif act_upper in ["SHUTDOWN", "POWEROFF"]:
+            title = "Выключение через Telegram (Shutdown)"
+        elif act_upper in ["REBOOT", "RESTART"]:
+            title = "Перезагрузка через Telegram (Reboot)"
+        else:
+            title = f"Команда Telegram: {action}"
     else:
         # Remote admin panel operations
         if act_upper == "WAKE":

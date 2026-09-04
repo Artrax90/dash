@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from backend.app.api.v1.users import load_users
 from backend.app.api.v1.audit import record_audit
+from backend.app.api.v1.devices import log_device_power_event
 from backend.app.core.scope import is_device_in_scope
 
 from backend.app.core.config import settings
@@ -48,6 +49,27 @@ def get_httpx_client(cfg: Dict[str, Any] = None, timeout: float = 8.0) -> httpx.
     if proxy:
         return httpx.AsyncClient(proxy=proxy, timeout=timeout, follow_redirects=True)
     return httpx.AsyncClient(timeout=timeout, follow_redirects=True)
+
+BOT_COMMANDS = [
+    {"command": "menu", "description": "📱 Главное меню управления"},
+    {"command": "status", "description": "📊 Сводка парка и состояние ПК"},
+    {"command": "devices", "description": "🖥 Список компьютеров"},
+    {"command": "help", "description": "ℹ️ Справка и доступные команды"}
+]
+
+async def setup_bot_commands_and_menu(client: httpx.AsyncClient, bot_token: str):
+    """Registers bot commands for the '/' button and sets the menu button in Telegram."""
+    if not bot_token:
+        return
+    try:
+        cmds_url = f"https://api.telegram.org/bot{bot_token}/setMyCommands"
+        await client.post(cmds_url, json={"commands": BOT_COMMANDS})
+        
+        menu_btn_url = f"https://api.telegram.org/bot{bot_token}/setChatMenuButton"
+        await client.post(menu_btn_url, json={"menu_button": {"type": "commands"}})
+        print("[Telegram Bot] Successfully registered commands and Menu button ('/').")
+    except Exception as e:
+        print(f"[Telegram Bot] Warning: could not set commands menu: {e}")
 
 BACKUP_CONFIG_FILE = os.path.join(settings.DATA_DIR, "telegram_config.backup.json")
 
@@ -643,60 +665,6 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         res["alert"] = "Сводка обновлена"
         return res
 
-    if data == "menu:buildings":
-        res = build_hierarchy_buildings_view(user_devices, scope_desc)
-        res["alert"] = "Корпуса"
-        return res
-
-    if data.startswith("bld:"):
-        bld_name = data.split(":", 1)[1]
-        res = build_hierarchy_floors_view(bld_name, user_devices, role)
-        res["alert"] = f"Корпус {bld_name}"
-        return res
-
-    if data.startswith("flr:"):
-        _, bld_name, flr_name = data.split(":", 2)
-        res = build_hierarchy_rooms_view(bld_name, flr_name, user_devices, role)
-        res["alert"] = f"Этаж {flr_name}"
-        return res
-
-    if data.startswith("rm:"):
-        _, bld_name, flr_name, rm_name = data.split(":", 3)
-        res = build_hierarchy_room_devices_view(bld_name, flr_name, rm_name, user_devices, role)
-        res["alert"] = f"Кабинет {rm_name}"
-        return res
-
-    # Bulk room power actions
-    if data.startswith("confirm:wakerm:"):
-        _, _, bld_name, flr_name, rm_name = data.split(":", 4)
-        return {
-            "text": f"⚡️ <b>Подтверждение включения</b>\n\nВы действительно хотите отправить сигнал Wake-on-LAN на <b>все ПК кабинета {rm_name}</b> ({bld_name} / {flr_name})?",
-            "reply_markup": {
-                "inline_keyboard": [
-                    [
-                        {"text": "⚡️ Да, включить кабинет", "callback_data": f"do:wakerm:{bld_name}:{flr_name}:{rm_name}"},
-                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}
-                    ]
-                ]
-            },
-            "alert": "Требуется подтверждение"
-        }
-
-    if data.startswith("confirm:shutrm:"):
-        _, _, bld_name, flr_name, rm_name = data.split(":", 4)
-        return {
-            "text": f"🛑 <b>Подтверждение выключения</b>\n\nВы действительно хотите выключить <b>все компьютеры кабинета {rm_name}</b> ({bld_name} / {flr_name})?",
-            "reply_markup": {
-                "inline_keyboard": [
-                    [
-                        {"text": "🛑 Да, выключить кабинет", "callback_data": f"do:shutrm:{bld_name}:{flr_name}:{rm_name}"},
-                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}
-                    ]
-                ]
-            },
-            "alert": "Требуется подтверждение"
-        }
-
     if data.startswith("do:wakerm:"):
         _, _, bld_name, flr_name, rm_name = data.split(":", 4)
         target_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == bld_name and (d.get("floor") or "1 этаж") == flr_name and (d.get("room") or d.get("group") or "Без кабинета") == rm_name]
@@ -705,6 +673,18 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             if d.get("mac"):
                 send_wol_packet(d["mac"])
                 woken += 1
+                try:
+                    log_device_power_event(
+                        device_id=d.get("id"),
+                        target_name=d.get("name") or d.get("id"),
+                        action="WAKE",
+                        status="SUCCESS",
+                        details=f"Групповой WoL на кабинет {bld_name}/{flr_name}/{rm_name} через Telegram",
+                        initiator=operator_label,
+                        source="TELEGRAM"
+                    )
+                except Exception:
+                    pass
         record_audit(operator_label, "BULK_WAKE", f"ROOM_{rm_name}", "SUCCESS", f"WoL отправлен на {woken} ПК в {bld_name}/{flr_name}/{rm_name}")
         return {
             "text": f"✅ <b>Сигнал Wake-on-LAN отправлен!</b>\n\n⚡️ Разбужено компьютеров: <b>{woken}</b> из {len(target_devs)}\n📍 Локация: <b>{bld_name} → {flr_name} → {rm_name}</b>",
@@ -726,6 +706,18 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
                 send_direct_lan_power_signal(ip_address=d["ip"], action="SHUTDOWN", device_id=d.get("id"), mac_address=d.get("mac", ""), hostname=d.get("hostname", ""))
             queue_device_command(d.get("id"), "SHUTDOWN", force=True, reason=f"Telegram room shutdown by {operator_label}")
             shut += 1
+            try:
+                log_device_power_event(
+                    device_id=d.get("id"),
+                    target_name=d.get("name") or d.get("id"),
+                    action="SHUTDOWN",
+                    status="SUCCESS",
+                    details=f"Групповое выключение кабинета {bld_name}/{flr_name}/{rm_name} через Telegram",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception:
+                pass
         record_audit(operator_label, "BULK_SHUTDOWN", f"ROOM_{rm_name}", "SUCCESS", f"Выключение {shut} ПК в {bld_name}/{flr_name}/{rm_name}")
         return {
             "text": f"✅ <b>Команда выключения отправлена!</b>\n\n🛑 Выключено станций: <b>{shut}</b>\n📍 Локация: <b>{bld_name} → {flr_name} → {rm_name}</b>",
@@ -774,6 +766,18 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             if d.get("mac"):
                 send_wol_packet(d["mac"])
                 woken += 1
+                try:
+                    log_device_power_event(
+                        device_id=d.get("id"),
+                        target_name=d.get("name") or d.get("id"),
+                        action="WAKE",
+                        status="SUCCESS",
+                        details=f"Групповой WoL на корпус {bld_name} через Telegram",
+                        initiator=operator_label,
+                        source="TELEGRAM"
+                    )
+                except Exception:
+                    pass
         record_audit(operator_label, "BULK_WAKE", f"BLD_{bld_name}", "SUCCESS", f"WoL отправлен на {woken} ПК в корпусе {bld_name}")
         return {
             "text": f"✅ <b>Wake-on-LAN отправлен!</b>\n\n⚡️ Разбужено ПК: <b>{woken}</b> из {len(target_devs)} в <b>{bld_name}</b>",
@@ -795,7 +799,19 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
                 send_direct_lan_power_signal(ip_address=d["ip"], action="SHUTDOWN", device_id=d.get("id"), mac_address=d.get("mac", ""), hostname=d.get("hostname", ""))
             queue_device_command(d.get("id"), "SHUTDOWN", force=True, reason=f"Telegram building shutdown by {operator_label}")
             shut += 1
-        record_audit(operator_label, "BULK_SHUTDOWN", f"BLD_{bld_name}", "SUCCESS", f"Выключение {shut} ПК в {bld_name}")
+            try:
+                log_device_power_event(
+                    device_id=d.get("id"),
+                    target_name=d.get("name") or d.get("id"),
+                    action="SHUTDOWN",
+                    status="SUCCESS",
+                    details=f"Групповое выключение корпуса {bld_name} через Telegram",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception:
+                pass
+        record_audit(operator_label, "BULK_SHUTDOWN", f"BLD_{bld_name}", "SUCCESS", f"Выключение {shut} ПК в <b>{bld_name}</b>")
         return {
             "text": f"✅ <b>Команда выключения отправлена!</b>\n\n🛑 Выключено ПК: <b>{shut}</b> в <b>{bld_name}</b>",
             "reply_markup": {
@@ -847,6 +863,18 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
                 return {"text": f"❌ У устройства {target.get('name')} нет MAC-адреса.", "alert": "Ошибка: нет MAC"}
             send_wol_packet(mac)
             record_audit(operator_label, "WAKE", dev_id, "SUCCESS", "Magic Packet (WoL) отправлен через Telegram инлайн-кнопку")
+            try:
+                log_device_power_event(
+                    device_id=dev_id,
+                    target_name=target.get("name") or dev_id,
+                    action="WAKE",
+                    status="SUCCESS",
+                    details="Magic Packet (WoL) отправлен через Telegram инлайн-кнопку",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception as e:
+                print(f"[Telegram] Error logging power event: {e}")
         elif action in ["shutdown", "poweroff"]:
             ip = target.get("ip", "")
             if ip:
@@ -855,6 +883,18 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             if target.get("hostname") and target.get("hostname") != dev_id:
                 queue_device_command(target.get("hostname"), "SHUTDOWN", force=True, reason=f"Telegram inline by {operator_label}")
             record_audit(operator_label, "SHUTDOWN", dev_id, "SUCCESS", "Команда выключения отправлена через Telegram инлайн-кнопку")
+            try:
+                log_device_power_event(
+                    device_id=dev_id,
+                    target_name=target.get("name") or dev_id,
+                    action="SHUTDOWN",
+                    status="SUCCESS",
+                    details="Команда выключения отправлена через Telegram инлайн-кнопку",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception as e:
+                print(f"[Telegram] Error logging power event: {e}")
         elif action in ["reboot", "restart"]:
             ip = target.get("ip", "")
             if ip:
@@ -863,6 +903,18 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             if target.get("hostname") and target.get("hostname") != dev_id:
                 queue_device_command(target.get("hostname"), "REBOOT", force=True, reason=f"Telegram inline by {operator_label}")
             record_audit(operator_label, "REBOOT", dev_id, "SUCCESS", "Команда перезагрузки отправлена через Telegram инлайн-кнопку")
+            try:
+                log_device_power_event(
+                    device_id=dev_id,
+                    target_name=target.get("name") or dev_id,
+                    action="REBOOT",
+                    status="SUCCESS",
+                    details="Команда перезагрузки отправлена через Telegram инлайн-кнопку",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception as e:
+                print(f"[Telegram] Error logging power event: {e}")
 
         return {
             "text": (
@@ -1005,6 +1057,18 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
                 return f"❌ У устройства <b>{target_dev.get('name')}</b> не указан MAC-адрес для Wake-on-LAN."
             send_wol_packet(mac)
             record_audit(operator_label, "WAKE", target_dev.get("id"), "SUCCESS", f"Magic Packet (WoL) отправлен через Telegram-бота")
+            try:
+                log_device_power_event(
+                    device_id=target_dev.get("id"),
+                    device_name=target_dev.get("name") or target_dev.get("id"),
+                    action="WAKE",
+                    status="SUCCESS",
+                    details=f"Magic Packet (WoL) отправлен текстовой командой {cmd} через Telegram",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception as e:
+                print(f"[Telegram] Error logging power event: {e}")
             return {
                 "text": f"⚡️ <b>Magic Packet (WoL) успешно отправлен</b> на <b>{target_dev.get('name')}</b> (MAC: <code>{mac}</code>)!",
                 "effect_id": "5046509860389126442",  # 🎉 Confetti
@@ -1030,6 +1094,18 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
                 if target_dev.get("hostname") and target_dev.get("hostname") != dev_id:
                     queue_device_command(target_dev.get("hostname"), "SHUTDOWN", force=True, reason=f"Telegram command by {operator_label}")
             record_audit(operator_label, "SHUTDOWN", dev_id, "SUCCESS", f"Команда выключения инициирована через Telegram-бота")
+            try:
+                log_device_power_event(
+                    device_id=dev_id,
+                    device_name=target_dev.get("name") or dev_id,
+                    action="SHUTDOWN",
+                    status="SUCCESS",
+                    details=f"Команда выключения отправлена текстовой командой {cmd} через Telegram",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception as e:
+                print(f"[Telegram] Error logging power event: {e}")
             return {
                 "text": f"🛑 <b>Команда выключения отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip}).",
                 "effect_id": "5104841245755180586",  # 🔥 Flame
@@ -1055,6 +1131,18 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
                 if target_dev.get("hostname") and target_dev.get("hostname") != dev_id:
                     queue_device_command(target_dev.get("hostname"), "REBOOT", force=True, reason=f"Telegram command by {operator_label}")
             record_audit(operator_label, "REBOOT", dev_id, "SUCCESS", f"Команда перезагрузки инициирована через Telegram-бота")
+            try:
+                log_device_power_event(
+                    device_id=dev_id,
+                    device_name=target_dev.get("name") or dev_id,
+                    action="REBOOT",
+                    status="SUCCESS",
+                    details=f"Команда перезагрузки отправлена текстовой командой {cmd} через Telegram",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception as e:
+                print(f"[Telegram] Error logging power event: {e}")
             return {
                 "text": f"🔄 <b>Команда перезагрузки отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip}).",
                 "effect_id": "5107584321108051014",  # 👍 Thumbs up
@@ -1159,6 +1247,7 @@ async def update_telegram_config(payload: TelegramConfigPayload):
                     if bot_username:
                         cfg["botUsername"] = f"@{bot_username}"
                     cfg["status"] = "Подключен"
+                    await setup_bot_commands_and_menu(client, cfg["botToken"])
                 elif resp.status_code == 401:
                     cfg["status"] = "Неверный токен"
                 else:

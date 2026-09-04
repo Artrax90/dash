@@ -679,7 +679,7 @@ function App() {
   const [dark, setDark] = useState(false);
   const [mobileNav, setMobileNav] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
-  const [toast, setToast] = useState('');
+  const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' | 'info' } | null>(null);
 
   // Current logged in user session
   const [currentUser, setCurrentUser] = useState<ManagedUser | null>(() => {
@@ -739,12 +739,12 @@ function App() {
     const unsubAlert = wsClient.on('alert.created', (newAlert: any) => {
       setActiveAlertsCount(prev => prev + 1);
       if (newAlert && newAlert.description) {
-        setToast(`🚨 ${newAlert.device || newAlert.deviceName || 'ПК'}: ${newAlert.description}`);
+        setToast({ message: `🚨 ${newAlert.device || newAlert.deviceName || 'ПК'}: ${newAlert.description}`, type: 'error' });
       }
     });
     const unsubHw = wsClient.on('hardware.change', (hw: any) => {
       if (hw && hw.component) {
-        setToast(`⚠️ ${hw.deviceId}: Изменение оборудования (${hw.component}) -> ${hw.currentValue || hw.changeType}`);
+        setToast({ message: `⚠️ ${hw.deviceId}: Изменение оборудования (${hw.component}) -> ${hw.currentValue || hw.changeType}`, type: 'warning' });
       }
     });
     const unsubResolved = wsClient.on('alert.resolved', () => {
@@ -811,9 +811,18 @@ function App() {
 
   const navigation = isSuperAdmin ? rawNavigation : rawNavigation.filter(item => !item.adminOnly);
 
-  const notify = (message: string) => {
-    setToast(message);
-    window.setTimeout(() => setToast(''), 3200);
+  const notify = (message: string, type?: 'success' | 'error' | 'warning' | 'info') => {
+    let resolvedType = type || 'success';
+    if (!type) {
+      const lower = message.toLowerCase();
+      if (message.includes('🚨') || message.includes('❌') || lower.includes('прервана') || lower.includes('ошибка') || lower.includes('сбой') || lower.includes('отказ') || lower.includes('отключен') || lower.includes('error') || lower.includes('fail')) {
+        resolvedType = 'error';
+      } else if (message.includes('⚠️') || lower.includes('изменение') || lower.includes('предупреждение') || lower.includes('warning')) {
+        resolvedType = 'warning';
+      }
+    }
+    setToast({ message, type: resolvedType });
+    window.setTimeout(() => setToast(null), 3200);
   };
 
   useEffect(() => {
@@ -1186,9 +1195,13 @@ function App() {
 
       {toast && (
         <div className="toast">
-          <div className="toast-icon"><Check size={16} /></div>
-          <span>{toast}</span>
-          <button onClick={() => setToast('')}><X size={15} /></button>
+          <div className="toast-icon" style={{
+            background: toast.type === 'error' ? '#ef4444' : toast.type === 'warning' ? '#f59e0b' : '#10b981'
+          }}>
+            {toast.type === 'error' || toast.type === 'warning' ? <AlertTriangle size={14} /> : <Check size={16} />}
+          </div>
+          <span>{toast.message}</span>
+          <button onClick={() => setToast(null)}><X size={15} /></button>
         </div>
       )}
     </div>
@@ -5454,6 +5467,7 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
           const isSuccess = String(l.status || '').toUpperCase() === 'SUCCESS';
           const isSch = String(l.source || '').toUpperCase() === 'SCHEDULE';
           const isLocal = String(l.source || '').toUpperCase() === 'LOCAL';
+          const isTelegram = ['TELEGRAM', 'TG'].includes(String(l.source || '').toUpperCase());
           const defaultTitle = isSch
             ? (l.action === 'WAKE' ? 'Включение по расписанию (Wake-on-LAN)' :
                l.action === 'SHUTDOWN' ? 'Выключение по расписанию (Shutdown)' :
@@ -5463,6 +5477,10 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
             ? (l.action === 'BOOT' || l.action === 'WAKE' || l.action === 'STARTUP' ? 'Локальное включение (Кнопка питания / Автостарт)' :
                l.action === 'SHUTDOWN' || l.action === 'POWEROFF' ? 'Локальное выключение (Завершение работы ОС)' :
                l.action === 'REBOOT' ? 'Локальная перезагрузка (Reboot)' : `Локальное событие: ${l.action}`)
+            : isTelegram
+            ? (l.action === 'WAKE' ? 'Включение через Telegram (WoL)' :
+               l.action === 'SHUTDOWN' ? 'Выключение через Telegram (Shutdown)' :
+               l.action === 'REBOOT' ? 'Перезагрузка через Telegram (Reboot)' : `Команда Telegram: ${l.action}`)
             : (l.action === 'WAKE' ? 'Удаленное включение (Wake-on-LAN)' :
                l.action === 'SHUTDOWN' ? 'Удаленное выключение (Shutdown)' :
                l.action === 'FORCE_SHUTDOWN' ? 'Удаленное принудительное выключение (Force Shutdown)' :
@@ -5472,8 +5490,8 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
             id: l.id || Math.random().toString(),
             action: l.title || defaultTitle,
             detail: isSuccess ? `${l.details || 'Сигнал успешно отправлен'}` : `Ошибка: ${l.details || 'Сбой выполнения'}`,
-            initiator: l.initiator || (isSch ? 'Планировщик' : isLocal ? 'Локальный пользователь' : getActiveUserName()),
-            source: l.source || (isSch ? 'SCHEDULE' : isLocal ? 'LOCAL' : 'MANUAL'),
+            initiator: l.initiator || (isSch ? 'Планировщик' : isLocal ? 'Локальный пользователь' : isTelegram ? 'Telegram-бот' : getActiveUserName()),
+            source: l.source || (isSch ? 'SCHEDULE' : isLocal ? 'LOCAL' : isTelegram ? 'TELEGRAM' : 'MANUAL'),
             time: l.timestamp ? formatLogTime(l.timestamp) : 'Недавно',
             status: (isSuccess ? 'ok' : 'fail') as 'ok' | 'fail'
           };
@@ -5712,11 +5730,11 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
                             fontSize: '10px',
                             padding: '1px 6px',
                             borderRadius: '4px',
-                            backgroundColor: log.source === 'SCHEDULE' ? 'rgba(139, 92, 246, 0.15)' : 'rgba(59, 130, 246, 0.12)',
-                            color: log.source === 'SCHEDULE' ? '#8b5cf6' : 'var(--primary)',
+                            backgroundColor: log.source === 'SCHEDULE' ? 'rgba(139, 92, 246, 0.15)' : log.source === 'TELEGRAM' ? 'rgba(6, 182, 212, 0.12)' : 'rgba(59, 130, 246, 0.12)',
+                            color: log.source === 'SCHEDULE' ? '#8b5cf6' : log.source === 'TELEGRAM' ? '#0891b2' : 'var(--primary)',
                             fontWeight: 600
                           }}>
-                            {log.source === 'SCHEDULE' ? '⏰ ' : '👤 '}{log.initiator}
+                            {log.source === 'SCHEDULE' ? '⏰ ' : log.source === 'TELEGRAM' ? '✈️ ' : '👤 '}{log.initiator}
                           </span>
                         )}
                       </div>

@@ -70,9 +70,15 @@ class TelegramBotService:
                         async with get_httpx_client(cfg, timeout=8.0) as client:
                             del_url = f"https://api.telegram.org/bot{bot_token}/deleteWebhook"
                             await client.get(del_url, params={"drop_pending_updates": False})
+                            
+                            # Register bot commands and '/' menu button
+                            from backend.app.api.v1.telegram import setup_bot_commands_and_menu
+                            await setup_bot_commands_and_menu(client, bot_token)
+
                             self._webhook_cleared = True
-                            print(f"[Telegram Bot] Webhook cleared. Ready to poll updates.")
-                    except Exception:
+                            print(f"[Telegram Bot] Webhook cleared and commands menu ('/') configured.")
+                    except Exception as e:
+                        print(f"[Telegram Bot] Setup warning: {e}")
                         self._webhook_cleared = True
 
                 # Long-poll getUpdates including callback queries
