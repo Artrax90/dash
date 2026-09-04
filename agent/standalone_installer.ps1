@@ -410,7 +410,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.3"
+    agentVersion = "2.9.4"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -543,6 +543,14 @@ public class WtsManagerService
         public WTS_CONNECTSTATE_CLASS State;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct WTS_CLIENT_ADDRESS
+    {
+        public int AddressFamily;
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
+        public byte[] Address;
+    }
+
     public class SessionData
     {
         public int SessionId;
@@ -550,6 +558,7 @@ public class WtsManagerService
         public string UserName;
         public string DomainName;
         public string State;
+        public string ClientIp;
     }
 
     public static List<SessionData> GetSessions()
@@ -572,6 +581,7 @@ public class WtsManagerService
                 string domainName = QuerySessionStr(si.SessionId, WTS_INFO_CLASS.WTSDomainName);
                 string winStation = QuerySessionStr(si.SessionId, WTS_INFO_CLASS.WTSWinStationName);
                 if (string.IsNullOrEmpty(winStation)) winStation = si.pWinStationName;
+                string clientIp = QuerySessionClientIp(si.SessionId);
 
                 list.Add(new SessionData
                 {
@@ -579,7 +589,8 @@ public class WtsManagerService
                     WinStationName = winStation ?? "",
                     UserName = userName ?? "",
                     DomainName = domainName ?? "",
-                    State = si.State.ToString()
+                    State = si.State.ToString(),
+                    ClientIp = clientIp ?? ""
                 });
             }
             WTSFreeMemory(ppSessionInfo);
@@ -596,6 +607,29 @@ public class WtsManagerService
             if (WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sessionId, infoClass, out buffer, out bytesReturned) && buffer != IntPtr.Zero)
             {
                 return Marshal.PtrToStringUni(buffer);
+            }
+        }
+        catch { }
+        finally
+        {
+            if (buffer != IntPtr.Zero) WTSFreeMemory(buffer);
+        }
+        return "";
+    }
+
+    private static string QuerySessionClientIp(int sessionId)
+    {
+        IntPtr buffer = IntPtr.Zero;
+        int bytesReturned = 0;
+        try
+        {
+            if (WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sessionId, WTS_INFO_CLASS.WTSClientAddress, out buffer, out bytesReturned) && buffer != IntPtr.Zero)
+            {
+                WTS_CLIENT_ADDRESS addr = (WTS_CLIENT_ADDRESS)Marshal.PtrToStructure(buffer, typeof(WTS_CLIENT_ADDRESS));
+                if (addr.AddressFamily == 2 && addr.Address != null && addr.Address.Length >= 6)
+                {
+                    return string.Format("{0}.{1}.{2}.{3}", addr.Address[2], addr.Address[3], addr.Address[4], addr.Address[5]);
+                }
             }
         }
         catch { }
@@ -634,7 +668,7 @@ public class WtsManagerService
         return count;
     }
 
-    public static int LogoffUserOrSession(string targetUser, int targetSessionId)
+    public static int LogoffUserOrSession(string targetUser, int targetSessionId, string targetClientIp = "")
     {
         int count = 0;
         string cleanTargetUser = "";
@@ -644,6 +678,7 @@ public class WtsManagerService
             int slashIdx = cleanTargetUser.IndexOf('\\');
             if (slashIdx >= 0) cleanTargetUser = cleanTargetUser.Substring(slashIdx + 1);
         }
+        string cleanTargetIp = (targetClientIp ?? "").Trim();
 
         List<SessionData> sessions = GetSessions();
         foreach (SessionData s in sessions)
@@ -655,24 +690,32 @@ public class WtsManagerService
             bool matches = false;
             string u = (s.UserName ?? "").Trim().ToLower();
 
-            if (!string.IsNullOrEmpty(cleanTargetUser) && (u == cleanTargetUser || u.IndexOf(cleanTargetUser) >= 0))
-            {
-                matches = true;
-            }
+            // 1. Match by session ID
             if (targetSessionId > 0 && targetSessionId < 100 && s.SessionId == targetSessionId)
             {
                 matches = true;
             }
-            // If no user specified or targetSessionId >= 100 or user is empty (disconnected session)
-            if (string.IsNullOrEmpty(cleanTargetUser) || string.IsNullOrEmpty(u))
+            // 2. Match by username
+            if (!string.IsNullOrEmpty(cleanTargetUser) && (u == cleanTargetUser || u.IndexOf(cleanTargetUser) >= 0))
+            {
+                matches = true;
+            }
+            // 3. Match by client IP
+            if (!string.IsNullOrEmpty(cleanTargetIp) && !string.IsNullOrEmpty(s.ClientIp) && s.ClientIp == cleanTargetIp)
+            {
+                matches = true;
+            }
+            // 4. If no target user, no target ID and no target IP, match any remote session
+            if (string.IsNullOrEmpty(cleanTargetUser) && (targetSessionId <= 0 || targetSessionId >= 100) && string.IsNullOrEmpty(cleanTargetIp))
             {
                 matches = true;
             }
 
             if (matches)
             {
-                try { WTSDisconnectSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, false); } catch {}
-                bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, true);
+                // CRITICAL: NEVER call WTSDisconnectSession here, as it leaves the session alive!
+                // WTSLogoffSession terminates the session cleanly.
+                bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, false);
                 TerminateSessionProcesses(s.SessionId);
                 if (ok) count++;
             }
@@ -689,8 +732,8 @@ public class WtsManagerService
             if (s.SessionId <= 0 || s.SessionId >= 65535) continue;
             if (!string.IsNullOrEmpty(s.WinStationName) && s.WinStationName.IndexOf("console", StringComparison.OrdinalIgnoreCase) >= 0) continue;
 
-            try { WTSDisconnectSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, false); } catch {}
-            bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, true);
+            // CRITICAL: NEVER call WTSDisconnectSession here!
+            bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, false);
             TerminateSessionProcesses(s.SessionId);
             if (ok) count++;
         }
@@ -711,7 +754,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.3'
+`$AgentVersion = '2.9.4'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
@@ -730,9 +773,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.3") {
+function Update-AgentService([string]`$targetVer = "2.9.4") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.3"
+        `$targetVer = "2.9.4"
     }
     try {
         # 1. Report update in progress
@@ -891,11 +934,17 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (`$cmdObj -and `$cmdObj.username) { `$targetUser = `$cmdObj.username.Trim().ToLower() -replace '.*\\', '' }
         if (`$cmdObj -and `$cmdObj.user) { `$targetUser = `$cmdObj.user.Trim().ToLower() -replace '.*\\', '' }
 
+        `$targetClientIp = `$null
+        if (`$cmdObj -and `$cmdObj.clientIp) { `$targetClientIp = "`$(`$cmdObj.clientIp)".Trim() }
+        `$sessToTarget = if (`$targetSessId -and `$targetSessId -lt 100 -and `$targetSessId -gt 0) { `$targetSessId } else { 0 }
+
         # 1. Direct Win32 Terminal Services API Kernel Logoff via WtsManagerService
         try {
             if ([WtsManagerService]) {
-                [WtsManagerService]::LogoffUserOrSession(`$targetUser, (if (`$targetSessId) { `$targetSessId } else { 0 }))
-                [WtsManagerService]::LogoffAllRemoteSessions()
+                [WtsManagerService]::LogoffUserOrSession(`$targetUser, `$sessToTarget, `$targetClientIp)
+                if (`$sessToTarget -eq 0 -and -not `$targetUser -and -not `$targetClientIp -and -not `$remHost) {
+                    [WtsManagerService]::LogoffAllRemoteSessions()
+                }
             }
         } catch {}
 
@@ -1091,7 +1140,7 @@ function Get-LiveRdpSessions() {
                         state = `$stdState
                         idleTime = '0 мин'
                         logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
-                        clientIp = ''
+                        clientIp = if (`$ws.ClientIp) { `$ws.ClientIp } else { '' }
                     }
                     `$sessions += `$sObj
                     `$seenIds[`$ws.SessionId] = `$true
@@ -1943,17 +1992,21 @@ try {
                             }
 
                             if (`$isTargetMatch -and `$cmdAction) {
-                                `$extraArg = if (`$parts.Length -ge 6) { `$parts[5].Trim() } else { "" }
-                                `$sessIdVal = `$extraArg
+                                `$extraArg = if (`$parts.Length -ge 6) { `$parts[5..(`$parts.Length - 1)] -join ":" } else { "" }
+                                `$sessIdVal = 0
                                 `$uNameVal = ""
-                                `$pidVal = `$extraArg
-                                if (`$extraArg -like "*|*") {
+                                `$pidVal = 0
+                                `$remHostVal = ""
+                                `$clientIpVal = ""
+                                if (`$extraArg) {
                                     `$subParts = `$extraArg.Split("|")
-                                    `$sessIdVal = `$subParts[0]
-                                    if (`$subParts.Length -ge 2) { `$uNameVal = `$subParts[1] }
-                                    if (`$subParts.Length -ge 3) { `$pidVal = `$subParts[2] }
+                                    if (`$subParts.Length -ge 1 -and `$subParts[0]) { `$sessIdVal = `$subParts[0].Trim() }
+                                    if (`$subParts.Length -ge 2 -and `$subParts[1]) { `$uNameVal = `$subParts[1].Trim() }
+                                    if (`$subParts.Length -ge 3 -and `$subParts[2]) { `$pidVal = `$subParts[2].Trim() }
+                                    if (`$subParts.Length -ge 4 -and `$subParts[3]) { `$remHostVal = `$subParts[3].Trim() }
+                                    if (`$subParts.Length -ge 5 -and `$subParts[4]) { `$clientIpVal = `$subParts[4].Trim() }
                                 }
-                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal }
+                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal }
                                 Execute-PowerCommand `$cmdAction `$true `$cmdObj
                             }
                         }
@@ -2316,7 +2369,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.3"
+    agentVersion = "2.9.4"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
