@@ -4,7 +4,7 @@ import hashlib
 import secrets
 from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 from pydantic import BaseModel
 from backend.app.core.config import settings
 
@@ -72,6 +72,15 @@ def get_current_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
         return users[0]
 
     return None
+
+def get_request_user_scope(request: Request) -> Tuple[str, List[str]]:
+    u = get_current_user_from_request(request)
+    if not u:
+        return "Суперадминистратор", []
+    role = u.get("role", "Суперадминистратор")
+    if is_superadmin_role(role) or u.get("scope") == "Все устройства":
+        return role, []
+    return role, u.get("allowedGroups", []) or []
 
 def require_superadmin(request: Request) -> Dict[str, Any]:
     users = load_users()
