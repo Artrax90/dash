@@ -226,28 +226,52 @@ class AlertEngine:
                         + "</blockquote>"
                     )
 
-                    # Build interactive inline action buttons (clean semi-transparent style, max 2 buttons per row to prevent text cutoff)
+                    # Build context-aware inline action buttons based on alert type
                     inline_keyboard = []
                     if dev_id:
+                        # Determine actual device power state
                         is_dev_online = False
                         if dev_obj:
                             is_dev_online = (dev_obj.get("powerStatus") == "On" or dev_obj.get("isOnline") is True)
-                        if not is_dev_online and a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT", "USB_INSERTED", "USB_REMOVED"]:
-                            is_dev_online = True
 
-                        if is_dev_online:
-                            # 2 buttons row: full words 'Выключить' and 'Перезагрузить' without '...' cutoff
+                        # INFO alerts (USB, hardware changes) — no power buttons, just management
+                        if a_type in ["USB_STORAGE_CHANGED", "USB_INSERTED", "USB_REMOVED", "HARDWARE_MISMATCH"]:
+                            # Only management card — power buttons make no sense for info events
+                            pass
+                        # OFFLINE / Disconnected — offer WoL to bring it back
+                        elif a_type in ["OFFLINE", "AGENT_DISCONNECTED"]:
+                            inline_keyboard.append([
+                                {"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"}
+                            ])
+                        # CRITICAL power failure — offer emergency shutdown (if still reachable)
+                        elif a_type in ["POWER_FAILED", "EMERGENCY_SHUTDOWN"]:
+                            if is_dev_online:
+                                inline_keyboard.append([
+                                    {"text": "🛑 Аварийное выключение", "callback_data": f"confirm:shutdown:{dev_id}"}
+                                ])
+                            else:
+                                inline_keyboard.append([
+                                    {"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"}
+                                ])
+                        # ONLINE / Recovery / Boot — device is up, offer power controls
+                        elif a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT"]:
                             inline_keyboard.append([
                                 {"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"},
                                 {"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"}
                             ])
+                        # Other alert types — use actual device status
                         else:
-                            # Single clean WoL button
-                            inline_keyboard.append([
-                                {"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"}
-                            ])
+                            if is_dev_online:
+                                inline_keyboard.append([
+                                    {"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"},
+                                    {"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"}
+                                ])
+                            else:
+                                inline_keyboard.append([
+                                    {"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"}
+                                ])
 
-                        # Card & controls navigation button
+                        # Card & controls navigation button (always present)
                         inline_keyboard.append([{"text": f"🖥 Управление {dev_name}", "callback_data": f"dev:{dev_id}"}])
 
                     # Select message effect: Flame 🔥 for critical/failure, Confetti 🎉 for recovery/online
