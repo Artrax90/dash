@@ -209,28 +209,37 @@ class AlertEngine:
                     text = (
                         f"{icon} <b>{header}</b> [{sev}]\n\n"
                         f"🖥 <b>Устройство:</b> <code>{dev_name}</code>\n"
-                        + (f"📍 <b>Локация:</b> {loc_str}\n" if loc_str else "")
-                        + (f"🌐 <b>IP / MAC:</b> <code>{ip}</code> | <code>{mac}</code>\n" if (ip or mac) else "")
-                        + f"🏷 <b>Категория:</b> {alert.get('category', 'Hardware')}\n"
-                        + f"📝 <b>Событие:</b> {desc}\n"
-                        + f"⏱ <b>Время:</b> <i>{now_str}</i>"
-                        + (f"\n\n👥 <b>Ответственные:</b> {' '.join(mentions[:6])}" if mentions else "")
+                        f"📝 <b>Событие:</b> {desc}\n\n"
+                        f"<blockquote expandable>📋 <b>Технические детали инцидента:</b>\n"
+                        + (f"• 📍 <b>Локация:</b> {loc_str}\n" if loc_str else "")
+                        + (f"• 🌐 <b>Сеть:</b> IP <code>{ip}</code> | MAC <code>{mac}</code>\n" if (ip or mac) else "")
+                        + f"• 🏷 <b>Категория:</b> {alert.get('category', 'Hardware')}\n"
+                        + f"• ⏱ <b>Время:</b> <i>{now_str}</i>"
+                        + (f"\n• 👥 <b>Ответственные:</b> {' '.join(mentions[:6])}" if mentions else "")
+                        + "</blockquote>"
                     )
 
-                    # Build interactive inline action buttons
+                    # Build interactive inline action buttons with styles
                     inline_keyboard = []
                     if dev_id:
                         act_row = []
                         if a_type in ["OFFLINE", "AGENT_DISCONNECTED", "POWER_FAILED", "EMERGENCY_SHUTDOWN"]:
-                            act_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"})
+                            act_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}", "style": "success"})
                         elif a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT"]:
-                            act_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"})
-                            act_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"})
+                            act_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}", "style": "danger"})
+                            act_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}", "style": "primary"})
                         else:
-                            act_row.append({"text": "⚡️ WoL", "callback_data": f"do:wake:{dev_id}"})
-                        act_row.append({"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}"})
+                            act_row.append({"text": "⚡️ WoL", "callback_data": f"do:wake:{dev_id}", "style": "success"})
+                        act_row.append({"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}", "style": "primary"})
                         inline_keyboard.append(act_row)
-                        inline_keyboard.append([{"text": f"🖥 Управление {dev_name}", "callback_data": f"dev:{dev_id}"}])
+                        inline_keyboard.append([{"text": f"🖥 Управление {dev_name}", "callback_data": f"dev:{dev_id}", "style": "primary"}])
+
+                    # Select message effect: Flame 🔥 for critical/failure, Confetti 🎉 for recovery/online
+                    effect_id = None
+                    if sev in ["CRITICAL", "HIGH"] or a_type in ["POWER_FAILED", "EMERGENCY_SHUTDOWN", "HARDWARE_MISMATCH"]:
+                        effect_id = "5104841245755180586"  # 🔥 Flame
+                    elif a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT"]:
+                        effect_id = "5046509860389126442"  # 🎉 Confetti
 
                     async with get_httpx_client(cfg, timeout=15.0) as client:
                         for cid in target_chats:
@@ -239,7 +248,15 @@ class AlertEngine:
                                 msg_payload = {"chat_id": cid, "text": text, "parse_mode": "HTML"}
                                 if inline_keyboard:
                                     msg_payload["reply_markup"] = {"inline_keyboard": inline_keyboard}
+                                if effect_id:
+                                    msg_payload["message_effect_id"] = str(effect_id)
+
                                 resp = await client.post(url, json=msg_payload)
+                                # Fallback if chat type rejects message_effect_id
+                                if resp.status_code != 200 and "message_effect_id" in msg_payload:
+                                    msg_payload.pop("message_effect_id")
+                                    resp = await client.post(url, json=msg_payload)
+
                                 if resp.status_code == 200:
                                     print(f"[Telegram Alert] Sent notification to chat {cid}: {desc}")
                                 else:

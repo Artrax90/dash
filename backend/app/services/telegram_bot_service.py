@@ -12,12 +12,29 @@ from backend.app.api.v1.telegram import (
     process_telegram_callback
 )
 
+async def set_telegram_message_reaction(client: httpx.AsyncClient, bot_token: str, chat_id: str, message_id: int, emoji: str) -> bool:
+    if not bot_token or not chat_id or not message_id:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/setMessageReaction"
+        payload = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "reaction": [{"type": "emoji", "emoji": emoji}],
+            "is_big": False
+        }
+        resp = await client.post(url, json=payload)
+        return resp.status_code == 200
+    except Exception:
+        return False
+
 class TelegramBotService:
     """
     Background service for Telegram Bot long-polling (getUpdates).
     Works seamlessly in isolated networks, behind NAT and SOCKS5/HTTP proxies
     without requiring public IP addresses, domain names, or incoming ports.
-    Supports rich inline keyboard navigation, real-time command dispatch, and callbacks.
+    Supports rich inline keyboard navigation, real-time command dispatch, callbacks,
+    instant reactions (setMessageReaction), and message effects (message_effect_id).
     """
     def __init__(self):
         self.is_running = False
@@ -130,6 +147,7 @@ class TelegramBotService:
                             chat_id = str(chat.get("id", ""))
                             text = (msg.get("text") or "").strip()
                             from_user = msg.get("from", {})
+                            message_id = msg.get("message_id")
 
                             if not chat_id or not text:
                                 continue
@@ -137,9 +155,28 @@ class TelegramBotService:
                             u_name = from_user.get("username", "")
                             print(f"[Telegram Bot] Received '{text}' from chat {chat_id} (user: {u_name})")
 
-                            # Dispatch through command router
+                            # 1. Instant Telegram Reaction while command is processing
+                            cmd_lower = text.lower().strip()
+                            is_power_action = any(cmd_lower.startswith(c) for c in ["/wake", "/shutdown", "/reboot", "/poweroff"])
+                            initial_reaction = "⚡" if is_power_action else "👀"
+                            if message_id:
+                                await set_telegram_message_reaction(client, bot_token, chat_id, message_id, initial_reaction)
+
+                            # 2. Dispatch through command router
                             reply_data = process_telegram_command(chat_id, text, from_user)
 
+                            # 3. Update reaction to final completion or rejection
+                            if message_id and reply_data:
+                                final_reaction = "✅"
+                                if isinstance(reply_data, str) and any(w in reply_data for w in ["⛔", "🚫", "запрещен", "Ограничение", "Отказ"]):
+                                    final_reaction = "🚫"
+                                elif isinstance(reply_data, dict):
+                                    t_val = reply_data.get("text", "")
+                                    if any(w in t_val for w in ["⛔", "🚫", "запрещен", "Ограничение", "Отказ"]):
+                                        final_reaction = "🚫"
+                                await set_telegram_message_reaction(client, bot_token, chat_id, message_id, final_reaction)
+
+                            # 4. Send rich reply with optional message_effect_id
                             if reply_data:
                                 try:
                                     send_url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
@@ -151,13 +188,20 @@ class TelegramBotService:
                                         }
                                         if reply_data.get("reply_markup"):
                                             send_payload["reply_markup"] = reply_data["reply_markup"]
+                                        effect_id = reply_data.get("effect_id") or reply_data.get("message_effect_id")
+                                        if effect_id:
+                                            send_payload["message_effect_id"] = str(effect_id)
                                     else:
                                         send_payload = {
                                             "chat_id": chat_id,
                                             "text": str(reply_data),
                                             "parse_mode": "HTML"
                                         }
-                                    await client.post(send_url, json=send_payload)
+                                    resp_msg = await client.post(send_url, json=send_payload)
+                                    # Fallback if chat or Telegram client does not permit message_effect_id
+                                    if resp_msg.status_code != 200 and "message_effect_id" in send_payload:
+                                        send_payload.pop("message_effect_id")
+                                        await client.post(send_url, json=send_payload)
                                 except Exception as send_err:
                                     print(f"[Telegram Bot] Failed to send reply to {chat_id}: {send_err}")
 

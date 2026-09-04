@@ -327,12 +327,12 @@ def build_main_menu(user_name: str, role: str, scope_desc: str) -> Dict[str, Any
         "reply_markup": {
             "inline_keyboard": [
                 [
-                    {"text": "🏢 Корпуса и кабинеты", "callback_data": "menu:buildings"},
-                    {"text": "📊 Сводка сети", "callback_data": "menu:status"}
+                    {"text": "🏢 Корпуса и кабинеты", "callback_data": "menu:buildings", "style": "primary"},
+                    {"text": "📊 Сводка сети", "callback_data": "menu:status", "style": "primary"}
                 ],
                 [
-                    {"text": "🖥 Все ПК (общий список)", "callback_data": "menu:devices:0"},
-                    {"text": "🔄 Обновить", "callback_data": "menu:main"}
+                    {"text": "🖥 Все ПК (общий список)", "callback_data": "menu:devices:0", "style": "primary"},
+                    {"text": "🔄 Обновить", "callback_data": "menu:main", "style": "primary"}
                 ]
             ]
         }
@@ -348,9 +348,9 @@ def build_hierarchy_buildings_view(user_devices: List[Dict[str, Any]], scope_des
     for b_name, b_devs in sorted(bld_map.items()):
         total = len(b_devs)
         online = sum(1 for d in b_devs if d.get("isOnline") or d.get("powerStatus") == "On")
-        keyboard.append([{"text": f"🏢 {b_name} ({total} ПК | {online} 🟢)", "callback_data": f"bld:{b_name}"}])
+        keyboard.append([{"text": f"🏢 {b_name} ({total} ПК | {online} 🟢)", "callback_data": f"bld:{b_name}", "style": "primary"}])
 
-    keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main"}])
+    keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main", "style": "primary"}])
     return {
         "text": f"🏢 <b>Выберите корпус или филиал</b> ({scope_desc}):\n<i>Нажмите на корпус для перехода к этажам и кабинетам:</i>",
         "reply_markup": {"inline_keyboard": keyboard}
@@ -367,17 +367,17 @@ def build_hierarchy_floors_view(building: str, user_devices: List[Dict[str, Any]
     for f_name, f_devs in sorted(flr_map.items()):
         total = len(f_devs)
         online = sum(1 for d in f_devs if d.get("isOnline") or d.get("powerStatus") == "On")
-        keyboard.append([{"text": f"🏬 {f_name} ({total} ПК | {online} 🟢)", "callback_data": f"flr:{building}:{f_name}"}])
+        keyboard.append([{"text": f"🏬 {f_name} ({total} ПК | {online} 🟢)", "callback_data": f"flr:{building}:{f_name}", "style": "primary"}])
 
     if role != "Наблюдатель" and bld_devs:
         keyboard.append([
-            {"text": f"⚡️ Включить весь {building} (WoL)", "callback_data": f"confirm:wakebld:{building}"},
-            {"text": f"🛑 Выключить весь {building}", "callback_data": f"confirm:shutbld:{building}"}
+            {"text": f"⚡️ Включить весь {building} (WoL)", "callback_data": f"confirm:wakebld:{building}", "style": "success"},
+            {"text": f"🛑 Выключить весь {building}", "callback_data": f"confirm:shutbld:{building}", "style": "danger"}
         ])
 
     keyboard.append([
-        {"text": "⬅️ К списку корпусов", "callback_data": "menu:buildings"},
-        {"text": "🏠 Главное меню", "callback_data": "menu:main"}
+        {"text": "⬅️ К списку корпусов", "callback_data": "menu:buildings", "style": "primary"},
+        {"text": "🏠 Главное меню", "callback_data": "menu:main", "style": "primary"}
     ])
     return {
         "text": f"🏢 <b>{building}</b> (всего {len(bld_devs)} ПК)\n<i>Выберите этаж или выполните действие для всего корпуса:</i>",
@@ -396,7 +396,7 @@ def build_hierarchy_rooms_view(building: str, floor: str, user_devices: List[Dic
     for r_name, r_devs in sorted(rm_map.items()):
         total = len(r_devs)
         online = sum(1 for d in r_devs if d.get("isOnline") or d.get("powerStatus") == "On")
-        row.append({"text": f"🚪 {r_name} ({online}/{total} 🟢)", "callback_data": f"rm:{building}:{floor}:{r_name}"})
+        row.append({"text": f"🚪 {r_name} ({online}/{total} 🟢)", "callback_data": f"rm:{building}:{floor}:{r_name}", "style": "primary"})
         if len(row) == 2:
             keyboard.append(row)
             row = []
@@ -405,13 +405,13 @@ def build_hierarchy_rooms_view(building: str, floor: str, user_devices: List[Dic
 
     if role != "Наблюдатель" and target_devs:
         keyboard.append([
-            {"text": f"⚡️ Включить весь {floor} (WoL)", "callback_data": f"confirm:wakeflr:{building}:{floor}"},
-            {"text": f"🛑 Выключить весь {floor}", "callback_data": f"confirm:shutflr:{building}:{floor}"}
+            {"text": f"⚡️ Включить весь {floor} (WoL)", "callback_data": f"confirm:wakeflr:{building}:{floor}", "style": "success"},
+            {"text": f"🛑 Выключить весь {floor}", "callback_data": f"confirm:shutflr:{building}:{floor}", "style": "danger"}
         ])
 
     keyboard.append([
-        {"text": "⬅️ Назад к этажам", "callback_data": f"bld:{building}"},
-        {"text": "🏠 Главное меню", "callback_data": "menu:main"}
+        {"text": "⬅️ Назад к этажам", "callback_data": f"bld:{building}", "style": "primary"},
+        {"text": "🏠 Главное меню", "callback_data": "menu:main", "style": "primary"}
     ])
     return {
         "text": f"🏢 <b>{building}</b> → 🏬 <b>{floor}</b> ({len(target_devs)} ПК)\n<i>Выберите кабинет для управления:</i>",
@@ -429,7 +429,7 @@ def build_hierarchy_room_devices_view(building: str, floor: str, room: str, user
     for d in rm_devs:
         is_on = (d.get("powerStatus") == "On" or d.get("isOnline") is True)
         icon = "🟢" if is_on else "🔴"
-        row.append({"text": f"{icon} {d.get('name')}", "callback_data": f"dev:{d.get('id')}"})
+        row.append({"text": f"{icon} {d.get('name')}", "callback_data": f"dev:{d.get('id')}", "style": "primary"})
         if len(row) == 2:
             keyboard.append(row)
             row = []
@@ -438,19 +438,22 @@ def build_hierarchy_room_devices_view(building: str, floor: str, room: str, user
 
     if role != "Наблюдатель" and rm_devs:
         keyboard.append([
-            {"text": "⚡️ Включить весь кабинет (WoL)", "callback_data": f"confirm:wakerm:{building}:{floor}:{room}"},
-            {"text": "🛑 Выключить кабинет", "callback_data": f"confirm:shutrm:{building}:{floor}:{room}"}
+            {"text": "⚡️ Включить весь кабинет (WoL)", "callback_data": f"confirm:wakerm:{building}:{floor}:{room}", "style": "success"},
+            {"text": "🛑 Выключить кабинет", "callback_data": f"confirm:shutrm:{building}:{floor}:{room}", "style": "danger"}
         ])
 
     keyboard.append([
-        {"text": "⬅️ Назад к кабинетам", "callback_data": f"flr:{building}:{floor}"},
-        {"text": "🏠 Главное меню", "callback_data": "menu:main"}
+        {"text": "⬅️ Назад к кабинетам", "callback_data": f"flr:{building}:{floor}", "style": "primary"},
+        {"text": "🏠 Главное меню", "callback_data": "menu:main", "style": "primary"}
     ])
 
     return {
         "text": (
             f"🏢 <b>{building}</b> → 🏬 <b>{floor}</b> → 🚪 <b>{room}</b>\n\n"
-            f"🖥 Всего ПК: <b>{total}</b>  |  🟢 В сети: <b>{online}</b>  |  🔴 Выключено: <b>{offline}</b>\n\n"
+            f"<blockquote expandable>📊 <b>Статистика кабинета:</b>\n"
+            f"• Всего станций: <b>{total}</b>\n"
+            f"• 🟢 В сети (Онлайн): <b>{online}</b>\n"
+            f"• 🔴 Выключено (Офлайн): <b>{offline}</b></blockquote>\n\n"
             f"<i>Выберите станцию для индивидуального управления или воспользуйтесь групповыми кнопками:</i>"
         ),
         "reply_markup": {"inline_keyboard": keyboard}
@@ -460,22 +463,27 @@ def build_status_view(user_devices: List[Dict[str, Any]], scope_desc: str) -> Di
     total = len(user_devices)
     online = sum(1 for d in user_devices if d.get("powerStatus") == "On" or d.get("isOnline") is True)
     offline = total - online
+    wol_ready = sum(1 for d in user_devices if d.get("mac"))
+    agent_count = sum(1 for d in user_devices if d.get("agentVersion") and d.get("agentVersion") != "Agentless")
     return {
         "text": (
             f"📊 <b>Сводка состояния парка ПК</b>\n"
             f"🌐 Зона ответственности: <b>{scope_desc}</b>\n\n"
-            f"🖥 Всего станций: <b>{total}</b>\n"
-            f"🟢 В сети (Онлайн): <b>{online}</b>\n"
-            f"🔴 Выключено: <b>{offline}</b>"
+            f"<blockquote expandable>🖥 <b>Детальная статистика парка:</b>\n"
+            f"• Всего станций: <b>{total}</b>\n"
+            f"• 🟢 В сети (Онлайн): <b>{online}</b>\n"
+            f"• 🔴 Выключено (Офлайн): <b>{offline}</b>\n"
+            f"• ⚡️ С поддержкой WoL: <b>{wol_ready}</b>\n"
+            f"• ⚙️ С агентом управления: <b>{agent_count}</b></blockquote>"
         ),
         "reply_markup": {
             "inline_keyboard": [
                 [
-                    {"text": "🖥 Список ПК", "callback_data": "menu:devices:0"},
-                    {"text": "🔄 Обновить", "callback_data": "menu:status"}
+                    {"text": "🖥 Список ПК", "callback_data": "menu:devices:0", "style": "primary"},
+                    {"text": "🔄 Обновить", "callback_data": "menu:status", "style": "primary"}
                 ],
                 [
-                    {"text": "⬅️ Главное меню", "callback_data": "menu:main"}
+                    {"text": "⬅️ Главное меню", "callback_data": "menu:main", "style": "primary"}
                 ]
             ]
         }
@@ -486,7 +494,7 @@ def build_devices_view(user_devices: List[Dict[str, Any]], scope_desc: str, page
         return {
             "text": f"🖥 В вашей зоне ответственности (<b>{scope_desc}</b>) пока нет зарегистрированных ПК.",
             "reply_markup": {
-                "inline_keyboard": [[{"text": "⬅️ Главное меню", "callback_data": "menu:main"}]]
+                "inline_keyboard": [[{"text": "⬅️ Главное меню", "callback_data": "menu:main", "style": "primary"}]]
             }
         }
     PAGE_SIZE = 8
@@ -501,7 +509,7 @@ def build_devices_view(user_devices: List[Dict[str, Any]], scope_desc: str, page
         is_on = (d.get("powerStatus") == "On" or d.get("isOnline") is True)
         icon = "🟢" if is_on else "🔴"
         btn_text = f"{icon} {d.get('name')}"
-        row.append({"text": btn_text, "callback_data": f"dev:{d.get('id')}"})
+        row.append({"text": btn_text, "callback_data": f"dev:{d.get('id')}", "style": "primary"})
         if len(row) == 2:
             keyboard.append(row)
             row = []
@@ -510,15 +518,15 @@ def build_devices_view(user_devices: List[Dict[str, Any]], scope_desc: str, page
 
     nav_row = []
     if page > 0:
-        nav_row.append({"text": "◀️ Назад", "callback_data": f"menu:devices:{page - 1}"})
-    nav_row.append({"text": f"📄 {page + 1}/{total_pages}", "callback_data": f"menu:devices:{page}"})
+        nav_row.append({"text": "◀️ Назад", "callback_data": f"menu:devices:{page - 1}", "style": "primary"})
+    nav_row.append({"text": f"📄 {page + 1}/{total_pages}", "callback_data": f"menu:devices:{page}", "style": "primary"})
     if page < total_pages - 1:
-        nav_row.append({"text": "Вперёд ▶️", "callback_data": f"menu:devices:{page + 1}"})
+        nav_row.append({"text": "Вперёд ▶️", "callback_data": f"menu:devices:{page + 1}", "style": "primary"})
     keyboard.append(nav_row)
 
     keyboard.append([
-        {"text": "🔄 Обновить", "callback_data": f"menu:devices:{page}"},
-        {"text": "⬅️ Главное меню", "callback_data": "menu:main"}
+        {"text": "🔄 Обновить", "callback_data": f"menu:devices:{page}", "style": "primary"},
+        {"text": "⬅️ Главное меню", "callback_data": "menu:main", "style": "primary"}
     ])
 
     return {
@@ -533,31 +541,35 @@ def build_device_card(target_dev: Dict[str, Any], can_manage: bool, role: str) -
     status_text = "В сети (Онлайн)" if is_on else "Выключен (Офлайн)"
 
     text = (
-        f"🖥 <b>Рабочая станция: {target_dev.get('name')}</b>\n\n"
-        f"📌 <b>ID:</b> <code>{dev_id}</code>\n"
-        f"📶 <b>Статус:</b> {icon} <b>{status_text}</b>\n"
-        f"🌐 <b>IP-адрес:</b> <code>{target_dev.get('ip') or '—'}</code>\n"
-        f"🏷 <b>MAC-адрес:</b> <code>{target_dev.get('mac') or '—'}</code>\n"
-        f"📁 <b>Группа:</b> <i>{target_dev.get('group')}</i>\n"
-        f"⚙️ <b>Версия агента:</b> <code>v{target_dev.get('agentVersion')}</code>"
+        f"🖥 <b>Рабочая станция: {target_dev.get('name')}</b>\n"
+        f"📶 <b>Статус:</b> {icon} <b>{status_text}</b>\n\n"
+        f"<blockquote expandable>📌 <b>Технические характеристики:</b>\n"
+        f"• 🆔 <b>ID:</b> <code>{dev_id}</code>\n"
+        f"• 🌐 <b>IP-адрес:</b> <code>{target_dev.get('ip') or '—'}</code>\n"
+        f"• 🏷 <b>MAC-адрес:</b> <code>{target_dev.get('mac') or '—'}</code>\n"
+        f"• 🏢 <b>Корпус:</b> {target_dev.get('building') or 'Общие группы'}\n"
+        f"• 🏬 <b>Этаж:</b> {target_dev.get('floor') or '1 этаж'}\n"
+        f"• 🚪 <b>Кабинет:</b> {target_dev.get('room') or '—'}\n"
+        f"• 📁 <b>Группа:</b> <i>{target_dev.get('group')}</i>\n"
+        f"• ⚙️ <b>Версия агента:</b> <code>v{target_dev.get('agentVersion')}</code></blockquote>"
     )
 
     keyboard = []
     if can_manage and role != "Наблюдатель":
         ctrl_row = []
         if not is_on:
-            ctrl_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"confirm:wake:{dev_id}"})
+            ctrl_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"confirm:wake:{dev_id}", "style": "success"})
         else:
-            ctrl_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"})
-            ctrl_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"})
+            ctrl_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}", "style": "danger"})
+            ctrl_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}", "style": "primary"})
         if ctrl_row:
             keyboard.append(ctrl_row)
 
     keyboard.append([
-        {"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}"},
-        {"text": "📋 К списку ПК", "callback_data": "menu:devices:0"}
+        {"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}", "style": "primary"},
+        {"text": "📋 К списку ПК", "callback_data": "menu:devices:0", "style": "primary"}
     ])
-    keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main"}])
+    keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main", "style": "primary"}])
 
     return {"text": text, "reply_markup": {"inline_keyboard": keyboard}}
 
@@ -565,16 +577,21 @@ def build_confirm_view(target_dev: Dict[str, Any], action: str) -> Dict[str, Any
     dev_id = target_dev.get("id")
     act_name = "ВЫКЛЮЧЕНИЕ" if action == "shutdown" else ("ПЕРЕЗАГРУЗКУ" if action == "reboot" else "ВКЛЮЧЕНИЕ (WoL)")
     act_icon = "🛑" if action == "shutdown" else ("🔄" if action == "reboot" else "⚡️")
+    btn_style = "danger" if action == "shutdown" else ("success" if action == "wake" else "primary")
 
     text = (
         f"⚠️ <b>Подтверждение действия</b>\n\n"
-        f"Вы действительно хотите выполнить {act_icon} <b>{act_name}</b>\n"
-        f"для станции <b>{target_dev.get('name')}</b> (<code>{target_dev.get('ip')}</code>)?"
+        f"Вы действительно хотите выполнить {act_icon} <b>{act_name}</b>?\n\n"
+        f"<blockquote expandable>🖥 <b>Параметры целевой станции:</b>\n"
+        f"• Имя: <b>{target_dev.get('name')}</b>\n"
+        f"• IP: <code>{target_dev.get('ip') or '—'}</code>\n"
+        f"• MAC: <code>{target_dev.get('mac') or '—'}</code>\n"
+        f"• Локация: {target_dev.get('building') or '—'} / {target_dev.get('room') or '—'}</blockquote>"
     )
     keyboard = [
         [
-            {"text": f"{act_icon} Да, выполнить", "callback_data": f"do:{action}:{dev_id}"},
-            {"text": "❌ Отмена", "callback_data": f"dev:{dev_id}"}
+            {"text": f"{act_icon} Да, выполнить", "callback_data": f"do:{action}:{dev_id}", "style": btn_style},
+            {"text": "❌ Отмена", "callback_data": f"dev:{dev_id}", "style": "primary"}
         ]
     ]
     return {"text": text, "reply_markup": {"inline_keyboard": keyboard}}
@@ -669,8 +686,8 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "⚡️ Да, включить кабинет", "callback_data": f"do:wakerm:{bld_name}:{flr_name}:{rm_name}"},
-                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}
+                        {"text": "⚡️ Да, включить кабинет", "callback_data": f"do:wakerm:{bld_name}:{flr_name}:{rm_name}", "style": "success"},
+                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}", "style": "primary"}
                     ]
                 ]
             },
@@ -684,8 +701,8 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "🛑 Да, выключить кабинет", "callback_data": f"do:shutrm:{bld_name}:{flr_name}:{rm_name}"},
-                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}
+                        {"text": "🛑 Да, выключить кабинет", "callback_data": f"do:shutrm:{bld_name}:{flr_name}:{rm_name}", "style": "danger"},
+                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}", "style": "primary"}
                     ]
                 ]
             },
@@ -704,7 +721,7 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         return {
             "text": f"✅ <b>Сигнал Wake-on-LAN отправлен!</b>\n\n⚡️ Разбужено компьютеров: <b>{woken}</b> из {len(target_devs)}\n📍 Локация: <b>{bld_name} → {flr_name} → {rm_name}</b>",
             "reply_markup": {
-                "inline_keyboard": [[{"text": "🚪 К кабинету", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}]]
+                "inline_keyboard": [[{"text": "🚪 К кабинету", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}", "style": "primary"}]]
             },
             "alert": f"WoL отправлен на {woken} ПК"
         }
@@ -725,7 +742,7 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         return {
             "text": f"✅ <b>Команда выключения отправлена!</b>\n\n🛑 Выключено станций: <b>{shut}</b>\n📍 Локация: <b>{bld_name} → {flr_name} → {rm_name}</b>",
             "reply_markup": {
-                "inline_keyboard": [[{"text": "🚪 К кабинету", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}]]
+                "inline_keyboard": [[{"text": "🚪 К кабинету", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}", "style": "primary"}]]
             },
             "alert": f"Выключение {shut} ПК"
         }
@@ -738,8 +755,8 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "⚡️ Да, включить весь корпус", "callback_data": f"do:wakebld:{bld_name}"},
-                        {"text": "❌ Отмена", "callback_data": f"bld:{bld_name}"}
+                        {"text": "⚡️ Да, включить весь корпус", "callback_data": f"do:wakebld:{bld_name}", "style": "success"},
+                        {"text": "❌ Отмена", "callback_data": f"bld:{bld_name}", "style": "primary"}
                     ]
                 ]
             },
@@ -753,8 +770,8 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "🛑 Да, выключить корпус", "callback_data": f"do:shutbld:{bld_name}"},
-                        {"text": "❌ Отмена", "callback_data": f"bld:{bld_name}"}
+                        {"text": "🛑 Да, выключить корпус", "callback_data": f"do:shutbld:{bld_name}", "style": "danger"},
+                        {"text": "❌ Отмена", "callback_data": f"bld:{bld_name}", "style": "primary"}
                     ]
                 ]
             },
@@ -773,7 +790,7 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         return {
             "text": f"✅ <b>Wake-on-LAN отправлен!</b>\n\n⚡️ Разбужено ПК: <b>{woken}</b> из {len(target_devs)} в <b>{bld_name}</b>",
             "reply_markup": {
-                "inline_keyboard": [[{"text": "🏢 К корпусу", "callback_data": f"bld:{bld_name}"}]]
+                "inline_keyboard": [[{"text": "🏢 К корпусу", "callback_data": f"bld:{bld_name}", "style": "primary"}]]
             },
             "alert": f"WoL на {woken} ПК"
         }
@@ -794,7 +811,7 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         return {
             "text": f"✅ <b>Команда выключения отправлена!</b>\n\n🛑 Выключено ПК: <b>{shut}</b> в <b>{bld_name}</b>",
             "reply_markup": {
-                "inline_keyboard": [[{"text": "🏢 К корпусу", "callback_data": f"bld:{bld_name}"}]]
+                "inline_keyboard": [[{"text": "🏢 К корпусу", "callback_data": f"bld:{bld_name}", "style": "primary"}]]
             },
             "alert": f"Выключение {shut} ПК"
         }
@@ -870,8 +887,8 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             "reply_markup": {
                 "inline_keyboard": [
                     [
-                        {"text": "🖥 К компьютеру", "callback_data": f"dev:{dev_id}"},
-                        {"text": "📋 К списку ПК", "callback_data": "menu:devices:0"}
+                        {"text": "🖥 К компьютеру", "callback_data": f"dev:{dev_id}", "style": "primary"},
+                        {"text": "📋 К списку ПК", "callback_data": "menu:devices:0", "style": "primary"}
                     ]
                 ]
             },
@@ -957,7 +974,7 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
         return {
             "text": f"🆔 Ваш Telegram Chat ID: <code>{chat_id}</code>\n👤 Профиль: <b>{user_name}</b> ({role})\n🌐 Зона: <b>{scope_desc}</b>",
             "reply_markup": {
-                "inline_keyboard": [[{"text": "⬅️ Главное меню", "callback_data": "menu:main"}]]
+                "inline_keyboard": [[{"text": "⬅️ Главное меню", "callback_data": "menu:main", "style": "primary"}]]
             }
         }
 
@@ -1008,8 +1025,9 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
             record_audit(operator_label, "WAKE", target_dev.get("id"), "SUCCESS", f"Magic Packet (WoL) отправлен через Telegram-бота")
             return {
                 "text": f"⚡️ <b>Magic Packet (WoL) успешно отправлен</b> на <b>{target_dev.get('name')}</b> (MAC: <code>{mac}</code>)!",
+                "effect_id": "5046509860389126442",  # 🎉 Confetti
                 "reply_markup": {
-                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}"}]]
+                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}", "style": "primary"}]]
                 }
             }
 
@@ -1032,8 +1050,9 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
             record_audit(operator_label, "SHUTDOWN", dev_id, "SUCCESS", f"Команда выключения инициирована через Telegram-бота")
             return {
                 "text": f"🛑 <b>Команда выключения отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip}).",
+                "effect_id": "5104841245755180586",  # 🔥 Flame
                 "reply_markup": {
-                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}"}]]
+                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}", "style": "primary"}]]
                 }
             }
 
@@ -1056,8 +1075,9 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
             record_audit(operator_label, "REBOOT", dev_id, "SUCCESS", f"Команда перезагрузки инициирована через Telegram-бота")
             return {
                 "text": f"🔄 <b>Команда перезагрузки отправлена</b> на рабочую станцию <b>{target_dev.get('name')}</b> ({ip}).",
+                "effect_id": "5107584321108051014",  # 👍 Thumbs up
                 "reply_markup": {
-                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}"}]]
+                    "inline_keyboard": [[{"text": "🖥 К компьютеру", "callback_data": f"dev:{target_dev.get('id')}", "style": "primary"}]]
                 }
             }
 
@@ -1082,8 +1102,8 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
                 is_on = (d.get("powerStatus") == "On" or d.get("isOnline") is True)
                 icon = "🟢" if is_on else "🔴"
                 loc = f"{d.get('building')} / {d.get('room')}" if d.get('room') else d.get('group')
-                keyboard.append([{"text": f"{icon} {d.get('name')} ({loc})", "callback_data": f"dev:{d.get('id')}"}])
-            keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main"}])
+                keyboard.append([{"text": f"{icon} {d.get('name')} ({loc})", "callback_data": f"dev:{d.get('id')}", "style": "primary"}])
+            keyboard.append([{"text": "⬅️ Главное меню", "callback_data": "menu:main", "style": "primary"}])
             return {
                 "text": f"🔍 <b>Найдено совпадений: {len(matches)}</b> по запросу «{cmd_raw}»:\n<i>Выберите станцию для перехода к управлению:</i>",
                 "reply_markup": {"inline_keyboard": keyboard}
@@ -1240,7 +1260,14 @@ async def telegram_webhook(request: Request):
                     post_payload = {"chat_id": chat_id, "text": reply_text, "parse_mode": "HTML"}
                     if reply_markup:
                         post_payload["reply_markup"] = reply_markup
-                    await client.post(url, json=post_payload)
+                    if isinstance(reply_data, dict):
+                        effect_id = reply_data.get("effect_id") or reply_data.get("message_effect_id")
+                        if effect_id:
+                            post_payload["message_effect_id"] = str(effect_id)
+                    resp = await client.post(url, json=post_payload)
+                    if resp.status_code != 200 and "message_effect_id" in post_payload:
+                        post_payload.pop("message_effect_id")
+                        await client.post(url, json=post_payload)
             except Exception:
                 pass
 
