@@ -219,20 +219,20 @@ class AlertEngine:
                         + "</blockquote>"
                     )
 
-                    # Build interactive inline action buttons with styles
+                    # Build interactive inline action buttons (clean semi-transparent style)
                     inline_keyboard = []
                     if dev_id:
                         act_row = []
                         if a_type in ["OFFLINE", "AGENT_DISCONNECTED", "POWER_FAILED", "EMERGENCY_SHUTDOWN"]:
-                            act_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}", "style": "success"})
+                            act_row.append({"text": "⚡️ Включить (WoL)", "callback_data": f"do:wake:{dev_id}"})
                         elif a_type in ["ONLINE", "AGENT_CONNECTED", "BOOT"]:
-                            act_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}", "style": "danger"})
-                            act_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}", "style": "primary"})
+                            act_row.append({"text": "🛑 Выключить", "callback_data": f"confirm:shutdown:{dev_id}"})
+                            act_row.append({"text": "🔄 Перезагрузить", "callback_data": f"confirm:reboot:{dev_id}"})
                         else:
-                            act_row.append({"text": "⚡️ WoL", "callback_data": f"do:wake:{dev_id}", "style": "success"})
-                        act_row.append({"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}", "style": "primary"})
+                            act_row.append({"text": "⚡️ WoL", "callback_data": f"do:wake:{dev_id}"})
+                        act_row.append({"text": "🔍 Проверить статус", "callback_data": f"dev:{dev_id}"})
                         inline_keyboard.append(act_row)
-                        inline_keyboard.append([{"text": f"🖥 Управление {dev_name}", "callback_data": f"dev:{dev_id}", "style": "primary"}])
+                        inline_keyboard.append([{"text": f"🖥 Управление {dev_name}", "callback_data": f"dev:{dev_id}"}])
 
                     # Select message effect: Flame 🔥 for critical/failure, Confetti 🎉 for recovery/online
                     effect_id = None
