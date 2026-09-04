@@ -27,7 +27,7 @@ export const managedUsers: ManagedUser[] = [
     username: 'admin',
     displayName: 'Administrator',
     email: 'admin@northstar.local',
-    role: 'Super Admin',
+    role: 'Суперадминистратор',
     scope: 'Все устройства',
     enabled: true,
     lastLogin: 'Только что',

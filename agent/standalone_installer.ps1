@@ -410,7 +410,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.1"
+    agentVersion = "2.9.3"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -445,7 +445,7 @@ try {
         New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
     }
     $cfgPath = Join-Path $InstallDir "config.json"
-    $cfg = @{ server_url = "$ServerUrl/api/v1"; enrollment_token = $Token; device_id = $deviceId; heartbeat_interval_seconds = 60 } | ConvertTo-Json
+    $cfg = @{ server_url = "$ServerUrl/api/v1"; enrollment_token = $Token; device_id = $deviceId; heartbeat_interval_seconds = 30 } | ConvertTo-Json
     Set-Content -Path $cfgPath -Value $cfg -Encoding UTF8
     Write-Host ("      [OK] Конфигурация сохранена: " + $cfgPath) -ForegroundColor Green
 
@@ -711,7 +711,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.2'
+`$AgentVersion = '2.9.3'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 10
@@ -730,9 +730,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.2") {
+function Update-AgentService([string]`$targetVer = "2.9.3") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.2"
+        `$targetVer = "2.9.3"
     }
     try {
         # 1. Report update in progress
@@ -797,7 +797,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "2.9.1"
+        Update-AgentService "`$AgentVersion"
         return
     }
 
@@ -1977,27 +1977,29 @@ try {
     }
 } finally {
     try {
-        if (`$ServerUrl -and `$DeviceId) {
-            `$offPayload = @{
-                deviceId = `$DeviceId
-                hostname = `$env:COMPUTERNAME
-                mac = `$DeviceMac
-                action = "SHUTDOWN"
-                details = "Завершение работы операционной системы Windows"
-                source = "LOCAL"
-                initiator = "Локальный пользователь"
+        if ([System.Environment]::HasShutdownStarted) {
+            if (`$ServerUrl -and `$DeviceId) {
+                `$offPayload = @{
+                    deviceId = `$DeviceId
+                    hostname = `$env:COMPUTERNAME
+                    mac = `$DeviceMac
+                    action = "SHUTDOWN"
+                    details = "Завершение работы операционной системы Windows"
+                    source = "LOCAL"
+                    initiator = "Система Windows"
+                }
+                `$offJson = `$offPayload | ConvertTo-Json -Compress
+                `$offBytes = [System.Text.Encoding]::UTF8.GetBytes(`$offJson)
+                `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/power-event")
+                `$pReq.Method = 'POST'
+                `$pReq.ContentType = 'application/json; charset=utf-8'
+                `$pReq.Timeout = 1500
+                `$pStream = `$pReq.GetRequestStream()
+                `$pStream.Write(`$offBytes, 0, `$offBytes.Length)
+                `$pStream.Close()
+                `$pResp = `$pReq.GetResponse()
+                `$pResp.Close()
             }
-            `$offJson = `$offPayload | ConvertTo-Json -Compress
-            `$offBytes = [System.Text.Encoding]::UTF8.GetBytes(`$offJson)
-            `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/power-event")
-            `$pReq.Method = 'POST'
-            `$pReq.ContentType = 'application/json; charset=utf-8'
-            `$pReq.Timeout = 1500
-            `$pStream = `$pReq.GetRequestStream()
-            `$pStream.Write(`$offBytes, 0, `$offBytes.Length)
-            `$pStream.Close()
-            `$pResp = `$pReq.GetResponse()
-            `$pResp.Close()
         }
     } catch {}
 }
@@ -2044,7 +2046,7 @@ WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Byp
             $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
             $triggerRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
             $taskPrincipal = New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest
-            $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable
+            $taskSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit (New-TimeSpan -Days 365) -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -MultipleInstances IgnoreNew
             Register-ScheduledTask -TaskName "WorkstationManagerAgent" -Action $taskAction -Trigger @($triggerBoot, $triggerLogon, $triggerRepeat) -Principal $taskPrincipal -Settings $taskSettings -Force | Out-Null
             $taskCreated = $true
             Write-Host "      [OK] Системная служба успешно зарегистрирована (SYSTEM / Фоновый режим / Сторож 5 мин)" -ForegroundColor Green
@@ -2054,18 +2056,14 @@ WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Byp
             Write-Host "      [OK] Системная задача создана (schtasks каждые 5 мин)" -ForegroundColor Green
         }
 
-        # 2. Common Startup folder for all users
+        # 2. Clean up any legacy interactive user startup shortcuts to prevent duplicate instances
         try {
             $commonStartup = [Environment]::GetFolderPath("CommonStartup")
-            if ($commonStartup -and (Test-Path $commonStartup)) {
-                $destVbs = Join-Path $commonStartup "WorkstationManagerAgent.vbs"
-                Copy-Item -Path $launcherVbs -Destination $destVbs -Force -ErrorAction SilentlyContinue
+            if ($commonStartup) {
+                $oldVbs = Join-Path $commonStartup "WorkstationManagerAgent.vbs"
+                if (Test-Path $oldVbs) { Remove-Item -Path $oldVbs -Force -ErrorAction SilentlyContinue }
             }
-        } catch {}
-
-        # 3. Registry Run Key for HKLM
-        try {
-            Set-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "WorkstationManagerAgent" -Value "`"$env:SystemRoot\System32\wscript.exe`" `"$launcherVbs`"" -Type String -ErrorAction SilentlyContinue
+            Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "WorkstationManagerAgent" -ErrorAction SilentlyContinue
         } catch {}
     } else {
         $userStartup = [Environment]::GetFolderPath("Startup")
@@ -2318,7 +2316,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.1"
+    agentVersion = "2.9.3"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

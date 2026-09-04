@@ -90,7 +90,7 @@ class WolService:
             return False
             
         if ports is None:
-            ports = [9, 7, 0]
+            ports = [9, 7]
 
         try:
             packet = cls.create_magic_packet(mac_address)

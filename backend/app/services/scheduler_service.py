@@ -195,7 +195,9 @@ class SchedulerService:
                         )
 
                         sec_since_heartbeat = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
-                        agent_alive = (sec_since_heartbeat <= 60) if not is_agentless else False
+                        dev_interval = getattr(dev, 'heartbeat_interval', 30) or 30
+                        timeout_threshold = max(90, dev_interval * 2 + 15)
+                        agent_alive = (sec_since_heartbeat <= timeout_threshold) if not is_agentless else False
 
                         # 1. Update Agent Status strictly based on real Heartbeat (independent of power)
                         if not is_agentless:
@@ -316,8 +318,13 @@ class SchedulerService:
                                 fail_count = self._consecutive_ping_failures.get(dev_key, 0) + 1
                                 self._consecutive_ping_failures[dev_key] = fail_count
 
-                                # 6 consecutive failures at 5s loop = ~30 seconds of confirmed silence
-                                if dev.power_status == PowerStatus.ON and fail_count >= 6:
+                                # 6 consecutive failures (~30s) or 12 failures (~60s if waking/booting)
+                                is_booting = (dev.power_status == PowerStatus.BOOTING or str(dev.power_status).lower() in ["booting", "waking"])
+                                max_fails = 12 if is_booting else 6
+                                # For agent-managed devices, never mark OFF if heartbeat was received within valid window
+                                if not is_agentless and sec_since_heartbeat <= timeout_threshold:
+                                    continue
+                                if (dev.power_status == PowerStatus.ON or is_booting) and fail_count >= max_fails:
                                     dev.power_status = PowerStatus.OFF
                                     dev.agent_status = AgentStatus.DISCONNECTED
                                     status_changed = True

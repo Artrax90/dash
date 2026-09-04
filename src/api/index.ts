@@ -957,7 +957,11 @@ export const rolesApi = {
         body: JSON.stringify(payload)
       });
       if (res.ok) return await res.json();
-    } catch {}
+      const errJson = await res.json().catch(() => null);
+      if (errJson?.detail) throw new Error(errJson.detail);
+    } catch (e: any) {
+      if (e?.message && e.message !== 'Failed to fetch') throw e;
+    }
     const role = customRoles.find(r => r.name === nameOrId || r.id === nameOrId);
     if (role) {
       Object.assign(role, payload);

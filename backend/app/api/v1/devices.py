@@ -199,19 +199,27 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     dev_interval = d.heartbeat_interval or 60
     timeout_threshold = max(75, dev_interval * 2 + 15)
     
-    if is_agentless:
-        if d.power_status == PowerStatus.OFF or str(d.power_status).lower() in ["off", "powerstatus.off"]:
-            is_online = False
-        else:
-            is_online = (sec_since_last_seen <= 120)
+    raw_power = str(d.power_status or "").lower()
+    is_power_off = (d.power_status == PowerStatus.OFF or raw_power in ["off", "powerstatus.off"])
+    is_power_booting = (d.power_status == PowerStatus.BOOTING or raw_power in ["booting", "powerstatus.booting", "waking"])
+
+    if is_power_off:
+        is_online = False
+        effective_power = "Off"
+    elif is_power_booting:
+        is_online = False
+        effective_power = "Booting"
+    elif is_agentless:
+        is_online = (sec_since_last_seen <= 120)
+        effective_power = "On" if is_online else "Off"
     else:
         is_online = (sec_since_last_seen <= timeout_threshold)
-    
-    effective_power = "On" if is_online else "Off"
+        effective_power = "On" if is_online else "Off"
+
     effective_agent = "Agentless" if is_agentless else ("Connected" if is_online else "Disconnected")
     effective_health = (
         d.health_status.value if hasattr(d.health_status, 'value') else str(d.health_status)
-    ) if is_online else ("Healthy" if is_agentless else "Offline")
+    ) if is_online else ("Warning" if is_power_booting else "Offline")
 
     # Dynamic live uptime calculation
     calculated_uptime = d.uptime or "—"
@@ -1423,7 +1431,7 @@ async def wake_device(device_id: str, request: Request, db: AsyncSession = Depen
         if res:
             success = True
 
-    device.power_status = PowerStatus.ON
+    device.power_status = PowerStatus.BOOTING
     from backend.app.api.v1.agents import clear_pending_power_commands
     clear_pending_power_commands(device.id)
     if device.hostname:
@@ -1613,16 +1621,7 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
             broadcast_ip=device.broadcast_ip,
             ip_address=device.ip_address
         )
-        device.power_status = PowerStatus.ON
-        try:
-            from backend.app.services.alert_engine import alert_engine
-            await alert_engine.trigger_device_online(
-                session=db,
-                device=device,
-                reason=f"Отправлен сигнал включения (Wake-on-LAN) на станцию {device.name or device.hostname or device.id} (инициатор: {initiator})"
-            )
-        except Exception:
-            pass
+        device.power_status = PowerStatus.BOOTING
     elif action in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
         queue_device_command(device.id, action, force=force, reason=reason)
         if device.hostname and device.hostname != device.id:

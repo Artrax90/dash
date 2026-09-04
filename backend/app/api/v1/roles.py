@@ -113,9 +113,11 @@ async def create_role(payload: Dict[str, Any], request: Request):
 @router.put("/{role_id_or_name}")
 async def update_role(role_id_or_name: str, payload: Dict[str, Any], request: Request):
     require_superadmin(request)
+    import urllib.parse
+    target = urllib.parse.unquote(role_id_or_name).strip()
     roles = load_roles()
     for r in roles:
-        if r["id"] == role_id_or_name or r["name"] == role_id_or_name:
+        if r.get("id", "").strip().lower() == target.lower() or r.get("name", "").strip().lower() == target.lower():
             if "name" in payload:
                 r["name"] = payload["name"]
             if "description" in payload:
@@ -126,8 +128,23 @@ async def update_role(role_id_or_name: str, payload: Dict[str, Any], request: Re
                 r["scopeType"] = payload["scopeType"]
             if "scopeValues" in payload:
                 r["scopeValues"] = payload["scopeValues"]
+            if "tone" in payload:
+                r["tone"] = payload["tone"]
             save_roles(roles)
             return r
-    # If not found by exact ID or name, create or update
-    raise HTTPException(status_code=404, detail="Role not found")
+    # Upsert: if role not found by exact ID or name, create it
+    new_role = {
+        "id": f"ROLE-{len(roles) + 1:02d}",
+        "name": payload.get("name") or target,
+        "description": payload.get("description", ""),
+        "isBuiltIn": False,
+        "permissions": payload.get("permissions", ["devices.view", "monitoring.view"]),
+        "scopeType": payload.get("scopeType", "Все устройства"),
+        "scopeValues": payload.get("scopeValues", []),
+        "userCount": 0,
+        "tone": payload.get("tone", "blue"),
+    }
+    roles.append(new_role)
+    save_roles(roles)
+    return new_role
 

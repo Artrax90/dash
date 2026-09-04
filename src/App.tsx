@@ -635,6 +635,23 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
   );
 }
 
+export const isSuperAdminRole = (role?: string) => {
+  if (!role) return false;
+  const r = role.trim().toLowerCase().replace(/[-_]/g, ' ');
+  return (
+    r === 'суперадминистратор' ||
+    r === 'superadmin' ||
+    r === 'super admin' ||
+    r === 'главный администратор' ||
+    r === 'главный суперадминистратор' ||
+    r === 'администратор' ||
+    r === 'администратор парка' ||
+    r === 'admin' ||
+    r === 'administrator' ||
+    r === 'root'
+  );
+};
+
 function App() {
   const { lang, setLang, t } = useLanguage();
   const [route, setRoute] = useState<RouteState>(() => parseUrlHash());
@@ -752,7 +769,7 @@ function App() {
   const selectedGroup = route.selectedGroup;
   const deviceFilter = route.deviceFilter || {};
 
-  const isSuperAdmin = currentUser?.role === 'Суперадминистратор' || currentUser?.role === 'SuperAdmin';
+  const isSuperAdmin = isSuperAdminRole(currentUser?.role);
   const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
 
   const rawNavigation: { label: Page; name: string; icon: typeof LayoutDashboard; group?: string; adminOnly?: boolean }[] = [
@@ -1849,7 +1866,7 @@ function Devices({
   currentUser?: ManagedUser | null;
 }) {
   const { t } = useLanguage();
-  const isSuperAdmin = currentUser?.role === 'Суперадминистратор' || currentUser?.role === 'SuperAdmin';
+  const isSuperAdmin = isSuperAdminRole(currentUser?.role);
   const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
   const hasRestrictedScope = !isSuperAdmin && currentUser?.scope !== 'Все устройства' && Array.isArray(currentUser?.allowedGroups) && currentUser.allowedGroups.length > 0;
   const allowedGroupsList = hasRestrictedScope ? currentUser.allowedGroups : [];
@@ -3058,14 +3075,14 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
 
       <div className="device-status-grid">
         <div className="device-status-card">
-          <div className={`device-status-card-icon ${device.powerStatus === 'On' ? 'green' : 'red'}`}>
+          <div className={`device-status-card-icon ${device.powerStatus === 'On' ? 'green' : (device.powerStatus === 'Booting' ? 'orange' : 'red')}`}>
             <Zap size={17} />
           </div>
           <div className="device-status-card-info">
             <div className="device-status-card-label">{t('devices.power')}</div>
             <div className="device-status-card-value">
-              <i className={`status-dot ${device.powerStatus === 'On' ? 'green' : 'red'}`} />
-              {device.powerStatus === 'On' ? 'В сети (On)' : 'Выключен (Off)'}
+              <i className={`status-dot ${device.powerStatus === 'On' ? 'green' : (device.powerStatus === 'Booting' ? 'orange' : 'red')}`} />
+              {device.powerStatus === 'On' ? 'В сети (On)' : (device.powerStatus === 'Booting' ? 'Запуск (Booting)' : 'Выключен (Off)')}
             </div>
           </div>
         </div>
@@ -3097,14 +3114,18 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
         </div>
 
         <div className="device-status-card">
-          <div className={`device-status-card-icon ${device.healthStatus === 'Healthy' ? 'green' : device.healthStatus === 'Warning' ? 'orange' : 'red'}`}>
+          <div className={`device-status-card-icon ${device.powerStatus !== 'On' ? (device.powerStatus === 'Booting' ? 'orange' : 'muted') : (device.healthStatus === 'Healthy' ? 'green' : device.healthStatus === 'Warning' ? 'orange' : 'red')}`}>
             <ShieldCheck size={17} />
           </div>
           <div className="device-status-card-info">
             <div className="device-status-card-label">{t('devices.health')}</div>
             <div className="device-status-card-value">
-              <i className={`status-dot ${device.healthStatus === 'Healthy' ? 'green' : device.healthStatus === 'Warning' ? 'orange' : 'red'}`} />
-              {isAgentless ? 'В норме (WoL готов)' : (device.healthStatus === 'Healthy' ? 'В норме (100%)' : device.healthStatus === 'Warning' ? 'Внимание' : 'Ошибка')}
+              <i className={`status-dot ${device.powerStatus !== 'On' ? (device.powerStatus === 'Booting' ? 'orange' : 'grey') : (device.healthStatus === 'Healthy' ? 'green' : device.healthStatus === 'Warning' ? 'orange' : 'red')}`} />
+              {device.powerStatus === 'Booting'
+                ? 'Загрузка...'
+                : (device.powerStatus !== 'On'
+                  ? 'Офлайн (Выключен)'
+                  : (device.healthStatus === 'Healthy' ? (isAgentless ? 'В норме (Онлайн)' : 'В норме (100%)') : device.healthStatus === 'Warning' ? 'Внимание' : 'Ошибка'))}
             </div>
           </div>
         </div>
@@ -11732,7 +11753,7 @@ function Groups({
   currentUser?: ManagedUser | null;
 }) {
   const { t } = useLanguage();
-  const isSuperAdmin = currentUser?.role === 'Суперадминистратор' || currentUser?.role === 'SuperAdmin';
+  const isSuperAdmin = isSuperAdminRole(currentUser?.role);
   const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
   const hasRestrictedScope = !isSuperAdmin && currentUser?.scope !== 'Все устройства' && Array.isArray(currentUser?.allowedGroups) && currentUser.allowedGroups.length > 0;
   const allowedGroupNames = hasRestrictedScope ? currentUser.allowedGroups.map(g => g.toLowerCase().trim()) : null;
