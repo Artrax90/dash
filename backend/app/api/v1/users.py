@@ -22,12 +22,24 @@ def is_superadmin_role(role: Optional[str]) -> bool:
         "super admin",
         "главный администратор",
         "главный суперадминистратор",
-        "администратор",
-        "администратор парка",
-        "admin",
-        "administrator",
         "root",
     }
+
+def is_fleetadmin_role(role: Optional[str]) -> bool:
+    if not role:
+        return False
+    r = role.strip().lower().replace("-", " ").replace("_", " ")
+    return r in {
+        "администратор парка",
+        "fleet admin",
+        "fleetadmin",
+        "администратор",
+        "administrator",
+        "admin"
+    }
+
+def can_manage_fleet_groups(role: Optional[str]) -> bool:
+    return is_superadmin_role(role) or is_fleetadmin_role(role)
 
 def get_current_user_from_request(request: Request) -> Optional[Dict[str, Any]]:
     x_username = request.headers.get("X-Username")

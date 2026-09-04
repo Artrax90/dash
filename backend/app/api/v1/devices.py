@@ -732,9 +732,18 @@ async def create_agentless_device(payload: AgentlessDeviceCreateSchema, request:
     }
 
 @router.get("")
-async def list_devices(db: AsyncSession = Depends(get_db)):
+async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Device))
     devices = result.scalars().all()
+
+    # Scope validation: filter devices for non-superadmin users with restricted scope
+    from backend.app.api.v1.users import get_current_user_from_request, is_superadmin_role
+    from backend.app.core.scope import is_device_in_scope
+
+    u = get_current_user_from_request(request)
+    if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+        allowed = u.get("allowedGroups", [])
+        devices = [d for d in devices if is_device_in_scope(format_device_summary(d), allowed)]
     
     # 1. Hardware Specs Map
     hw_res = await db.execute(select(HardwareSpecModel))
@@ -805,9 +814,19 @@ async def list_devices(db: AsyncSession = Depends(get_db)):
     return summaries
 
 @router.get("/stats")
-async def get_device_stats(db: AsyncSession = Depends(get_db)):
+async def get_device_stats(request: Request, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(Device))
     devices = result.scalars().all()
+
+    # Scope validation: calculate stats only for permitted devices
+    from backend.app.api.v1.users import get_current_user_from_request, is_superadmin_role
+    from backend.app.core.scope import is_device_in_scope
+
+    u = get_current_user_from_request(request)
+    if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+        allowed = u.get("allowedGroups", [])
+        devices = [d for d in devices if is_device_in_scope(format_device_summary(d), allowed)]
+
     now_utc = datetime.utcnow()
     
     def check_online(d):

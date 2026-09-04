@@ -17,6 +17,8 @@ from backend.app.api.v1.alerts import alerts_db
 from backend.app.services.alert_engine import alert_engine
 
 from backend.app.core.config import settings
+from backend.app.core.scope import is_path_in_scope
+from backend.app.api.v1.users import get_request_user_scope, is_superadmin_role, is_fleetadmin_role
 
 import json
 import collections
@@ -219,8 +221,20 @@ pause
     )
 
 @router.get("/tokens")
-async def get_tokens():
-    return tokens_store
+async def get_tokens(request: Request):
+    user_role, allowed_groups = get_request_user_scope(request)
+    if is_superadmin_role(user_role):
+        return tokens_store
+    filtered = []
+    for t in tokens_store:
+        grp = t.get("targetGroup") or ""
+        bld = t.get("targetBuilding") or ""
+        flr = t.get("targetFloor") or ""
+        room = t.get("targetRoom") or ""
+        path = grp or (f"{bld} / {flr} / {room}" if bld and flr and room else bld)
+        if is_path_in_scope(path, allowed_groups) or (bld and is_path_in_scope(bld, allowed_groups)):
+            filtered.append(t)
+    return filtered
 
 @router.get("/builds")
 async def get_agent_builds():
@@ -295,7 +309,11 @@ async def get_agent_builds():
     ]
 
 @router.post("/tokens")
-async def create_token(payload: Dict[str, Any]):
+async def create_token(payload: Dict[str, Any], request: Request):
+    user_role, allowed_groups = get_request_user_scope(request)
+    if not (is_superadmin_role(user_role) or is_fleetadmin_role(user_role)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для генерации токенов")
+
     expiry = payload.get("expiry", "30d")
     expires_at = payload.get("expiresAt")
     
@@ -337,6 +355,11 @@ async def create_token(payload: Dict[str, Any]):
     elif b_val and not r_val:
         target_grp = b_val
 
+    # Validate scope for non-superadmins
+    if not is_superadmin_role(user_role):
+        if not (is_path_in_scope(target_grp, allowed_groups) or (b_val and is_path_in_scope(b_val, allowed_groups))):
+            raise HTTPException(status_code=403, detail=f"Создание токенов для '{target_grp}' запрещено вашими правами доступа")
+
     new_token = {
         "id": f"TOK-{secrets.token_hex(2).upper()}",
         "token": f"wm_tok_{secrets.token_hex(8)}",
@@ -358,13 +381,25 @@ async def create_token(payload: Dict[str, Any]):
     return new_token
 
 @router.put("/tokens/{token_id}")
-async def update_token(token_id: str, payload: Dict[str, Any]):
+async def update_token(token_id: str, payload: Dict[str, Any], request: Request):
+    user_role, allowed_groups = get_request_user_scope(request)
+    if not (is_superadmin_role(user_role) or is_fleetadmin_role(user_role)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для редактирования токенов")
+
     matched = next((t for t in tokens_store if t["id"] == token_id or t["token"] == token_id), None)
     if not matched:
         raise HTTPException(status_code=404, detail="Token not found")
 
+    if not is_superadmin_role(user_role):
+        old_path = matched.get("targetGroup") or matched.get("targetBuilding") or ""
+        if not is_path_in_scope(old_path, allowed_groups):
+            raise HTTPException(status_code=403, detail="Нет прав на редактирование данного токена")
+
     if "targetGroup" in payload:
-        matched["targetGroup"] = payload["targetGroup"]
+        new_grp = payload["targetGroup"]
+        if not is_superadmin_role(user_role) and not is_path_in_scope(new_grp, allowed_groups):
+            raise HTTPException(status_code=403, detail=f"Назначение группы '{new_grp}' выходит за рамки вашего доступа")
+        matched["targetGroup"] = new_grp
     if "targetBuilding" in payload:
         matched["targetBuilding"] = payload["targetBuilding"]
     if "targetFloor" in payload:
@@ -384,9 +419,18 @@ async def update_token(token_id: str, payload: Dict[str, Any]):
     return matched
 
 @router.delete("/tokens/{token_id}")
-async def delete_token(token_id: str):
+async def delete_token(token_id: str, request: Request):
+    user_role, allowed_groups = get_request_user_scope(request)
+    if not (is_superadmin_role(user_role) or is_fleetadmin_role(user_role)):
+        raise HTTPException(status_code=403, detail="Недостаточно прав для удаления токенов")
+
     idx = next((i for i, t in enumerate(tokens_store) if t["id"] == token_id or t["token"] == token_id), None)
     if idx is not None:
+        matched = tokens_store[idx]
+        if not is_superadmin_role(user_role):
+            old_path = matched.get("targetGroup") or matched.get("targetBuilding") or ""
+            if not is_path_in_scope(old_path, allowed_groups):
+                raise HTTPException(status_code=403, detail="Нет прав на удаление данного токена")
         deleted = tokens_store.pop(idx)
         save_tokens(tokens_store)
         return {"status": "deleted", "token": deleted}

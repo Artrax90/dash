@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from backend.app.api.v1.users import load_users
 from backend.app.api.v1.audit import record_audit
+from backend.app.core.scope import is_device_in_scope
 
 from backend.app.core.config import settings
 
@@ -292,8 +293,8 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
     user_name = matched_user.get("displayName", matched_user.get("username", "Оператор"))
     role = matched_user.get("role", "Дежурный оператор")
     scope = matched_user.get("scope", "Все устройства")
-    allowed_groups = [g.lower() for g in matched_user.get("allowedGroups", [])]
-    is_global_scope = (scope == "Все устройства") or (not allowed_groups)
+    raw_allowed_groups = matched_user.get("allowedGroups", [])
+    is_global_scope = (scope == "Все устройства") or (not raw_allowed_groups)
 
     # Filter devices according to Scope
     all_devs = load_devices()
@@ -301,19 +302,13 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
         user_devices = all_devs
         scope_desc = "Все устройства"
     else:
-        user_devices = [
-            d for d in all_devs
-            if str(d.get("group", "")).lower() in allowed_groups
-            or any(str(g).lower() in allowed_groups for g in d.get("groups", []))
-        ]
-        scope_desc = f"Группы: {', '.join(matched_user.get('allowedGroups', []))}"
+        user_devices = [d for d in all_devs if is_device_in_scope(d, raw_allowed_groups)]
+        scope_desc = f"Группы: {', '.join(raw_allowed_groups)}"
 
     def can_manage_device(d: Dict[str, Any]) -> bool:
         if is_global_scope:
             return True
-        d_grp = str(d.get("group", "")).lower()
-        d_grps = [str(g).lower() for g in d.get("groups", [])]
-        return d_grp in allowed_groups or any(g in allowed_groups for g in d_grps)
+        return is_device_in_scope(d, raw_allowed_groups)
 
 def build_main_menu(user_name: str, role: str, scope_desc: str) -> Dict[str, Any]:
     return {
@@ -619,27 +614,21 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
     user_name = matched_user.get("displayName", matched_user.get("username", "Оператор"))
     role = matched_user.get("role", "Дежурный оператор")
     scope = matched_user.get("scope", "Все устройства")
-    allowed_groups = [g.lower() for g in matched_user.get("allowedGroups", [])]
-    is_global_scope = (scope == "Все устройства") or (not allowed_groups)
+    raw_allowed_groups = matched_user.get("allowedGroups", [])
+    is_global_scope = (scope == "Все устройства") or (not raw_allowed_groups)
 
     all_devs = load_devices()
     if is_global_scope:
         user_devices = all_devs
         scope_desc = "Все устройства"
     else:
-        user_devices = [
-            d for d in all_devs
-            if str(d.get("group", "")).lower() in allowed_groups
-            or any(str(g).lower() in allowed_groups for g in d.get("groups", []))
-        ]
-        scope_desc = f"Группы: {', '.join(matched_user.get('allowedGroups', []))}"
+        user_devices = [d for d in all_devs if is_device_in_scope(d, raw_allowed_groups)]
+        scope_desc = f"Группы: {', '.join(raw_allowed_groups)}"
 
     def can_manage_device(d: Dict[str, Any]) -> bool:
         if is_global_scope:
             return True
-        d_grp = str(d.get("group", "")).lower()
-        d_grps = [str(g).lower() for g in d.get("groups", [])]
-        return d_grp in allowed_groups or any(g in allowed_groups for g in d_grps)
+        return is_device_in_scope(d, raw_allowed_groups)
 
     tg_tag = f"@{from_user.get('username')}" if from_user and from_user.get("username") else f"ID:{chat_id}"
     operator_label = f"{user_name} ({tg_tag})"
@@ -942,8 +931,8 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
     user_name = matched_user.get("displayName", matched_user.get("username", "Оператор"))
     role = matched_user.get("role", "Дежурный оператор")
     scope = matched_user.get("scope", "Все устройства")
-    allowed_groups = [g.lower() for g in matched_user.get("allowedGroups", [])]
-    is_global_scope = (scope == "Все устройства") or (not allowed_groups)
+    raw_allowed_groups = matched_user.get("allowedGroups", [])
+    is_global_scope = (scope == "Все устройства") or (not raw_allowed_groups)
 
     # Filter devices according to Scope
     all_devs = load_devices()
@@ -951,19 +940,13 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
         user_devices = all_devs
         scope_desc = "Все устройства"
     else:
-        user_devices = [
-            d for d in all_devs
-            if str(d.get("group", "")).lower() in allowed_groups
-            or any(str(g).lower() in allowed_groups for g in d.get("groups", []))
-        ]
-        scope_desc = f"Группы: {', '.join(matched_user.get('allowedGroups', []))}"
+        user_devices = [d for d in all_devs if is_device_in_scope(d, raw_allowed_groups)]
+        scope_desc = f"Группы: {', '.join(raw_allowed_groups)}"
 
     def can_manage_device(d: Dict[str, Any]) -> bool:
         if is_global_scope:
             return True
-        d_grp = str(d.get("group", "")).lower()
-        d_grps = [str(g).lower() for g in d.get("groups", [])]
-        return d_grp in allowed_groups or any(g in allowed_groups for g in d_grps)
+        return is_device_in_scope(d, raw_allowed_groups)
 
     # 4. Command Router with Rich Inline Menus
     if cmd in ["/start", "/help", "/menu"]:

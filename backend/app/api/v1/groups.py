@@ -228,12 +228,26 @@ def save_buildings(buildings: List[Dict[str, Any]]):
 groups_store: List[Dict[str, Any]] = load_groups()
 buildings_store: List[Dict[str, Any]] = load_buildings()
 
+from backend.app.api.v1.users import get_current_user_from_request, is_superadmin_role, is_fleetadmin_role, can_manage_fleet_groups
+from backend.app.core.scope import (
+    is_path_in_scope,
+    is_device_in_scope,
+    is_group_in_scope,
+    is_building_in_scope,
+    is_floor_in_scope,
+    is_room_in_scope
+)
+
 @router.get("", response_model=List[Dict[str, Any]])
-async def list_groups():
+async def list_groups(request: Request):
+    u = get_current_user_from_request(request)
+    if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+        allowed = u.get("allowedGroups", [])
+        return [g for g in groups_store if is_group_in_scope(g, allowed)]
     return groups_store
 
 @router.get("/buildings", response_model=List[Dict[str, Any]])
-async def list_buildings():
+async def list_buildings(request: Request):
     # Sync with any new buildings mentioned in groups
     existing = {b["name"].lower() for b in buildings_store}
     changed = False
@@ -255,6 +269,11 @@ async def list_buildings():
             changed = True
     if changed:
         save_buildings(buildings_store)
+
+    u = get_current_user_from_request(request)
+    if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+        allowed = u.get("allowedGroups", [])
+        return [b for b in buildings_store if is_building_in_scope(b["name"], allowed)]
     return buildings_store
 
 @router.post("/buildings", response_model=Dict[str, Any])
@@ -381,16 +400,30 @@ async def delete_floor(bld_name: str, flr_name: str):
     return {"status": "deleted", "building": bld_name, "floor": flr_name}
 
 @router.get("/hierarchy")
-async def get_groups_hierarchy():
+async def get_groups_hierarchy(request: Request):
+    u = get_current_user_from_request(request)
+    allowed = None
+    if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+        allowed = u.get("allowedGroups", [])
+
     buildings_map: Dict[str, Dict[str, Any]] = {}
     
-    # 1. Pre-populate from configured buildings so all floors exist
+    # 1. Pre-populate from configured buildings so all floors exist (filtered by scope)
     for b in buildings_store:
         b_name = b["name"]
+        if allowed and not is_building_in_scope(b_name, allowed):
+            continue
+
+        floors_dict = {}
+        for f_name in b.get("floors", []):
+            if allowed and not is_floor_in_scope(b_name, f_name, allowed):
+                continue
+            floors_dict[f_name] = {"name": f_name, "building": b_name, "rooms": []}
+
         buildings_map[b_name] = {
             "name": b_name,
             "color": b.get("color", "blue"),
-            "floors": {f_name: {"name": f_name, "building": b_name, "rooms": []} for f_name in b.get("floors", [])}
+            "floors": floors_dict
         }
 
     # 2. Populate rooms from groups_store
@@ -415,6 +448,11 @@ async def get_groups_hierarchy():
         if not r:
             r = name
 
+        # Scope check
+        if allowed:
+            if not is_room_in_scope(b, f, r, allowed) and not is_group_in_scope(g, allowed):
+                continue
+
         if b not in buildings_map:
             buildings_map[b] = {
                 "name": b,
@@ -438,16 +476,20 @@ async def get_groups_hierarchy():
             "schedule": g.get("schedule", "Без расписания")
         })
 
-    # Convert to clean nested arrays
+    # Convert to clean nested arrays (omit empty buildings if restricted)
     result = []
     for b_name, b_data in buildings_map.items():
         floors_list = []
         for f_name, f_data in b_data["floors"].items():
+            if allowed and not f_data["rooms"] and not is_floor_in_scope(b_name, f_name, allowed):
+                continue
             floors_list.append({
                 "name": f_name,
                 "building": b_name,
                 "rooms": f_data["rooms"]
             })
+        if allowed and not floors_list and not is_building_in_scope(b_name, allowed):
+            continue
         result.append({
             "name": b_name,
             "color": b_data.get("color", "blue"),
@@ -456,7 +498,25 @@ async def get_groups_hierarchy():
     return result
 
 @router.post("", response_model=Dict[str, Any])
-async def create_group(payload: Dict[str, Any]):
+async def create_group(payload: Dict[str, Any], request: Request):
+    u = get_current_user_from_request(request)
+    if u:
+        if u.get("role") in ["Наблюдатель", "Observer"]:
+            raise HTTPException(status_code=403, detail="Роль «Наблюдатель» имеет доступ только для чтения")
+        if not can_manage_fleet_groups(u.get("role")):
+            raise HTTPException(status_code=403, detail="Недостаточно прав для создания групп")
+        if u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+            allowed = u.get("allowedGroups", [])
+            b = str(payload.get("building") or "").strip()
+            f = str(payload.get("floor") or "").strip()
+            r = str(payload.get("room") or "").strip()
+            raw_name = str(payload.get("name", "")).strip()
+            check_p = f"{b} / {f} / {r}" if (b and f and r) else (raw_name or b)
+            if not is_path_in_scope(check_p, allowed):
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Отказ в доступе: вы можете создавать группы только в разрешенных вам разделах ({', '.join(allowed)})."
+                )
     b = str(payload.get("building") or "").strip()
     f = str(payload.get("floor") or "").strip()
     r = str(payload.get("room") or "").strip()

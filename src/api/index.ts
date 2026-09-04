@@ -32,6 +32,15 @@ import type {
   Schedule,
   TelegramBotConfig,
 } from '@/types';
+import {
+  isPathInScope,
+  isDeviceInAllowedGroups,
+  isGroupInAllowedGroups,
+  isBuildingVisibleInScope,
+  isFloorVisibleInScope,
+  isRoomVisibleInScope,
+  isSuperAdminRole,
+} from '@/utils/scope';
 
 const getApiBase = () => {
   if (typeof window !== 'undefined') {
@@ -78,6 +87,9 @@ export function getAuthHeaders(): Record<string, string> {
           if (parsed.username) headers['X-Username'] = parsed.username;
           if (parsed.role) headers['X-User-Role'] = encodeURIComponent(parsed.role);
           if (parsed.id) headers['X-User-Id'] = parsed.id;
+          if (Array.isArray(parsed.allowedGroups)) {
+            headers['X-User-Groups'] = encodeURIComponent(JSON.stringify(parsed.allowedGroups));
+          }
         }
       }
       const token = localStorage.getItem('wm_token');
@@ -104,13 +116,8 @@ export const devicesApi = {
             const saved = localStorage.getItem('wm_user_session');
             if (saved) {
               const u = JSON.parse(saved);
-              if (u && u.scope !== 'Все устройства' && Array.isArray(u.allowedGroups) && u.allowedGroups.length > 0 && u.role !== 'Суперадминистратор' && u.role !== 'SuperAdmin') {
-                const allowed = u.allowedGroups.map((g: string) => g.toLowerCase().trim());
-                return data.filter(d => {
-                  const dGrp = (d.group || '').toLowerCase().trim();
-                  const dGrps = Array.isArray(d.groups) ? d.groups.map((g: any) => String(g).toLowerCase().trim()) : [];
-                  return allowed.includes(dGrp) || dGrps.some(g => allowed.includes(g));
-                });
+              if (u && u.scope !== 'Все устройства' && Array.isArray(u.allowedGroups) && u.allowedGroups.length > 0 && !isSuperAdminRole(u.role)) {
+                return data.filter(d => isDeviceInAllowedGroups(d, u.allowedGroups));
               }
             }
           }
@@ -120,7 +127,19 @@ export const devicesApi = {
     } catch {
       // fallback to in-memory
     }
-    return wait(devices);
+    let fallbackDevs = [...devices];
+    try {
+      if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem('wm_user_session');
+        if (saved) {
+          const u = JSON.parse(saved);
+          if (u && u.scope !== 'Все устройства' && Array.isArray(u.allowedGroups) && u.allowedGroups.length > 0 && !isSuperAdminRole(u.role)) {
+            fallbackDevs = fallbackDevs.filter(d => isDeviceInAllowedGroups(d, u.allowedGroups));
+          }
+        }
+      }
+    } catch {}
+    return wait(fallbackDevs);
   },
   get: async (id: string): Promise<Device | undefined> => {
     try {
@@ -652,13 +671,33 @@ export const schedulesApi = {
 
 export const agentsApi = {
   getTokens: async (): Promise<AgentEnrollmentToken[]> => {
+    let list: AgentEnrollmentToken[] = [];
     try {
-      const res = await fetch(`${API_BASE}/agents/tokens`);
-      if (res.ok) return await res.json();
+      const res = await fetch(`${API_BASE}/agents/tokens`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) list = await res.json();
     } catch {
       // fallback
     }
-    return wait(agentTokens);
+    if (!list || list.length === 0) {
+      list = [...agentTokens];
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem('wm_user_session');
+        if (saved) {
+          const u = JSON.parse(saved);
+          if (u && u.scope !== 'Все устройства' && Array.isArray(u.allowedGroups) && u.allowedGroups.length > 0 && !isSuperAdminRole(u.role)) {
+            list = list.filter(t => {
+              const p = t.targetGroup || t.targetBuilding || '';
+              return isPathInScope(p, u.allowedGroups) || (t.targetBuilding && isBuildingVisibleInScope(t.targetBuilding, u.allowedGroups));
+            });
+          }
+        }
+      }
+    } catch {}
+    return list;
   },
   getBuilds: async (): Promise<AgentBuild[]> => {
     try {
@@ -816,25 +855,42 @@ export interface GroupItem {
 
 export const groupsApi = {
   list: async (): Promise<GroupItem[]> => {
+    let result: GroupItem[] = [];
     try {
-      const res = await fetch(`${API_BASE}/groups`);
-      if (res.ok) return await res.json();
+      const res = await fetch(`${API_BASE}/groups`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) result = await res.json();
     } catch {}
-    return [
-      { name: 'Office', desc: 'Компьютеры главного офиса компании', color: 'blue', schedule: 'Office Working Day' },
-      { name: 'Warehouse', desc: 'Терминалы логистического склада', color: 'orange', schedule: 'Warehouse Night Mode' },
-      { name: 'Management', desc: 'Руководство и переговорные комнаты', color: 'green', schedule: 'Без расписания' },
-      { name: 'Testing', desc: 'QA и тестовая лаборатория оборудования', color: 'purple', schedule: 'Testing Lab' },
-      { name: 'Dev', desc: 'Рабочие станции разработчиков и дизайнеров', color: 'cyan', schedule: 'Dev Working Day' },
-      { name: 'Accounting', desc: 'Бухгалтерия и финансовый отдел', color: 'slate', schedule: 'Без расписания' },
-      { name: 'Servers', desc: 'Серверное оборудование и гипервизоры', color: 'red', schedule: 'Круглосуточно (24/7)' },
-    ];
+    if (!result || result.length === 0) {
+      result = [
+        { name: 'Office', desc: 'Компьютеры главного офиса компании', color: 'blue', schedule: 'Office Working Day' },
+        { name: 'Warehouse', desc: 'Терминалы логистического склада', color: 'orange', schedule: 'Warehouse Night Mode' },
+        { name: 'Management', desc: 'Руководство и переговорные комнаты', color: 'green', schedule: 'Без расписания' },
+        { name: 'Testing', desc: 'QA и тестовая лаборатория оборудования', color: 'purple', schedule: 'Testing Lab' },
+        { name: 'Dev', desc: 'Рабочие станции разработчиков и дизайнеров', color: 'cyan', schedule: 'Dev Working Day' },
+        { name: 'Accounting', desc: 'Бухгалтерия и финансовый отдел', color: 'slate', schedule: 'Без расписания' },
+        { name: 'Servers', desc: 'Серверное оборудование и гипервизоры', color: 'red', schedule: 'Круглосуточно (24/7)' },
+      ];
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem('wm_user_session');
+        if (saved) {
+          const u = JSON.parse(saved);
+          if (u && u.scope !== 'Все устройства' && Array.isArray(u.allowedGroups) && u.allowedGroups.length > 0 && !isSuperAdminRole(u.role)) {
+            result = result.filter(g => isGroupInAllowedGroups(g, u.allowedGroups));
+          }
+        }
+      }
+    } catch {}
+    return result;
   },
   create: async (group: GroupItem): Promise<GroupItem> => {
     try {
       const res = await fetch(`${API_BASE}/groups`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(group),
       });
       if (res.ok) return await res.json();
@@ -845,7 +901,7 @@ export const groupsApi = {
     try {
       const res = await fetch(`${API_BASE}/groups/${encodeURIComponent(name)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(payload),
       });
       if (res.ok) return await res.json();
@@ -856,6 +912,7 @@ export const groupsApi = {
     try {
       const res = await fetch(`${API_BASE}/groups/${encodeURIComponent(name)}`, {
         method: 'DELETE',
+        headers: getAuthHeaders()
       });
       if (res.ok) return true;
     } catch {}
@@ -863,26 +920,65 @@ export const groupsApi = {
   },
   getHierarchy: async (): Promise<any[]> => {
     try {
-      const res = await fetch(`${API_BASE}/groups/hierarchy`);
-      if (res.ok) return await res.json();
+      const res = await fetch(`${API_BASE}/groups/hierarchy`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) {
+        const data = await res.json();
+        try {
+          if (typeof window !== 'undefined') {
+            const saved = localStorage.getItem('wm_user_session');
+            if (saved) {
+              const u = JSON.parse(saved);
+              if (u && u.scope !== 'Все устройства' && Array.isArray(u.allowedGroups) && u.allowedGroups.length > 0 && !isSuperAdminRole(u.role)) {
+                return (data || []).filter((b: any) => isBuildingVisibleInScope(b.building, u.allowedGroups)).map((b: any) => ({
+                  ...b,
+                  floors: (b.floors || []).filter((f: any) => isFloorVisibleInScope(b.building, f.floor, u.allowedGroups)).map((f: any) => ({
+                    ...f,
+                    rooms: (f.rooms || []).filter((r: any) => isRoomVisibleInScope(b.building, f.floor, r.room, u.allowedGroups))
+                  }))
+                }));
+              }
+            }
+          }
+        } catch {}
+        return data;
+      }
     } catch {}
     return [];
   },
   getBuildings: async (): Promise<any[]> => {
+    let result: any[] = [];
     try {
-      const res = await fetch(`${API_BASE}/groups/buildings`);
-      if (res.ok) return await res.json();
+      const res = await fetch(`${API_BASE}/groups/buildings`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) result = await res.json();
     } catch {}
-    return [
-      { name: 'Главный корпус', floorsCount: 3, hasBasement: true, hasSubFloor: false, floors: ['Цоколь', '1 этаж', '2 этаж', '3 этаж'] },
-      { name: 'Учебный корпус', floorsCount: 4, hasBasement: false, hasSubFloor: false, floors: ['1 этаж', '2 этаж', '3 этаж', '4 этаж'] }
-    ];
+    if (!result || result.length === 0) {
+      result = [
+        { name: 'Главный корпус', floorsCount: 3, hasBasement: true, hasSubFloor: false, floors: ['Цоколь', '1 этаж', '2 этаж', '3 этаж'] },
+        { name: 'Учебный корпус', floorsCount: 4, hasBasement: false, hasSubFloor: false, floors: ['1 этаж', '2 этаж', '3 этаж', '4 этаж'] }
+      ];
+    }
+    try {
+      if (typeof window !== 'undefined') {
+        const saved = localStorage.getItem('wm_user_session');
+        if (saved) {
+          const u = JSON.parse(saved);
+          if (u && u.scope !== 'Все устройства' && Array.isArray(u.allowedGroups) && u.allowedGroups.length > 0 && !isSuperAdminRole(u.role)) {
+            result = result.filter((b: any) => isBuildingVisibleInScope(b.name, u.allowedGroups));
+          }
+        }
+      }
+    } catch {}
+    return result;
   },
   saveBuilding: async (payload: any): Promise<any> => {
     try {
       const res = await fetch(`${API_BASE}/groups/buildings`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(payload)
       });
       if (res.ok) return await res.json();
@@ -893,7 +989,7 @@ export const groupsApi = {
     try {
       const res = await fetch(`${API_BASE}/groups/buildings/${encodeURIComponent(name)}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(payload)
       });
       if (res.ok) return await res.json();
@@ -903,7 +999,8 @@ export const groupsApi = {
   deleteBuilding: async (name: string): Promise<boolean> => {
     try {
       const res = await fetch(`${API_BASE}/groups/buildings/${encodeURIComponent(name)}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
       return res.ok;
     } catch {}
@@ -912,7 +1009,8 @@ export const groupsApi = {
   deleteFloor: async (buildingName: string, floorName: string): Promise<boolean> => {
     try {
       const res = await fetch(`${API_BASE}/groups/buildings/${encodeURIComponent(buildingName)}/floors/${encodeURIComponent(floorName)}`, {
-        method: 'DELETE'
+        method: 'DELETE',
+        headers: getAuthHeaders()
       });
       return res.ok;
     } catch {}

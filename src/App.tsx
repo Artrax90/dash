@@ -11,6 +11,14 @@ import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsAp
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
 import { monitoringSeries } from '@/api/mockData';
 import { useLanguage } from '@/i18n/LanguageContext';
+import {
+  isPathInScope,
+  isDeviceInAllowedGroups,
+  isGroupInAllowedGroups,
+  isBuildingVisibleInScope,
+  isFloorVisibleInScope,
+  isRoomVisibleInScope
+} from '@/utils/scope';
 
 export function formatLocalTime(isoString?: string, fallback = '—'): string {
   if (!isoString) return fallback;
@@ -644,12 +652,25 @@ export const isSuperAdminRole = (role?: string) => {
     r === 'super admin' ||
     r === 'главный администратор' ||
     r === 'главный суперадминистратор' ||
-    r === 'администратор' ||
-    r === 'администратор парка' ||
-    r === 'admin' ||
-    r === 'administrator' ||
     r === 'root'
   );
+};
+
+export const isFleetAdminRole = (role?: string) => {
+  if (!role) return false;
+  const r = role.trim().toLowerCase().replace(/[-_]/g, ' ');
+  return (
+    r === 'администратор парка' ||
+    r === 'администратор' ||
+    r === 'admin' ||
+    r === 'administrator' ||
+    r === 'fleetadmin' ||
+    r === 'fleet administrator'
+  );
+};
+
+export const canManageFleetGroups = (role?: string) => {
+  return isSuperAdminRole(role) || isFleetAdminRole(role);
 };
 
 function App() {
@@ -959,7 +980,7 @@ function App() {
             {page === 'Schedules' && <Schedules notify={notify} />}
             {page === 'Users' && (isSuperAdmin ? <UsersPage notify={notify} currentUser={currentUser} /> : null)}
             {page === 'Roles' && (isSuperAdmin ? <Roles notify={notify} /> : null)}
-            {page === 'Agents' && <AgentsDownloads notify={notify} />}
+            {page === 'Agents' && <AgentsDownloads notify={notify} currentUser={currentUser} />}
             {page === 'Telegram' && (isSuperAdmin ? <TelegramPage notify={notify} /> : null)}
             {page === 'Audit Log' && (isSuperAdmin ? <AuditLog /> : null)}
             {page === 'Groups' && (
@@ -1972,8 +1993,7 @@ function Devices({
     }
     const finalGroup = isCustomTcGroup ? (tcCustomGroup.trim() || 'Тонкие клиенты') : (tcGroup.trim() || 'Тонкие клиенты');
     if (hasRestrictedScope) {
-      const allowedLower = allowedGroupsList.map(g => g.toLowerCase().trim());
-      if (!allowedLower.includes(finalGroup.toLowerCase().trim())) {
+      if (!isPathInScope(finalGroup, allowedGroupsList)) {
         notify(`Отказ в доступе: вы можете добавлять устройства только в разрешенные вам группы (${allowedGroupsList.join(', ')})`);
         return;
       }
@@ -2110,8 +2130,7 @@ function Devices({
   const handleSaveDeviceEdits = async () => {
     if (!editDeviceTarget) return;
     if (hasRestrictedScope) {
-      const allowedLower = allowedGroupsList.map(g => g.toLowerCase().trim());
-      const hasForbiddenGroup = editDevGroups.some(g => !allowedLower.includes(g.toLowerCase().trim()));
+      const hasForbiddenGroup = editDevGroups.some(g => !isPathInScope(g, allowedGroupsList));
       if (hasForbiddenGroup) {
         notify(`Отказ в доступе: вы можете назначать только разрешенные группы (${allowedGroupsList.join(', ')})`);
         return;
@@ -8734,6 +8753,11 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
   const { t } = useLanguage();
   const [items, setItems] = useState<ManagedUser[]>([]);
   const [availableGroups, setAvailableGroups] = useState<string[]>(['Office', 'Warehouse', 'Management', 'Testing', 'Dev']);
+  const [hierarchyData, setHierarchyData] = useState<any[]>([]);
+  const [buildingsList, setBuildingsList] = useState<any[]>([]);
+  const [allGroupsList, setAllGroupsList] = useState<any[]>([]);
+  const [newCustomScopeInput, setNewCustomScopeInput] = useState('');
+  const [editCustomScopeInput, setEditCustomScopeInput] = useState('');
   const [showAddUserModal, setShowAddUserModal] = useState(false);
   const [editingUser, setEditingUser] = useState<ManagedUser | null>(null);
   const [query, setQuery] = useState('');
@@ -8785,10 +8809,314 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
     loadUsers();
     groupsApi.list().then(grps => {
       if (grps && grps.length > 0) {
+        setAllGroupsList(grps);
         setAvailableGroups(grps.map(g => g.name));
       }
     }).catch(() => {});
+    groupsApi.getBuildings().then(b => {
+      if (b && b.length > 0) setBuildingsList(b);
+    }).catch(() => {});
+    groupsApi.getHierarchy().then(h => {
+      if (h && h.length > 0) setHierarchyData(h);
+    }).catch(() => {});
   }, []);
+
+  const buildingScopeOptions = useMemo(() => {
+    const set = new Set<string>();
+    buildingsList.forEach(b => {
+      if (b.name && b.name !== 'Общие группы') set.add(b.name.trim());
+    });
+    hierarchyData.forEach(b => {
+      const n = b.building || b.name;
+      if (n && n !== 'Общие группы') set.add(n.trim());
+    });
+    allGroupsList.forEach(g => {
+      let b = (g.building || '').trim();
+      if (!b && g.name && g.name.includes('/')) b = g.name.split('/')[0].trim();
+      if (b && b !== 'Общие группы') set.add(b);
+    });
+    return Array.from(set);
+  }, [buildingsList, hierarchyData, allGroupsList]);
+
+  const floorScopeOptions = useMemo(() => {
+    const set = new Set<string>();
+    buildingsList.forEach(b => {
+      const bName = b.name;
+      if (bName && bName !== 'Общие группы' && Array.isArray(b.floors)) {
+        b.floors.forEach((f: string) => {
+          if (f) set.add(`${bName} / ${f.trim()}`);
+        });
+      }
+    });
+    hierarchyData.forEach(b => {
+      const bName = b.building || b.name;
+      if (bName && bName !== 'Общие группы' && Array.isArray(b.floors)) {
+        b.floors.forEach((f: any) => {
+          const fName = f.floor || f.name;
+          if (fName) set.add(`${bName} / ${fName.trim()}`);
+        });
+      }
+    });
+    allGroupsList.forEach(g => {
+      if (g.name && g.name.includes('/')) {
+        const parts = g.name.split('/').map((s: string) => s.trim());
+        if (parts.length >= 2 && parts[0] !== 'Общие группы') {
+          set.add(`${parts[0]} / ${parts[1]}`);
+        }
+      }
+    });
+    return Array.from(set);
+  }, [buildingsList, hierarchyData, allGroupsList]);
+
+  const roomScopeOptions = useMemo(() => {
+    const set = new Set<string>();
+    allGroupsList.forEach(g => {
+      if (g.name && g.name.includes('/')) {
+        const parts = g.name.split('/').map((s: string) => s.trim());
+        if (parts.length >= 3 && parts[0] !== 'Общие группы') {
+          set.add(`${parts[0]} / ${parts[1]} / ${parts[2]}`);
+        }
+      }
+    });
+    hierarchyData.forEach(b => {
+      const bName = b.building || b.name;
+      if (bName && bName !== 'Общие группы' && Array.isArray(b.floors)) {
+        b.floors.forEach((f: any) => {
+          const fName = f.floor || f.name;
+          if (fName && Array.isArray(f.rooms)) {
+            f.rooms.forEach((r: any) => {
+              const rName = r.room || r.roomName || r.name;
+              if (rName) {
+                if (rName.includes('/')) set.add(rName.trim());
+                else set.add(`${bName} / ${fName} / ${rName.trim()}`);
+              }
+            });
+          }
+        });
+      }
+    });
+    return Array.from(set);
+  }, [allGroupsList, hierarchyData]);
+
+  const flatGroupOptions = useMemo(() => {
+    const set = new Set<string>();
+    allGroupsList.forEach(g => {
+      if (g.name && !g.name.includes('/') && g.name !== 'Общие группы') {
+        set.add(g.name.trim());
+      }
+    });
+    availableGroups.forEach(g => {
+      if (g && !g.includes('/') && g !== 'Общие группы') {
+        set.add(g.trim());
+      }
+    });
+    return Array.from(set);
+  }, [allGroupsList, availableGroups]);
+
+  const renderCategorizedScopeSelector = (
+    selectedGroups: string[],
+    setSelectedGroups: React.Dispatch<React.SetStateAction<string[]>>,
+    customInput: string,
+    setCustomInput: (val: string) => void
+  ) => {
+    const handleToggle = (name: string) => {
+      setSelectedGroups(prev =>
+        prev.includes(name) ? prev.filter(g => g !== name) : [...prev, name]
+      );
+    };
+
+    const handleAddCustom = () => {
+      const v = customInput.trim();
+      if (!v) return;
+      if (!selectedGroups.includes(v)) {
+        setSelectedGroups(prev => [...prev, v]);
+      }
+      setCustomInput('');
+    };
+
+    return (
+      <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginTop: '10px' }}>
+        {selectedGroups.length > 0 && (
+          <div style={{ background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.25)', borderRadius: '6px', padding: '8px 12px' }}>
+            <div style={{ fontSize: '11px', color: 'var(--blue)', fontWeight: 600, marginBottom: '6px' }}>
+              Выбранная зона доступа ({selectedGroups.length}):
+            </div>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {selectedGroups.map(item => (
+                <span
+                  key={item}
+                  className="badge match"
+                  style={{
+                    cursor: 'pointer',
+                    padding: '3px 8px',
+                    fontSize: '11px',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '4px',
+                    background: 'rgba(59, 130, 246, 0.25)'
+                  }}
+                  onClick={() => handleToggle(item)}
+                  title="Кликните, чтобы убрать из зоны"
+                >
+                  ✓ {item} <X size={11} />
+                </span>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {buildingScopeOptions.length > 0 && (
+          <div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600, marginBottom: '4px' }}>
+              🏢 Корпуса целиком (доступ ко всем этажам и кабинетам здания):
+            </div>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {buildingScopeOptions.map(bName => {
+                const isSelected = selectedGroups.includes(bName);
+                return (
+                  <button
+                    key={bName}
+                    type="button"
+                    className={`badge ${isSelected ? 'match' : ''}`}
+                    style={{
+                      cursor: 'pointer',
+                      padding: '4px 9px',
+                      fontSize: '11px',
+                      fontWeight: 500,
+                      border: isSelected ? '1px solid var(--blue)' : '1px solid var(--border)',
+                      background: isSelected ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.05)',
+                      color: isSelected ? 'var(--blue)' : 'inherit',
+                    }}
+                    onClick={() => handleToggle(bName)}
+                  >
+                    {isSelected ? '✓ ' : '+ '} 🏢 {bName}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {floorScopeOptions.length > 0 && (
+          <div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600, marginBottom: '4px' }}>
+              🏬 Этажи целиком (доступ ко всем кабинетам этажа):
+            </div>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {floorScopeOptions.map(fName => {
+                const isSelected = selectedGroups.includes(fName);
+                return (
+                  <button
+                    key={fName}
+                    type="button"
+                    className={`badge ${isSelected ? 'match' : ''}`}
+                    style={{
+                      cursor: 'pointer',
+                      padding: '4px 9px',
+                      fontSize: '11px',
+                      border: isSelected ? '1px solid var(--blue)' : '1px solid var(--border)',
+                      background: isSelected ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.05)',
+                      color: isSelected ? 'var(--blue)' : 'inherit',
+                    }}
+                    onClick={() => handleToggle(fName)}
+                  >
+                    {isSelected ? '✓ ' : '+ '} 🏬 {fName}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {roomScopeOptions.length > 0 && (
+          <div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600, marginBottom: '4px' }}>
+              🚪 Отдельные кабинеты:
+            </div>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap', maxHeight: '140px', overflowY: 'auto' }}>
+              {roomScopeOptions.map(rName => {
+                const isSelected = selectedGroups.includes(rName);
+                return (
+                  <button
+                    key={rName}
+                    type="button"
+                    className={`badge ${isSelected ? 'match' : ''}`}
+                    style={{
+                      cursor: 'pointer',
+                      padding: '4px 9px',
+                      fontSize: '11px',
+                      border: isSelected ? '1px solid var(--blue)' : '1px solid var(--border)',
+                      background: isSelected ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.05)',
+                      color: isSelected ? 'var(--blue)' : 'inherit',
+                    }}
+                    onClick={() => handleToggle(rName)}
+                  >
+                    {isSelected ? '✓ ' : '+ '} 🚪 {rName}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        {flatGroupOptions.length > 0 && (
+          <div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600, marginBottom: '4px' }}>
+              📁 Общие группы:
+            </div>
+            <div style={{ display: 'flex', gap: '6px', flexWrap: 'wrap' }}>
+              {flatGroupOptions.map(gName => {
+                const isSelected = selectedGroups.includes(gName);
+                return (
+                  <button
+                    key={gName}
+                    type="button"
+                    className={`badge ${isSelected ? 'match' : ''}`}
+                    style={{
+                      cursor: 'pointer',
+                      padding: '4px 9px',
+                      fontSize: '11px',
+                      border: isSelected ? '1px solid var(--blue)' : '1px solid var(--border)',
+                      background: isSelected ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.05)',
+                      color: isSelected ? 'var(--blue)' : 'inherit',
+                    }}
+                    onClick={() => handleToggle(gName)}
+                  >
+                    {isSelected ? '✓ ' : '+ '} 📁 {gName}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center', marginTop: '4px' }}>
+          <input
+            type="text"
+            className="text-input"
+            style={{ flex: 1, fontSize: '12px', padding: '5px 10px' }}
+            placeholder="Добавить произвольную группу или путь..."
+            value={customInput}
+            onChange={(e) => setCustomInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleAddCustom();
+              }
+            }}
+          />
+          <Button
+            type="button"
+            style={{ padding: '5px 12px', fontSize: '12px' }}
+            onClick={handleAddCustom}
+            disabled={!customInput.trim()}
+          >
+            + Добавить
+          </Button>
+        </div>
+      </div>
+    );
+  };
 
   const openAddModal = () => {
     const autoPwd = generatePassword();
@@ -9165,33 +9493,11 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
                   </label>
                 </div>
 
-                {newScopeType === 'CUSTOM' && (
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '6px' }}>
-                    {availableGroups.map(gName => {
-                      const isSelected = newAllowedGroups.includes(gName);
-                      return (
-                        <button
-                          key={gName}
-                          type="button"
-                          className={`badge ${isSelected ? 'match' : ''}`}
-                          style={{
-                            cursor: 'pointer',
-                            padding: '4px 10px',
-                            border: isSelected ? '1px solid var(--blue)' : '1px solid var(--border)',
-                            background: isSelected ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.05)',
-                            color: isSelected ? 'var(--blue)' : 'var(--muted)',
-                          }}
-                          onClick={() => {
-                            setNewAllowedGroups(prev =>
-                              prev.includes(gName) ? prev.filter(g => g !== gName) : [...prev, gName]
-                            );
-                          }}
-                        >
-                          {isSelected ? '✓ ' : '+ '} {gName}
-                        </button>
-                      );
-                    })}
-                  </div>
+                {newScopeType === 'CUSTOM' && renderCategorizedScopeSelector(
+                  newAllowedGroups,
+                  setNewAllowedGroups,
+                  newCustomScopeInput,
+                  setNewCustomScopeInput
                 )}
               </div>
 
@@ -9330,33 +9636,11 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
                   </label>
                 </div>
 
-                {editScopeType === 'CUSTOM' && (
-                  <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginTop: '6px' }}>
-                    {availableGroups.map(gName => {
-                      const isSelected = editAllowedGroups.includes(gName);
-                      return (
-                        <button
-                          key={gName}
-                          type="button"
-                          className={`badge ${isSelected ? 'match' : ''}`}
-                          style={{
-                            cursor: 'pointer',
-                            padding: '4px 10px',
-                            border: isSelected ? '1px solid var(--blue)' : '1px solid var(--border)',
-                            background: isSelected ? 'rgba(59, 130, 246, 0.2)' : 'rgba(255,255,255,0.05)',
-                            color: isSelected ? 'var(--blue)' : 'var(--muted)',
-                          }}
-                          onClick={() => {
-                            setEditAllowedGroups(prev =>
-                              prev.includes(gName) ? prev.filter(g => g !== gName) : [...prev, gName]
-                            );
-                          }}
-                        >
-                          {isSelected ? '✓ ' : '+ '} {gName}
-                        </button>
-                      );
-                    })}
-                  </div>
+                {editScopeType === 'CUSTOM' && renderCategorizedScopeSelector(
+                  editAllowedGroups,
+                  setEditAllowedGroups,
+                  editCustomScopeInput,
+                  setEditCustomScopeInput
                 )}
               </div>
 
@@ -9521,10 +9805,12 @@ function Roles({ notify }: { notify: (message: string) => void }) {
 }
 
 // ----------------------------------------------------
-// 12. AGENTS & DOWNLOADS
-// ----------------------------------------------------
-function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
+function AgentsDownloads({ notify, currentUser }: { notify: (message: string) => void; currentUser?: ManagedUser | null }) {
   const { t } = useLanguage();
+  const isSuperAdmin = isSuperAdminRole(currentUser?.role);
+  const hasRestrictedScope = !isSuperAdmin && currentUser?.scope !== 'Все устройства' && Array.isArray(currentUser?.allowedGroups) && currentUser.allowedGroups.length > 0;
+  const allowedGroups = hasRestrictedScope ? (currentUser?.allowedGroups || []) : null;
+
   const [tokens, setTokens] = useState<AgentEnrollmentToken[]>([]);
   const [builds, setBuilds] = useState<AgentBuild[]>([]);
   const [availableGroups, setAvailableGroups] = useState<string[]>([
@@ -9582,11 +9868,14 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
 
   const loadData = () => {
     agentsApi.getTokens().then(toks => {
-      setTokens(toks);
-      if (toks.length > 0 && !selectedInstallerToken) {
-        setSelectedInstallerToken(toks[0].token);
+      const filteredToks = hasRestrictedScope && allowedGroups
+        ? toks.filter(t => isPathInScope(t.targetGroup || t.targetBuilding || '', allowedGroups) || (t.targetBuilding && isBuildingVisibleInScope(t.targetBuilding, allowedGroups)))
+        : toks;
+      setTokens(filteredToks);
+      if (filteredToks.length > 0 && !selectedInstallerToken) {
+        setSelectedInstallerToken(filteredToks[0].token);
       }
-      const tokGroups = toks.map(t => t.targetGroup).filter(Boolean);
+      const tokGroups = filteredToks.map(t => t.targetGroup).filter(Boolean);
       setAvailableGroups(prev => Array.from(new Set([...prev, ...tokGroups])));
     });
     agentsApi.getBuilds().then(setBuilds);
@@ -9674,12 +9963,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
   };
 
   const availableBuildingsForToken = useMemo(() => {
-    const list: string[] = [];
+    let list: string[] = [];
     buildingConfigs.forEach(b => {
       if (b.name && !list.includes(b.name)) list.push(b.name);
     });
     hierarchyData.forEach(b => {
-      if (b.name && b.name !== 'Общие группы' && !list.includes(b.name)) list.push(b.name);
+      const n = b.building || b.name;
+      if (n && n !== 'Общие группы' && !list.includes(n)) list.push(n);
     });
     allGroupsList.forEach(g => {
       let b = (g.building || '').trim();
@@ -9692,8 +9982,17 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
         if (b && b !== 'Общие группы' && !list.includes(b)) list.push(b);
       }
     });
+    if (hasRestrictedScope && allowedGroups) {
+      list = list.filter(bName => isBuildingVisibleInScope(bName, allowedGroups));
+      if (list.length === 0) {
+        allowedGroups.forEach(ag => {
+          const b = ag.split('/')[0].trim();
+          if (b && !list.includes(b)) list.push(b);
+        });
+      }
+    }
     return list.length > 0 ? list : ['Главный корпус', 'Учебный корпус'];
-  }, [buildingConfigs, hierarchyData, allGroupsList, availableGroups]);
+  }, [buildingConfigs, hierarchyData, allGroupsList, availableGroups, hasRestrictedScope, allowedGroups]);
 
   const activeTokenBuilding = tokenBuilding || availableBuildingsForToken[0] || 'Главный корпус';
 
@@ -9703,9 +10002,9 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     if (bConfig && bConfig.floors && bConfig.floors.length > 0) {
       bConfig.floors.forEach(f => set.add(f));
     }
-    const bHier = hierarchyData.find(b => b.name.toLowerCase() === activeTokenBuilding.toLowerCase());
+    const bHier = hierarchyData.find(b => (b.building || b.name || '').toLowerCase() === activeTokenBuilding.toLowerCase());
     if (bHier && bHier.floors && bHier.floors.length > 0) {
-      bHier.floors.forEach((f: any) => set.add(f.name));
+      bHier.floors.forEach((f: any) => set.add(f.floor || f.name));
     }
     allGroupsList.forEach(g => {
       let b = (g.building || '').trim();
@@ -9729,11 +10028,25 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
         }
       }
     });
-    if (set.size === 0) {
-      generateBuildingFloors(3, false, false).forEach(f => set.add(f));
+    let floors = Array.from(set);
+    if (hasRestrictedScope && allowedGroups) {
+      floors = floors.filter(f => isFloorVisibleInScope(activeTokenBuilding, f, allowedGroups));
+      if (floors.length === 0) {
+        allowedGroups.forEach(ag => {
+          if (ag.includes('/')) {
+            const parts = ag.split('/').map(s => s.trim());
+            if (parts[0].toLowerCase() === activeTokenBuilding.toLowerCase() && parts.length >= 2) {
+              if (!floors.includes(parts[1])) floors.push(parts[1]);
+            }
+          }
+        });
+      }
     }
-    return Array.from(set);
-  }, [buildingConfigs, hierarchyData, activeTokenBuilding, allGroupsList, availableGroups]);
+    if (floors.length === 0) {
+      generateBuildingFloors(3, false, false).forEach(f => floors.push(f));
+    }
+    return floors;
+  }, [buildingConfigs, hierarchyData, activeTokenBuilding, allGroupsList, availableGroups, hasRestrictedScope, allowedGroups]);
 
   const activeTokenFloor = tokenFloor || availableFloorsForToken[0] || '1 этаж';
 
@@ -9742,14 +10055,15 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
     const map = new Map<string, { room: string; floor: string }>();
 
     // 1. From hierarchyData
-    const bHier = hierarchyData.find(b => b.name.toLowerCase() === activeTokenBuilding.toLowerCase());
+    const bHier = hierarchyData.find(b => (b.building || b.name || '').toLowerCase() === activeTokenBuilding.toLowerCase());
     if (bHier && bHier.floors) {
       bHier.floors.forEach((f: any) => {
+        const fName = f.floor || f.name;
         if (f.rooms) {
           f.rooms.forEach((r: any) => {
-            const rName = (r.name || r.roomName || '').trim();
-            if (rName && !map.has(`${f.name}-${rName}`)) {
-              map.set(`${f.name}-${rName}`, { room: rName, floor: f.name });
+            const rName = (r.name || r.roomName || r.room || '').trim();
+            if (rName && !map.has(`${fName}-${rName}`)) {
+              map.set(`${fName}-${rName}`, { room: rName, floor: fName });
             }
           });
         }
@@ -9791,8 +10105,12 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
       }
     });
 
-    return Array.from(map.values());
-  }, [hierarchyData, activeTokenBuilding, allGroupsList, availableGroups]);
+    const result = Array.from(map.values());
+    if (hasRestrictedScope && allowedGroups) {
+      return result.filter(item => isRoomVisibleInScope(activeTokenBuilding, item.floor, item.room, allowedGroups));
+    }
+    return result;
+  }, [hierarchyData, activeTokenBuilding, allGroupsList, availableGroups, hasRestrictedScope, allowedGroups]);
 
   // Rooms on currently selected floor STRICTLY
   const activeFloorRooms = useMemo(() => {
@@ -9839,6 +10157,15 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
       finalGroup = `${bld} / ${flr} / ${rm}`;
     } else {
       finalGroup = targetGroup === '__custom__' ? (customGroupInput.trim() || 'Office') : targetGroup;
+    }
+
+    if (hasRestrictedScope && allowedGroups) {
+      const isInScope = isPathInScope(finalGroup, allowedGroups) ||
+        (tokenScopeMode === 'building' && isBuildingVisibleInScope(bld, allowedGroups));
+      if (!isInScope) {
+        notify(`Отказ в доступе: локация "${finalGroup}" выходит за пределы вашей зоны ответственности`);
+        return;
+      }
     }
 
     const maxU = maxUsesOption === 'unlimited' ? undefined : (maxUsesOption === '1' ? 1 : parseInt(customMaxUses) || undefined);
@@ -10780,10 +11107,13 @@ function AgentsDownloads({ notify }: { notify: (message: string) => void }) {
                       }
                     }}
                   >
-                    {availableGroups.map((grp) => (
+                    {(hasRestrictedScope && allowedGroups
+                      ? availableGroups.filter(grp => isGroupInAllowedGroups({ name: grp }, allowedGroups))
+                      : availableGroups
+                    ).map((grp) => (
                       <option key={grp} value={grp}>{grp}</option>
                     ))}
-                    <option value="__custom__">+ Ввести новую группу...</option>
+                    {!hasRestrictedScope && <option value="__custom__">+ Ввести новую группу...</option>}
                   </select>
                   {targetGroup === '__custom__' && (
                     <input
@@ -11754,10 +12084,12 @@ function Groups({
 }) {
   const { t } = useLanguage();
   const isSuperAdmin = isSuperAdminRole(currentUser?.role);
+  const isFleetAdmin = isFleetAdminRole(currentUser?.role);
+  const canManageGroups = canManageFleetGroups(currentUser?.role);
   const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
   const hasRestrictedScope = !isSuperAdmin && currentUser?.scope !== 'Все устройства' && Array.isArray(currentUser?.allowedGroups) && currentUser.allowedGroups.length > 0;
-  const allowedGroupNames = hasRestrictedScope ? currentUser.allowedGroups.map(g => g.toLowerCase().trim()) : null;
-  const canManageGroup = (groupName: string) => !hasRestrictedScope || (allowedGroupNames ? allowedGroupNames.includes(groupName.toLowerCase().trim()) : false);
+  const allowedGroups = hasRestrictedScope ? currentUser.allowedGroups : null;
+  const canManageGroup = (groupName: string) => canManageGroups && (!hasRestrictedScope || (allowedGroups ? isPathInScope(groupName, allowedGroups) : false));
 
   const [devices, setDevices] = useState<Device[]>([]);
   const [groups, setGroups] = useState<GroupData[]>([
@@ -11878,11 +12210,11 @@ function Groups({
   }, []);
 
   const visibleGroups = useMemo(() => {
-    if (hasRestrictedScope && allowedGroupNames) {
-      return groups.filter(g => allowedGroupNames.includes(g.name.toLowerCase().trim()));
+    if (hasRestrictedScope && allowedGroups) {
+      return groups.filter(g => isGroupInAllowedGroups(g, allowedGroups));
     }
     return groups;
-  }, [groups, hasRestrictedScope, allowedGroupNames]);
+  }, [groups, hasRestrictedScope, allowedGroups]);
 
   const hierarchyData = useMemo(() => {
     const buildingsMap: Record<string, {
@@ -11895,14 +12227,20 @@ function Groups({
       }>;
     }> = {};
 
-    // 1. Pre-populate all configured buildings and their floors so they never vanish
+    // 1. Pre-populate configured buildings and their floors matching user's scope
     buildingConfigs.forEach(b => {
+      if (hasRestrictedScope && allowedGroups && !isBuildingVisibleInScope(b.name, allowedGroups)) {
+        return;
+      }
       buildingsMap[b.name] = {
         name: b.name,
         color: b.color || 'blue',
         floors: {}
       };
       (b.floors || []).forEach(fName => {
+        if (hasRestrictedScope && allowedGroups && !isFloorVisibleInScope(b.name, fName, allowedGroups)) {
+          return;
+        }
         buildingsMap[b.name].floors[fName] = {
           name: fName,
           building: b.name,
@@ -11914,6 +12252,11 @@ function Groups({
     // 2. Populate rooms from visibleGroups
     visibleGroups.forEach(g => {
       const { building, floor, room } = parseGroupHierarchy(g.name, (g as any).building, (g as any).floor, (g as any).room);
+      if (hasRestrictedScope && allowedGroups) {
+        if (!isBuildingVisibleInScope(building, allowedGroups)) return;
+        if (!isFloorVisibleInScope(building, floor, allowedGroups)) return;
+        if (!isRoomVisibleInScope(building, floor, room, allowedGroups)) return;
+      }
       if (!buildingsMap[building]) {
         buildingsMap[building] = { name: building, color: 'blue', floors: {} };
       }
@@ -11929,18 +12272,27 @@ function Groups({
     });
 
     return buildingsMap;
-  }, [buildingConfigs, visibleGroups, parseGroupHierarchy]);
+  }, [buildingConfigs, visibleGroups, parseGroupHierarchy, hasRestrictedScope, allowedGroups]);
 
   const availableBuildingOptions = useMemo(() => {
-    const list: string[] = [];
+    let list: string[] = [];
     buildingConfigs.forEach(b => {
       if (b.name && !list.includes(b.name)) list.push(b.name);
     });
     Object.keys(hierarchyData).forEach(bName => {
       if (bName && bName !== 'Общие группы' && !list.includes(bName)) list.push(bName);
     });
+    if (hasRestrictedScope && allowedGroups) {
+      list = list.filter(bName => isBuildingVisibleInScope(bName, allowedGroups));
+      if (list.length === 0) {
+        allowedGroups.forEach(ag => {
+          const b = ag.split('/')[0].trim();
+          if (b && !list.includes(b)) list.push(b);
+        });
+      }
+    }
     return list.length > 0 ? list : ['Главный корпус', 'Учебный корпус'];
-  }, [buildingConfigs, hierarchyData]);
+  }, [buildingConfigs, hierarchyData, hasRestrictedScope, allowedGroups]);
 
   const activeBuildingName = isNewBuildingMode
     ? newBuildingNameInput.trim()
@@ -12015,8 +12367,8 @@ function Groups({
   } : null;
 
   const handleCreateGroup = async () => {
-    if (!isSuperAdmin) {
-      notify('Отказ в доступе: создание групп разрешено только Суперадминистратору');
+    if (!canManageGroups) {
+      notify('Отказ в доступе: создание групп разрешено только Администраторам');
       return;
     }
 
@@ -12030,6 +12382,10 @@ function Groups({
         bldVal = newBuildingNameInput.trim();
         if (!bldVal) {
           notify('Пожалуйста, укажите название нового корпуса');
+          return;
+        }
+        if (hasRestrictedScope && allowedGroups && !isBuildingVisibleInScope(bldVal, allowedGroups)) {
+          notify(`Отказ в доступе: создание корпуса "${bldVal}" выходит за пределы вашей зоны ответственности`);
           return;
         }
         const parsedFloorsCount = Math.max(1, Math.min(50, parseInt(newBuildingFloorsCount, 10) || 1));
@@ -12067,6 +12423,11 @@ function Groups({
         notify('Пожалуйста, укажите название группы');
         return;
       }
+    }
+
+    if (hasRestrictedScope && allowedGroups && !isPathInScope(finalName, allowedGroups)) {
+      notify(`Отказ в доступе: группа "${finalName}" выходит за пределы вашей зоны ответственности`);
+      return;
     }
 
     const created: GroupData = {
@@ -12107,13 +12468,18 @@ function Groups({
   };
 
   const handleSaveEditGroup = async () => {
-    if (!isSuperAdmin) {
-      notify('Отказ в доступе: редактирование групп разрешено только Суперадминистратору');
+    if (!canManageGroups) {
+      notify('Отказ в доступе: редактирование групп разрешено только Администраторам');
       return;
     }
     if (!editGroupTarget || !editGroupName) return;
     const oldName = editGroupTarget.name;
     const newName = editGroupName.trim();
+
+    if (hasRestrictedScope && allowedGroups && (!isPathInScope(oldName, allowedGroups) || !isPathInScope(newName, allowedGroups))) {
+      notify('Отказ в доступе: редактирование этой группы выходит за пределы вашей зоны ответственности');
+      return;
+    }
 
     const updatedData = {
       name: newName,
@@ -12138,8 +12504,12 @@ function Groups({
   };
 
   const handleDeleteGroup = async (groupName: string) => {
-    if (!isSuperAdmin) {
-      notify('Отказ в доступе: удаление групп разрешено только Суперадминистратору');
+    if (!canManageGroups) {
+      notify('Отказ в доступе: удаление групп разрешено только Администраторам');
+      return;
+    }
+    if (hasRestrictedScope && allowedGroups && !isPathInScope(groupName, allowedGroups)) {
+      notify('Отказ в доступе: удаление этой группы выходит за пределы вашей зоны ответственности');
       return;
     }
     setGroups(prev => prev.filter(g => g.name.toLowerCase() !== groupName.toLowerCase()));
@@ -12155,6 +12525,14 @@ function Groups({
   const handleConfirmDeleteBuilding = async () => {
     if (!deleteBuildingTarget) return;
     const bldName = deleteBuildingTarget.name;
+    if (!canManageGroups) {
+      notify('Отказ в доступе: удаление корпусов разрешено только Администраторам');
+      return;
+    }
+    if (hasRestrictedScope && allowedGroups && !isBuildingVisibleInScope(bldName, allowedGroups)) {
+      notify('Отказ в доступе: удаление этого здания выходит за пределы вашей зоны ответственности');
+      return;
+    }
     try {
       await groupsApi.deleteBuilding(bldName);
       setBuildingConfigs(prev => prev.filter(b => b.name.toLowerCase() !== bldName.toLowerCase()));
@@ -12177,6 +12555,14 @@ function Groups({
   const handleConfirmDeleteFloor = async () => {
     if (!deleteFloorTarget) return;
     const { building, floor } = deleteFloorTarget;
+    if (!canManageGroups) {
+      notify('Отказ в доступе: удаление этажей разрешено только Администраторам');
+      return;
+    }
+    if (hasRestrictedScope && allowedGroups && !isFloorVisibleInScope(building, floor, allowedGroups)) {
+      notify('Отказ в доступе: удаление этого этажа выходит за пределы вашей зоны ответственности');
+      return;
+    }
     try {
       await groupsApi.deleteFloor(building, floor);
       setBuildingConfigs(prev => prev.map(b => {
@@ -12202,7 +12588,15 @@ function Groups({
 
   const handleConfirmDeleteRoom = async () => {
     if (!deleteRoomTarget) return;
-    const { name, roomName } = deleteRoomTarget;
+    const { name, roomName, building, floor } = deleteRoomTarget;
+    if (!canManageGroups) {
+      notify('Отказ в доступе: удаление кабинетов разрешено только Администраторам');
+      return;
+    }
+    if (hasRestrictedScope && allowedGroups && !isRoomVisibleInScope(building, floor, roomName, allowedGroups)) {
+      notify('Отказ в доступе: удаление этого кабинета выходит за пределы вашей зоны ответственности');
+      return;
+    }
     try {
       await groupsApi.delete(name);
       setGroups(prev => prev.filter(g => g.name.toLowerCase() !== name.toLowerCase()));
@@ -12220,6 +12614,14 @@ function Groups({
   const handleSaveEditBuilding = async () => {
     if (!editBuildingTarget) return;
     const { originalName, name, color, floorsCount, hasBasement, hasSubFloor } = editBuildingTarget;
+    if (!canManageGroups) {
+      notify('Отказ в доступе: редактирование корпусов разрешено только Администраторам');
+      return;
+    }
+    if (hasRestrictedScope && allowedGroups && (!isBuildingVisibleInScope(originalName, allowedGroups) || !isBuildingVisibleInScope(name, allowedGroups))) {
+      notify('Отказ в доступе: редактирование этого корпуса выходит за пределы вашей зоны ответственности');
+      return;
+    }
     const count = Math.max(1, Math.min(50, parseInt(floorsCount, 10) || 1));
     const genFloors = generateBuildingFloors(count, hasBasement, hasSubFloor);
     try {
@@ -12364,7 +12766,7 @@ function Groups({
                 </div>
 
                 <div className="header-actions">
-                  {isSuperAdmin && (
+                  {canManageGroups && canManageGroup(selectedGroup.name) && (
                     <Button
                       icon={<Edit3 size={15} />}
                       onClick={() => handleOpenEditGroupModal(selectedGroup)}
@@ -12601,7 +13003,7 @@ function Groups({
             description="Трёхуровневая иерархия парка: Корпус → Этаж → Кабинет с групповым управлением питанием."
             actions={
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                {isSuperAdmin && (
+                {canManageGroups && (
                   <Button primary icon={<Plus size={15} />} onClick={() => setShowCreateGroup(true)}>
                     Создать группу / кабинет
                   </Button>
@@ -12731,7 +13133,7 @@ function Groups({
                     <div className={`group-hero ${bColor}`} style={{ position: 'relative' }}>
                       <div className="group-symbol"><Building size={24} /></div>
                       <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
-                        {isSuperAdmin && (
+                        {canManageGroups && (!hasRestrictedScope || (allowedGroups && isBuildingVisibleInScope(bldName, allowedGroups))) && (
                           <>
                             <button
                               className="hero-more"
@@ -12764,7 +13166,7 @@ function Groups({
                             </button>
                           </>
                         )}
-                        {isSuperAdmin && (
+                        {canManageGroups && (!hasRestrictedScope || (allowedGroups && isBuildingVisibleInScope(bldName, allowedGroups))) && (
                           <button
                             className="hero-more"
                             onClick={async (e) => {
@@ -12825,7 +13227,7 @@ function Groups({
                         Корпус <strong>{drillBuilding}</strong>: {bldStats.floorsCount} этажей, {bldStats.roomsCount} кабинетов, {bldStats.totalPcs} ПК ({bldStats.onlinePcs} в сети)
                       </div>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        {isSuperAdmin && (
+                        {canManageGroups && (!hasRestrictedScope || (allowedGroups && isBuildingVisibleInScope(drillBuilding, allowedGroups))) && (
                           <Button
                             icon={<Zap size={14} />}
                             onClick={async () => {
@@ -12861,7 +13263,7 @@ function Groups({
                             <div className="group-hero purple" style={{ position: 'relative' }}>
                               <div className="group-symbol"><Layers size={24} /></div>
                               <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
-                                {isSuperAdmin && (
+                                {canManageGroups && (!hasRestrictedScope || (allowedGroups && isFloorVisibleInScope(drillBuilding, flrName, allowedGroups))) && (
                                   <button
                                     className="hero-more"
                                     onClick={(e) => {
@@ -12874,7 +13276,7 @@ function Groups({
                                     <Trash2 size={15} />
                                   </button>
                                 )}
-                                {isSuperAdmin && (
+                                {canManageGroups && (!hasRestrictedScope || (allowedGroups && isFloorVisibleInScope(drillBuilding, flrName, allowedGroups))) && (
                                   <button
                                     className="hero-more"
                                     onClick={async (e) => {
@@ -12937,7 +13339,7 @@ function Groups({
                         Локация: <strong>{drillBuilding}</strong> → <strong>{drillFloor}</strong> ({floorRooms.length} кабинетов, {fStats.totalPcs} ПК)
                       </div>
                       <div style={{ display: 'flex', gap: '8px' }}>
-                        {isSuperAdmin && (
+                        {canManageGroups && (!hasRestrictedScope || (allowedGroups && isFloorVisibleInScope(drillBuilding, drillFloor, allowedGroups))) && (
                           <Button
                             icon={<Zap size={14} />}
                             onClick={async () => {
@@ -12971,7 +13373,7 @@ function Groups({
                           <div className={`group-hero ${roomGroup.color}`} style={{ position: 'relative' }}>
                             <div className="group-symbol"><Server size={20} /></div>
                             <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
-                              {isSuperAdmin && (
+                              {canManageGroups && (!hasRestrictedScope || (allowedGroups && isRoomVisibleInScope(drillBuilding, drillFloor, roomGroup.roomName, allowedGroups))) && (
                                 <>
                                   <button
                                     className="hero-more"
@@ -13115,7 +13517,9 @@ function Groups({
                       {availableBuildingOptions.map(b => (
                         <option key={b} value={b}>{b}</option>
                       ))}
-                      <option value="__new__">+ Создать новый корпус...</option>
+                      {!hasRestrictedScope && (
+                        <option value="__new__">+ Создать новый корпус...</option>
+                      )}
                     </select>
                   </div>
 
