@@ -92,22 +92,49 @@ class AlertEngine:
                         if not (events.get("powerAlerts", True) or events.get("disconnectAlerts", True)):
                             return
 
-                    # Collect ALL valid recipient chat IDs
+                    # Find device metadata early (needed for scope filtering AND message construction)
+                    dev_id = alert.get("deviceId") or alert.get("device_id") or ""
+                    dev_obj = None
+                    if dev_id:
+                        try:
+                            from backend.app.api.v1.telegram import load_devices
+                            for d in load_devices():
+                                if str(d.get("id", "")).upper() == str(dev_id).upper():
+                                    dev_obj = d
+                                    break
+                        except Exception:
+                            pass
+
+                    # Collect recipient chat IDs, filtered by scope
                     target_chats = set()
                     global_chat = str(cfg.get("chatId", "")).strip()
                     if global_chat:
                         target_chats.add(global_chat)
                     
-                    # Also include any active admins with telegramChatId
+                    # Include users with telegramChatId ONLY if the alert device is within their scope
                     try:
                         from backend.app.api.v1.users import load_users
+                        from backend.app.core.scope import is_device_in_scope
                         for u in load_users():
-                            if u.get("enabled", True):
-                                u_chat = str(u.get("telegramChatId", "")).strip()
-                                if u_chat and (u_chat.isdigit() or (u_chat.startswith("-") and u_chat[1:].isdigit())):
-                                    target_chats.add(u_chat)
+                            if not u.get("enabled", True):
+                                continue
+                            u_chat = str(u.get("telegramChatId", "")).strip()
+                            if not u_chat or not (u_chat.isdigit() or (u_chat.startswith("-") and u_chat[1:].isdigit())):
+                                continue
+                            # Skip if this is the global chat (already added above)
+                            if u_chat == global_chat:
+                                continue
+                            # Global scope users receive all alerts
+                            u_scope = u.get("scope", "Все устройства")
+                            u_allowed = u.get("allowedGroups", [])
+                            if u_scope == "Все устройства" or not u_allowed:
+                                target_chats.add(u_chat)
+                                continue
+                            # Scoped users only receive alerts for devices in their zone
+                            if dev_obj and is_device_in_scope(dev_obj, u_allowed):
+                                target_chats.add(u_chat)
                     except Exception as u_err:
-                        print(f"[Telegram Alert] Could not load users: {u_err}")
+                        print(f"[Telegram Alert] Could not load users for scope filter: {u_err}")
 
                     if not target_chats:
                         print(f"[Telegram Alert] Notice: Alert not sent - no Telegram Chat ID configured in settings or user profiles.")
@@ -151,19 +178,6 @@ class AlertEngine:
                     else:
                         icon = "ℹ️"
                         header = "СИСТЕМНОЕ ОПОВЕЩЕНИЕ"
-
-                    # Find device metadata for location and details
-                    dev_id = alert.get("deviceId") or alert.get("device_id") or ""
-                    dev_obj = None
-                    if dev_id:
-                        try:
-                            from backend.app.api.v1.telegram import load_devices
-                            for d in load_devices():
-                                if str(d.get("id", "")).upper() == str(dev_id).upper():
-                                    dev_obj = d
-                                    break
-                        except Exception:
-                            pass
 
                     ip = (dev_obj.get("ip") or dev_obj.get("ip_address") or "") if dev_obj else ""
                     mac = (dev_obj.get("mac") or dev_obj.get("mac_address") or "") if dev_obj else ""

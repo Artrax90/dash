@@ -820,6 +820,174 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             "alert": f"Выключение {shut} ПК"
         }
 
+    # ── Hierarchy navigation: Buildings → Floors → Rooms ──
+    if data == "menu:buildings":
+        res = build_hierarchy_buildings_view(user_devices, scope_desc)
+        res["alert"] = "Список корпусов"
+        return res
+
+    if data.startswith("bld:"):
+        bld_name = data.split(":", 1)[1]
+        res = build_hierarchy_floors_view(bld_name, user_devices, role)
+        res["alert"] = f"Корпус: {bld_name}"
+        return res
+
+    if data.startswith("flr:"):
+        parts = data.split(":", 2)
+        bld_name = parts[1] if len(parts) > 1 else ""
+        flr_name = parts[2] if len(parts) > 2 else ""
+        res = build_hierarchy_rooms_view(bld_name, flr_name, user_devices, role)
+        res["alert"] = f"Этаж: {flr_name}"
+        return res
+
+    if data.startswith("rm:"):
+        parts = data.split(":", 3)
+        bld_name = parts[1] if len(parts) > 1 else ""
+        flr_name = parts[2] if len(parts) > 2 else ""
+        rm_name = parts[3] if len(parts) > 3 else ""
+        res = build_hierarchy_room_devices_view(bld_name, flr_name, rm_name, user_devices, role)
+        res["alert"] = f"Кабинет: {rm_name}"
+        return res
+
+    # ── Floor-level confirm/actions ──
+    if data.startswith("confirm:wakeflr:"):
+        parts = data.split(":", 3)
+        bld_name = parts[2] if len(parts) > 2 else ""
+        flr_name = parts[3] if len(parts) > 3 else ""
+        return {
+            "text": f"⚡️ <b>Подтверждение включения этажа</b>\n\nВы действительно хотите отправить Wake-on-LAN на <b>ВСЕ компьютеры {bld_name} → {flr_name}</b>?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "⚡️ Да, включить весь этаж", "callback_data": f"do:wakeflr:{bld_name}:{flr_name}"},
+                        {"text": "❌ Отмена", "callback_data": f"flr:{bld_name}:{flr_name}"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("confirm:shutflr:"):
+        parts = data.split(":", 3)
+        bld_name = parts[2] if len(parts) > 2 else ""
+        flr_name = parts[3] if len(parts) > 3 else ""
+        return {
+            "text": f"🛑 <b>Подтверждение выключения этажа</b>\n\nВы действительно хотите выключить <b>ВСЕ компьютеры {bld_name} → {flr_name}</b>?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "🛑 Да, выключить этаж", "callback_data": f"do:shutflr:{bld_name}:{flr_name}"},
+                        {"text": "❌ Отмена", "callback_data": f"flr:{bld_name}:{flr_name}"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("confirm:wakerm:"):
+        parts = data.split(":", 4)
+        bld_name = parts[2] if len(parts) > 2 else ""
+        flr_name = parts[3] if len(parts) > 3 else ""
+        rm_name = parts[4] if len(parts) > 4 else ""
+        return {
+            "text": f"⚡️ <b>Подтверждение включения кабинета</b>\n\nВы действительно хотите отправить Wake-on-LAN на <b>ВСЕ компьютеры {rm_name}</b> ({bld_name} → {flr_name})?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "⚡️ Да, включить кабинет", "callback_data": f"do:wakerm:{bld_name}:{flr_name}:{rm_name}"},
+                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("confirm:shutrm:"):
+        parts = data.split(":", 4)
+        bld_name = parts[2] if len(parts) > 2 else ""
+        flr_name = parts[3] if len(parts) > 3 else ""
+        rm_name = parts[4] if len(parts) > 4 else ""
+        return {
+            "text": f"🛑 <b>Подтверждение выключения кабинета</b>\n\nВы действительно хотите выключить <b>ВСЕ компьютеры {rm_name}</b> ({bld_name} → {flr_name})?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "🛑 Да, выключить кабинет", "callback_data": f"do:shutrm:{bld_name}:{flr_name}:{rm_name}"},
+                        {"text": "❌ Отмена", "callback_data": f"rm:{bld_name}:{flr_name}:{rm_name}"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    # ── Floor-level power actions ──
+    if data.startswith("do:wakeflr:"):
+        parts = data.split(":", 3)
+        bld_name = parts[2] if len(parts) > 2 else ""
+        flr_name = parts[3] if len(parts) > 3 else ""
+        target_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == bld_name and (d.get("floor") or "1 этаж") == flr_name]
+        woken = 0
+        for d in target_devs:
+            if d.get("mac"):
+                send_wol_packet(d["mac"])
+                woken += 1
+                try:
+                    log_device_power_event(
+                        device_id=d.get("id"),
+                        target_name=d.get("name") or d.get("id"),
+                        action="WAKE",
+                        status="SUCCESS",
+                        details=f"Групповой WoL на этаж {bld_name}/{flr_name} через Telegram",
+                        initiator=operator_label,
+                        source="TELEGRAM"
+                    )
+                except Exception:
+                    pass
+        record_audit(operator_label, "BULK_WAKE", f"FLR_{bld_name}_{flr_name}", "SUCCESS", f"WoL отправлен на {woken} ПК на {flr_name} в {bld_name}")
+        return {
+            "text": f"✅ <b>Wake-on-LAN отправлен!</b>\n\n⚡️ Разбужено ПК: <b>{woken}</b> из {len(target_devs)}\n📍 Локация: <b>{bld_name} → {flr_name}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🏬 К этажу", "callback_data": f"flr:{bld_name}:{flr_name}"}]]
+            },
+            "alert": f"WoL на {woken} ПК"
+        }
+
+    if data.startswith("do:shutflr:"):
+        parts = data.split(":", 3)
+        bld_name = parts[2] if len(parts) > 2 else ""
+        flr_name = parts[3] if len(parts) > 3 else ""
+        if role == "Наблюдатель":
+            return {"text": "🚫 Роль «Наблюдатель» имеет доступ только для чтения.", "alert": "Отказ: роль Наблюдатель"}
+        target_devs = [d for d in user_devices if (d.get("building") or "Общие группы") == bld_name and (d.get("floor") or "1 этаж") == flr_name]
+        from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+        shut = 0
+        for d in target_devs:
+            if d.get("ip"):
+                send_direct_lan_power_signal(ip_address=d["ip"], action="SHUTDOWN", device_id=d.get("id"), mac_address=d.get("mac", ""), hostname=d.get("hostname", ""))
+            queue_device_command(d.get("id"), "SHUTDOWN", force=True, reason=f"Telegram floor shutdown by {operator_label}")
+            shut += 1
+            try:
+                log_device_power_event(
+                    device_id=d.get("id"),
+                    target_name=d.get("name") or d.get("id"),
+                    action="SHUTDOWN",
+                    status="SUCCESS",
+                    details=f"Групповое выключение этажа {bld_name}/{flr_name} через Telegram",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception:
+                pass
+        record_audit(operator_label, "BULK_SHUTDOWN", f"FLR_{bld_name}_{flr_name}", "SUCCESS", f"Выключение {shut} ПК на {flr_name} в {bld_name}")
+        return {
+            "text": f"✅ <b>Команда выключения отправлена!</b>\n\n🛑 Выключено ПК: <b>{shut}</b>\n📍 Локация: <b>{bld_name} → {flr_name}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🏬 К этажу", "callback_data": f"flr:{bld_name}:{flr_name}"}]]
+            },
+            "alert": f"Выключение {shut} ПК"
+        }
+
+
     if data.startswith("menu:devices"):
         parts = data.split(":")
         page = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else 0
