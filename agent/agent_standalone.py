@@ -64,12 +64,19 @@ def execute_power_command(action: str, extra: dict = None):
             if sess_id is not None:
                 subprocess.run(f"loginctl terminate-session {sess_id} 2>/dev/null || pkill -KILL -s {sess_id} 2>/dev/null", shell=True)
     elif act in ["KILL_PROCESS", "TERMINATE_PROCESS"]:
-        target_pid = extra.get("pid") if extra else None
+        target_pid = None
+        target_pname = None
+        if extra:
+            target_pid = extra.get("pid") or (extra.get("extra", {}).get("pid") if isinstance(extra.get("extra"), dict) else None)
+            target_pname = extra.get("processName") or (extra.get("extra", {}).get("processName") if isinstance(extra.get("extra"), dict) else None)
         if target_pid:
             if is_win:
                 subprocess.run(f"taskkill /F /PID {target_pid} /T 2>nul", shell=True)
             else:
                 subprocess.run(f"kill -9 {target_pid} 2>/dev/null", shell=True)
+        if target_pname and is_win:
+            clean_p = target_pname.replace(".exe", "")
+            subprocess.run(f"taskkill /F /IM {clean_p}.exe /T 2>nul", shell=True)
     elif act in ["LOCK"]:
         if is_win:
             subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
@@ -1246,12 +1253,19 @@ def execute_power_command(action: str, extra: dict = None):
                 else:
                     subprocess.Popen("pkill -KILL -u $(whoami) || true", shell=True)
         elif act in ["KILL_PROCESS", "TERMINATE_PROCESS"]:
-            target_pid = (extra or {}).get("pid")
+            target_pid = None
+            target_pname = None
+            if extra:
+                target_pid = extra.get("pid") or (extra.get("extra", {}).get("pid") if isinstance(extra.get("extra"), dict) else None)
+                target_pname = extra.get("processName") or (extra.get("extra", {}).get("processName") if isinstance(extra.get("extra"), dict) else None)
             if target_pid:
                 if is_win:
                     subprocess.Popen(f"taskkill /F /PID {target_pid} /T", shell=True)
                 else:
                     subprocess.Popen(f"kill -9 {target_pid}", shell=True)
+            if target_pname and is_win:
+                clean_p = target_pname.replace(".exe", "")
+                subprocess.Popen(f"taskkill /F /IM {clean_p}.exe /T", shell=True)
         elif act in ["LOCK"]:
             if is_win:
                 subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)

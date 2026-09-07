@@ -158,5 +158,45 @@ async def test_agent_heartbeat_new_device_registration():
             await db.execute(delete(Device).where(Device.id == test_dev_id))
             await db.commit()
 
+@pytest.mark.anyio
+async def test_process_kill_command_payload_structure():
+    """Verify that process kill command payload contains flat pid, processName and extra dict."""
+    from backend.app.api.v1.agents import queue_device_command, pending_device_commands
 
+    dev_id = "TEST-PC-KILL-CHECK"
+    cmd = queue_device_command(
+        device_id=dev_id,
+        action="KILL_PROCESS",
+        force=True,
+        reason="Kill firefox test",
+        extra_data={"pid": 10476, "processName": "firefox.exe"}
+    )
+    assert cmd["action"] == "KILL_PROCESS"
+    assert cmd["pid"] == 10476
+    assert cmd["processName"] == "firefox.exe"
+    assert cmd["extra"]["pid"] == 10476
+    assert cmd["extra"]["processName"] == "firefox.exe"
+    assert dev_id in pending_device_commands
+    assert any(c["id"] == cmd["id"] for c in pending_device_commands[dev_id])
 
+def test_windows_agent_service_script_no_literal_placeholders():
+    """Verify that get_windows_agent_service_ps1 does not output literal single-quoted placeholders."""
+    from backend.app.main import get_windows_agent_service_ps1
+
+    code = get_windows_agent_service_ps1("http://192.168.0.237:2301", "", "")
+    assert "'$deviceId'" not in code
+    assert "'$mac'" not in code
+    assert "'$ServerUrl'" not in code
+    assert "$DeviceId =" in code
+    assert "$ServerUrl =" in code
+    assert "Workstation Manager Direct Signal (UDP 48123)" in code
+
+@pytest.mark.anyio
+async def test_agent_py_endpoint():
+    """Verify that GET /agent.py returns 200 OK and valid Python code."""
+    from backend.app.main import get_python_agent_script_endpoint
+
+    res = await get_python_agent_script_endpoint()
+    assert res.status_code == 200
+    assert "AGENT_VERSION" in res.body.decode("utf-8")
+    assert "KILL_PROCESS" in res.body.decode("utf-8")

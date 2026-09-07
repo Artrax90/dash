@@ -310,16 +310,25 @@ def get_windows_agent_service_ps1(base_url: str, device_id: str = "", mac: str =
         code_part = content.split(start_marker, 1)[1].split(end_marker, 1)[0].strip()
         if device_id:
             code_part = code_part.replace("`$DeviceId = '$deviceId'", f"`$DeviceId = '{device_id}'")
+        else:
+            code_part = code_part.replace("`$DeviceId = '$deviceId'", "`$DeviceId = ''")
         if mac:
             code_part = code_part.replace("`$DeviceMac = '$mac'", f"`$DeviceMac = '{mac}'")
+        else:
+            code_part = code_part.replace("`$DeviceMac = '$mac'", "`$DeviceMac = ''")
         if base_url:
             code_part = code_part.replace("`$ServerUrl = '$ServerUrl'", f"`$ServerUrl = '{base_url}'")
+        else:
+            code_part = code_part.replace("`$ServerUrl = '$ServerUrl'", "`$ServerUrl = ''")
         
         # Clean any literal single-quoted placeholders
         code_part = code_part.replace("'$InstallDir'", "$InstallDir")
         code_part = code_part.replace("'$Token'", "''")
         code_part = code_part.replace("'$osCaption'", "''")
         code_part = code_part.replace("`$", "$")
+        code_part = code_part.replace("'$deviceId'", f"'{device_id}'" if device_id else "''")
+        code_part = code_part.replace("'$mac'", f"'{mac}'" if mac else "''")
+        code_part = code_part.replace("'$ServerUrl'", f"'{base_url}'" if base_url else "''")
         return code_part
     return content
 
@@ -332,6 +341,19 @@ async def get_windows_service_script_endpoint(request: Request, server_url: str 
     base_url = resolve_request_base_url(request, server_url)
     content = get_windows_agent_service_ps1(base_url, deviceId, mac)
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
+
+@app.get("/agent.py")
+@app.get("/api/v1/agents/agent.py")
+async def get_python_agent_script_endpoint():
+    """
+    Serve Python standalone agent script.
+    """
+    path = os.path.join(os.path.dirname(__file__), "..", "..", "agent", "agent_standalone.py")
+    if not os.path.exists(path):
+        path = os.path.join("agent", "agent_standalone.py")
+    with open(path, "r", encoding="utf-8") as f:
+        content = f.read()
+    return PlainTextResponse(content, media_type="text/x-python; charset=utf-8")
 
 @app.get("/uninstall.ps1")
 async def get_windows_uninstaller_ps1_endpoint(request: Request, server_url: str = "", download: bool = False):

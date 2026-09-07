@@ -869,13 +869,17 @@ def queue_device_command(device_id: str, action: str, force: bool = True, reason
         "reason": reason or "Workstation Manager command",
         "targetVersion": settings.LATEST_AGENT_VERSION,
         "createdAt": datetime.utcnow().isoformat(),
-        "createdTimestamp": time.time()
+        "createdTimestamp": time.time(),
+        "extra": extra_data or {}
     }
     if extra_data and isinstance(extra_data, dict):
-        cmd.update(extra_data)
+        for k, v in extra_data.items():
+            if k not in cmd:
+                cmd[k] = v
     if device_id:
         pending_device_commands[device_id].append(cmd)
         pending_device_commands[device_id.upper()].append(cmd)
+        pending_device_commands[device_id.lower()].append(cmd)
     print(f"[Command Queue] Queued {action} for {device_id} ({cmd['id']})")
     return cmd
 

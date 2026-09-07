@@ -758,7 +758,7 @@ if (`$ServerUrl) {
 `$AgentVersion = '2.9.3'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
-if (-not `$osCaption -or `$osCaption -eq '`$osCaption') {
+if (-not `$osCaption -or `$osCaption -like '*osCaption*') {
     try { `$osCaption = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Caption } catch { `$osCaption = 'Windows' }
 }
 `$script:currentInterval = 10
@@ -773,6 +773,51 @@ if (-not `$osCaption -or `$osCaption -eq '`$osCaption') {
 } else {
     "C:\Program Files\WorkstationManagerAgent"
 }
+
+# Auto-restore parameters from config.json if not passed or placeholder
+`$cfgFile = Join-Path `$InstallDir "config.json"
+if (Test-Path `$cfgFile) {
+    try {
+        `$cfgData = Get-Content -Path `$cfgFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        if (`$cfgData.server_url -and (-not `$ServerUrl -or `$ServerUrl -like '*ServerUrl*' -or `$ServerUrl -eq '')) {
+            `$ServerUrl = `$cfgData.server_url.TrimEnd('/') -replace '(?i)/api/v1/?`$', '' -replace '(?i)/api/?`$', ''
+        }
+        if (`$cfgData.device_id -and (-not `$DeviceId -or `$DeviceId -like '*deviceId*' -or `$DeviceId -eq '')) {
+            `$DeviceId = `$cfgData.device_id
+        }
+        if (`$cfgData.enrollment_token -and (-not `$Token -or `$Token -like '*Token*' -or `$Token -eq '')) {
+            `$Token = `$cfgData.enrollment_token
+        }
+    } catch {}
+}
+
+# Auto-detect MAC address if not set or placeholder
+if (-not `$DeviceMac -or `$DeviceMac -like '*mac*' -or `$DeviceMac -eq '') {
+    try {
+        `$DeviceMac = (Get-NetAdapter -Physical -ErrorAction SilentlyContinue | Where-Object { `$_.Status -eq 'Up' -and `$_.MacAddress } | Select-Object -First 1).MacAddress
+        if (-not `$DeviceMac) {
+            `$DeviceMac = (Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { `$_.MacAddress } | Select-Object -First 1).MacAddress
+        }
+    } catch {}
+}
+
+# Auto-derive DeviceId if still empty or placeholder
+if (-not `$DeviceId -or `$DeviceId -like '*deviceId*' -or `$DeviceId -eq '') {
+    if (`$DeviceMac) {
+        `$cleanM = `$DeviceMac.Replace(':', '').Replace('-', '').ToUpper()
+        if (`$cleanM.Length -ge 12) {
+            `$DeviceId = "PC-" + `$cleanM.Substring(8, 4)
+        }
+    }
+    if (-not `$DeviceId) {
+        `$DeviceId = `$env:COMPUTERNAME
+    }
+}
+
+# Ensure Windows Firewall allows inbound UDP 48123 (Direct LAN signal)
+try {
+    & netsh.exe advfirewall firewall add rule name="Workstation Manager Direct Signal (UDP 48123)" dir=in action=allow protocol=UDP localport=48123 profile=any 2>`$null | Out-Null
+} catch {}
 
 # Non-colliding mutex lock: wait up to 8 seconds for any shutting down instance to close cleanly
 `$mutexName = "Global\WorkstationManagerAgentMutex"
@@ -931,14 +976,18 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     }
 
     if (`$act -eq 'REBOOT' -or `$act -eq 'RESTART') {
+        try { & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0 } catch {}
         try { & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 1 /c "Remote Reboot from Workstation Manager" } catch {}
+        try { (Get-WmiObject -Class Win32_OperatingSystem -EnableAllPrivileges).Win32Shutdown(6) } catch {}
         try { (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Win32Shutdown(6) } catch {}
         try { Restart-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
     }
     elseif (`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') {
+        try { & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 } catch {}
         try { & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 1 /c "Remote Shutdown from Workstation Manager" } catch {}
+        try { (Get-WmiObject -Class Win32_OperatingSystem -EnableAllPrivileges).Win32Shutdown(12) } catch {}
         try { (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Win32Shutdown(12) } catch {}
-        try { (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Win32Shutdown(5) } catch {}
+        try { (Get-WmiObject -Class Win32_OperatingSystem -EnableAllPrivileges).Win32Shutdown(5) } catch {}
         try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
     }
     elseif (`$act -eq 'CLOSE_RDP' -or `$act -eq 'CLOSE_RDP_CLIENT' -or `$act -eq 'KILL_RDP' -or `$act -eq 'DISCONNECT_RDP') {
@@ -1171,13 +1220,28 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     }
     elseif (`$act -eq 'KILL_PROCESS' -or `$act -eq 'TERMINATE_PROCESS') {
         `$targetPid = `$null
-        if (`$cmdObj -and `$cmdObj.pid -and "`$(`$cmdObj.pid)".Trim() -ne "") {
-            try { `$targetPid = [int]`$cmdObj.pid } catch {}
+        `$targetProcName = `$null
+        if (`$cmdObj) {
+            if (`$cmdObj.pid) { try { `$targetPid = [int]`$cmdObj.pid } catch {} }
+            if (-not `$targetPid -and `$cmdObj.extra -and `$cmdObj.extra.pid) { try { `$targetPid = [int]`$cmdObj.extra.pid } catch {} }
+            if (-not `$targetPid -and `$cmdObj.sessionId -and [int]`$cmdObj.sessionId -gt 100) { try { `$targetPid = [int]`$cmdObj.sessionId } catch {} }
+            if (`$cmdObj.processName) { `$targetProcName = `$cmdObj.processName.ToString().Trim() }
+            elseif (`$cmdObj.extra -and `$cmdObj.extra.processName) { `$targetProcName = `$cmdObj.extra.processName.ToString().Trim() }
+            elseif (`$cmdObj.clientIp -and `$cmdObj.clientIp -match '(?i)\.exe`$') { `$targetProcName = `$cmdObj.clientIp.ToString().Trim() }
         }
+
+        # 1. Kill by PID using multiple native utilities
         if (`$targetPid -and `$targetPid -gt 0) {
             try { & "`$env:SystemRoot\System32\taskkill.exe" /F /PID `$targetPid /T 2>`$null } catch {}
             try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$targetPid" -ErrorAction SilentlyContinue).Terminate() } catch {}
             try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        # 2. Kill by process name if specified
+        if (`$targetProcName) {
+            `$cleanProc = `$targetProcName -replace '(?i)\.exe`$', ''
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM "`$targetProcName" /T 2>`$null } catch {}
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM "`$cleanProc.exe" /T 2>`$null } catch {}
+            try { Stop-Process -Name `$cleanProc -Force -ErrorAction SilentlyContinue } catch {}
         }
         try { Invoke-Heartbeat `$true } catch {}
     }
@@ -2051,6 +2115,12 @@ while (`$initAttempts -lt 30) {
 
 try {
     while (`$true) {
+        if (-not `$udpListener) {
+            try {
+                `$udpListener = New-Object System.Net.Sockets.UdpClient 48123
+                `$udpListener.Client.ReceiveTimeout = 500
+            } catch {}
+        }
         if (`$udpListener) {
             try {
                 if (`$udpListener.Available -gt 0) {
@@ -2096,20 +2166,24 @@ try {
                             `$isTargetMatch = `$true
                             if (`$targetDevId -or `$targetMac -or `$targetHost) {
                                 `$isTargetMatch = `$false
-                                `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
+                                `$myMacClean = if (`$DeviceMac) { "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper() } else { "" }
                                 `$tgtMacClean = if (`$targetMac) { `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper() } else { "" }
                                 `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
+                                `$myDevId = if (`$DeviceId) { "`$DeviceId".Trim().ToUpper() } else { "" }
 
                                 if (`$targetDevId -and (`$targetDevId -eq "REMOTE" -or `$targetDevId -eq "0" -or `$targetDevId -eq "*")) {
                                     `$isTargetMatch = `$true
                                 }
-                                elseif (`$targetDevId -and `$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper()) {
+                                elseif (`$targetDevId -and `$myDevId -and (`$targetDevId.ToUpper() -eq `$myDevId -or `$myDevId -like "*$($targetDevId.ToUpper())*")) {
                                     `$isTargetMatch = `$true
                                 }
-                                elseif (`$tgtMacClean -and `$tgtMacClean -ne "000000000000" -and `$tgtMacClean -eq `$myMacClean) {
+                                elseif (`$tgtMacClean -and `$tgtMacClean -ne "000000000000" -and `$myMacClean -and (`$tgtMacClean -eq `$myMacClean -or `$myMacClean -like "*$tgtMacClean*")) {
                                     `$isTargetMatch = `$true
                                 }
-                                elseif (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName) {
+                                elseif (`$targetHost -and (`$myHostName -like "*$($targetHost.ToUpper())*" -or `$targetHost.ToUpper() -like "*$myHostName*")) {
+                                    `$isTargetMatch = `$true
+                                }
+                                elseif (`$targetDevId -and (`$myHostName -like "*$($targetDevId.ToUpper())*" -or `$targetDevId.ToUpper() -like "*$myHostName*")) {
                                     `$isTargetMatch = `$true
                                 }
                             }
@@ -2121,15 +2195,19 @@ try {
                                 `$pidVal = 0
                                 `$remHostVal = ""
                                 `$clientIpVal = ""
+                                `$pNameVal = ""
                                 if (`$extraArg) {
                                     `$subParts = `$extraArg.Split("|")
                                     if (`$subParts.Length -ge 1 -and `$subParts[0]) { `$sessIdVal = `$subParts[0].Trim() }
                                     if (`$subParts.Length -ge 2 -and `$subParts[1]) { `$uNameVal = `$subParts[1].Trim() }
                                     if (`$subParts.Length -ge 3 -and `$subParts[2]) { `$pidVal = `$subParts[2].Trim() }
                                     if (`$subParts.Length -ge 4 -and `$subParts[3]) { `$remHostVal = `$subParts[3].Trim() }
-                                    if (`$subParts.Length -ge 5 -and `$subParts[4]) { `$clientIpVal = `$subParts[4].Trim() }
+                                    if (`$subParts.Length -ge 5 -and `$subParts[4]) {
+                                        `$pCandidate = `$subParts[4].Trim()
+                                        if (`$pCandidate -match '(?i)\.exe`$') { `$pNameVal = `$pCandidate } else { `$clientIpVal = `$pCandidate }
+                                    }
                                 }
-                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal }
+                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal; processName = `$pNameVal }
                                 Execute-PowerCommand `$cmdAction `$true `$cmdObj
                             }
                         }

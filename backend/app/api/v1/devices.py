@@ -2323,13 +2323,23 @@ async def execute_process_kill(
         reason=f"Снятие процесса {process_name} (PID {pid}) оператором {user}",
         extra_data={"pid": pid, "processName": process_name, "user": user}
     )
+    if target_device.hostname and target_device.hostname != target_device.id:
+        queue_device_command(
+            device_id=target_device.hostname,
+            action="KILL_PROCESS",
+            force=True,
+            reason=f"Снятие процесса {process_name} (PID {pid}) оператором {user}",
+            extra_data={"pid": pid, "processName": process_name, "user": user}
+        )
 
-    # 3. Remove PID from live processes cache immediately
-    dev_key = target_device.id
-    if dev_key in device_live_processes:
-        device_live_processes[dev_key] = [
-            p for p in device_live_processes[dev_key] if p.get("pid") != pid
-        ]
+    # 3. Remove PID from live processes cache immediately across all keys
+    for k in [target_device.id, target_device.id.upper(), target_device.id.lower(),
+              target_device.hostname, target_device.hostname.upper() if target_device.hostname else None,
+              target_device.hostname.lower() if target_device.hostname else None]:
+        if k and k in device_live_processes:
+            device_live_processes[k] = [
+                p for p in device_live_processes[k] if p.get("pid") != pid
+            ]
 
     # 4. Power / Event logging
     proc_label = f"«{process_name}» (PID {pid})" if process_name else f"PID {pid}"
