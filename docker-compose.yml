@@ -11,16 +11,18 @@ services:
       - HOST=0.0.0.0
       - PORT=${PORT:-2301}
       - SERVER_URL=${SERVER_URL:-}
-      - DATABASE_URL=${DATABASE_URL:-sqlite+aiosqlite:///./data/workstation_manager.db}
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://postgres:postgres_pass@postgres:5432/workstation_manager}
       - WOL_BROADCAST_IP=${WOL_BROADCAST_IP:-255.255.255.255}
       - WOL_PORT=${WOL_PORT:-9}
     volumes:
-      # Persistent storage for SQLite database, tokens, and data
+      # Persistent storage for fallback SQLite, tokens, and data
       - ./data:/app/data
       - ./scripts:/app/scripts:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
 
-  # Optional PostgreSQL database service
-  # Start with: docker compose --profile postgres up -d
+  # Production PostgreSQL database service
   postgres:
     image: postgres:16-alpine
     container_name: workstation-manager-postgres
@@ -35,12 +37,10 @@ services:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-workstation_manager}"]
-      interval: 5s
-      timeout: 5s
+      interval: 3s
+      timeout: 3s
       retries: 5
-    profiles:
-      - postgres
-      - full
+
 
 volumes:
   postgres_data:

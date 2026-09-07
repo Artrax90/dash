@@ -3,7 +3,13 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.responses import PlainTextResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.core.config import settings
-from backend.app.db.session import engine, Base
+import logging
+from backend.app.db.session import engine, Base, AsyncSessionLocal, is_postgres_url
+
+logger = logging.getLogger("workstation_manager")
+if not logger.handlers:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
 import backend.app.models  # Register all models for SQLAlchemy
 from backend.app.ws.manager import ws_manager
 
@@ -72,7 +78,25 @@ async def startup_event():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(safe_migrate_columns_sync)
-    print("Workstation Manager database initialized.")
+
+    # Identify and log database backend cleanly
+    is_pg = is_postgres_url(str(engine.url))
+    db_type = "PostgreSQL" if is_pg else "SQLite"
+    if is_pg and engine.url:
+        host = engine.url.host or "postgres"
+        port = f":{engine.url.port}" if engine.url.port else ""
+        db_name = engine.url.database or "workstation_manager"
+        conn_str = f"{host}{port}/{db_name}"
+    else:
+        conn_str = str(engine.url.database if engine.url else "./data/workstation_manager.db")
+
+    logger.info(f"Workstation Manager database initialized. Engine: {db_type} [{conn_str}]")
+    print("=" * 60)
+    print("  🚀 Workstation Manager Server Online")
+    print(f"  🗄️  Active Database Engine: {db_type}")
+    print(f"  📍 Connection Target:      {conn_str}")
+    print("=" * 60)
+
     # Start automated scheduler and telegram bot background loops
     import asyncio
     asyncio.create_task(scheduler_service.start_background_loop())
@@ -94,6 +118,43 @@ app.include_router(groups_router, prefix=api_prefix)
 app.include_router(sessions_router, prefix=api_prefix)
 
 from starlette.staticfiles import StaticFiles
+
+# System status & database inspection endpoints
+@app.get("/api/v1/system/status")
+@app.get("/api/v1/status")
+async def get_system_status():
+    """Return health status and active database engine details."""
+    is_pg = is_postgres_url(str(engine.url))
+    dialect = engine.dialect.name
+
+    # Live connectivity test
+    db_connected = False
+    try:
+        from sqlalchemy import text
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(text("SELECT 1"))
+            db_connected = (res.scalar() == 1)
+    except Exception as ex:
+        logger.error(f"Database healthcheck error: {ex}")
+        db_connected = False
+
+    db_info = {
+        "type": "postgresql" if is_pg else "sqlite",
+        "dialect": dialect,
+        "connected": db_connected,
+    }
+    if is_pg and engine.url:
+        db_info["host"] = engine.url.host
+        db_info["port"] = engine.url.port or 5432
+        db_info["database"] = engine.url.database
+    elif engine.url:
+        db_info["database"] = engine.url.database
+
+    return {
+        "status": "online",
+        "version": settings.VERSION,
+        "database": db_info,
+    }
 
 # Auto-mount SPA frontend if built in dist/
 dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "dist"))
@@ -121,6 +182,7 @@ else:
             "status": "online",
             "docs": "/docs"
         }
+
 
 def resolve_request_base_url(request: Request, server_url: str = "") -> str:
     """

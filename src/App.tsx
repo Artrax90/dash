@@ -7,7 +7,7 @@ import {
   Edit3, Lock, Download, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
   Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb, Building, Layers, MapPin, FileSpreadsheet, Clock, BarChart2
 } from 'lucide-react';
-import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, getActiveUserName, wsClient, notificationService } from '@/api';
+import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, systemApi, getActiveUserName, wsClient, notificationService } from '@/api';
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
 import { monitoringSeries } from '@/api/mockData';
 import { useLanguage } from '@/i18n/LanguageContext';
@@ -15214,11 +15214,17 @@ function SettingsPage({
     setCurrentWorkspaceName(workspaceName);
   }, [workspaceName]);
 
+  const [systemDbStatus, setSystemDbStatus] = useState<any>(null);
+
   useEffect(() => {
     agentsApi.getSettings().then(s => {
       if (s && s.defaultHeartbeatInterval) setDefaultInterval(s.defaultHeartbeatInterval);
     });
+    systemApi.getStatus().then(res => {
+      if (res?.database) setSystemDbStatus(res.database);
+    }).catch(() => {});
   }, []);
+
 
   const handleSaveSettings = () => {
     onSaveWorkspaceName(currentWorkspaceName);
@@ -15392,7 +15398,34 @@ function SettingsPage({
           {activeTab === 'storage' && (
             <>
               <div className="panel-heading">
-                <div><h2>Хранение данных и резервные копии</h2><p>База данных SQLite / PostgreSQL и снимки</p></div>
+                <div><h2>Хранение данных и СУБД</h2><p>База данных PostgreSQL / SQLite и резервные копии</p></div>
+              </div>
+              <div className="setting-row">
+                <div>
+                  <strong>Текущая база данных</strong>
+                  <span>Используемая СУБД сервера и статус подключения</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '4px 10px',
+                    borderRadius: '6px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    background: systemDbStatus?.type === 'postgresql' ? 'rgba(59, 130, 246, 0.15)' : 'rgba(107, 114, 128, 0.15)',
+                    color: systemDbStatus?.type === 'postgresql' ? 'var(--blue)' : 'var(--muted)',
+                    border: `1px solid ${systemDbStatus?.type === 'postgresql' ? 'rgba(59, 130, 246, 0.3)' : 'var(--line)'}`
+                  }}>
+                    {systemDbStatus?.type === 'postgresql' ? '🐘 PostgreSQL' : '🗄️ SQLite'}
+                  </span>
+                  <span style={{ fontSize: '12px', color: 'var(--muted)' }}>
+                    {systemDbStatus?.type === 'postgresql'
+                      ? `${systemDbStatus.host || 'postgres'}:${systemDbStatus.port || 5432}/${systemDbStatus.database || 'workstation_manager'}`
+                      : (systemDbStatus?.database || 'workstation_manager.db')}
+                  </span>
+                </div>
               </div>
               <div className="setting-row">
                 <div><strong>Резервная копия базы данных</strong><span>Создать и скачать моментальный снимок конфигурации</span></div>

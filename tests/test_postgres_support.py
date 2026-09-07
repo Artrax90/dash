@@ -66,3 +66,28 @@ def test_safe_column_migration_logic():
     # Run it a second time: must be idempotent and not crash or attempt duplicate column creation
     with mem_engine.begin() as conn:
         safe_migrate_columns_sync(conn)
+
+def test_system_status_endpoint_reports_database_info():
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+    client = TestClient(app)
+    response = client.get("/api/v1/system/status")
+    assert response.status_code == 200
+    data = response.json()
+    assert data["status"] == "online"
+    assert "database" in data
+    assert "type" in data["database"]
+    assert data["database"]["type"] in ["sqlite", "postgresql"]
+    assert "connected" in data["database"]
+    assert data["database"]["connected"] is True
+
+def test_device_stats_includes_database_type():
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+    client = TestClient(app)
+    response = client.get("/api/v1/devices/stats")
+    assert response.status_code == 200
+    data = response.json()
+    assert "databaseType" in data
+    assert data["databaseType"] in ["sqlite", "postgresql"]
+

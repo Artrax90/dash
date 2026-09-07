@@ -1350,6 +1350,41 @@ export const bulkApi = {
   },
 };
 
+export interface SystemStatusResponse {
+  status: string;
+  version: string;
+  database: {
+    type: 'postgresql' | 'sqlite';
+    dialect: string;
+    connected: boolean;
+    host?: string;
+    port?: number;
+    database?: string;
+  };
+}
+
+export const systemApi = {
+  getStatus: async (): Promise<SystemStatusResponse> => {
+    try {
+      const res = await fetch(`${API_BASE}/system/status`);
+      if (res.ok) {
+        return await res.json();
+      }
+    } catch {}
+    return {
+      status: 'online',
+      version: '1.0.0',
+      database: {
+        type: 'sqlite',
+        dialect: 'sqlite',
+        connected: true,
+        database: 'workstation_manager.db',
+      },
+    };
+  },
+};
+
 export { wsClient } from '@/services/websocket';
 export { notificationService } from '@/services/notificationService';
+
 

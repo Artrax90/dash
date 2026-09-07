@@ -4,7 +4,7 @@ from fastapi.responses import Response, StreamingResponse
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, or_, and_
-from backend.app.db.session import get_db
+from backend.app.db.session import get_db, engine, is_postgres_url
 from backend.app.models.device import Device, PowerStatus, HealthStatus, AgentStatus
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
 from backend.app.models.alert import AlertPolicyModel, AlertModel
@@ -918,6 +918,8 @@ async def get_device_stats(request: Request, db: AsyncSession = Depends(get_db))
                 else:
                     active_sessions += 1
 
+    is_pg = is_postgres_url(str(engine.url))
+
     return {
         "total": total,
         "online": online,
@@ -926,7 +928,9 @@ async def get_device_stats(request: Request, db: AsyncSession = Depends(get_db))
         "activeSessions": active_sessions,
         "disconnectedSessions": disconnected_sessions,
         "hardwareAlertsCount": 0,
+        "databaseType": "postgresql" if is_pg else "sqlite",
     }
+
 
 @router.get("/reports/excel")
 async def export_excel_report(
