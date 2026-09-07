@@ -757,7 +757,7 @@ if (`$ServerUrl) {
 `$AgentVersion = '2.9.4'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
-`$script:currentInterval = 10
+`$script:currentInterval = 5
 
 `$mutexName = "Global\WorkstationManagerAgentMutex"
 `$createdNew = `$false
@@ -1952,6 +1952,10 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
 }
 
 
+try {
+    & netsh.exe advfirewall firewall add rule name="Workstation Manager Direct Signal (UDP 48123)" dir=in action=allow protocol=UDP localport=48123 profile=any 2>`$null | Out-Null
+} catch {}
+
 `$udpListener = `$null
 try {
     `$udpListener = New-Object System.Net.Sockets.UdpClient 48123
@@ -1971,9 +1975,15 @@ while (`$initAttempts -lt 30) {
 
 try {
     while (`$true) {
+        if (-not `$udpListener) {
+            try {
+                `$udpListener = New-Object System.Net.Sockets.UdpClient 48123
+                `$udpListener.Client.ReceiveTimeout = 500
+            } catch {}
+        }
         if (`$udpListener) {
             try {
-                if (`$udpListener.Available -gt 0) {
+                while (`$udpListener.Available -gt 0) {
                     `$remoteEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
                     `$dataBytes = `$udpListener.Receive([ref]`$remoteEp)
                     `$msg = [System.Text.Encoding]::UTF8.GetString(`$dataBytes)
@@ -2059,7 +2069,7 @@ try {
             }
         }
 
-        Start-Sleep -Milliseconds 1000
+        Start-Sleep -Milliseconds 250
     }
 } finally {
     try {

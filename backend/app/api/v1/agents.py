@@ -739,11 +739,11 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
 
 # Agent heartbeat and telemetry global & group configuration
 agent_settings = {
-    "defaultHeartbeatInterval": 60,
+    "defaultHeartbeatInterval": 5,
     "groupHeartbeatIntervals": {
-        "Servers": 15,
-        "DevOps": 30,
-        "Office": 60
+        "Servers": 5,
+        "DevOps": 5,
+        "Office": 5
     }
 }
 
@@ -852,7 +852,8 @@ def send_direct_lan_power_signal(
         payload = payload_str.encode("utf-8")
         
         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
-            # Strictly unicast to the specific target IP address
+            # Strictly unicast to the specific target IP address (2-packet burst for LAN/Wi-Fi reliability)
+            s.sendto(payload, (ip_address, port))
             s.sendto(payload, (ip_address, port))
         print(f"[Direct LAN Signal] Sent UNICAST UDP trigger {action} to {ip_address}:{port} (target: {clean_dev_id}, mac: {clean_mac}, host: {clean_host}, extra: {extra_clean})")
     except Exception as e:
@@ -972,7 +973,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
         except Exception:
             pass
 
-    effective_interval = agent_settings.get("defaultHeartbeatInterval", 60)
+    effective_interval = agent_settings.get("defaultHeartbeatInterval", 5)
     device = None
 
     # Cache all live network neighbors (Get-NetNeighbor) for instant fleet MAC discovery
