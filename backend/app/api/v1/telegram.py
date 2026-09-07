@@ -235,8 +235,9 @@ def load_devices() -> List[Dict[str, Any]]:
                         "room": r_val or (grps[0] if grps else "Без кабинета"),
                         "powerStatus": effective_power,
                         "isOnline": is_online,
-                        "agentVersion": agent_ver or "2.9.4",
+                        "agentVersion": agent_ver or "2.9.5",
                         "lastSeen": last_seen_val
+
                     })
                 if devs:
                     return devs
