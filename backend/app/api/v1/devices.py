@@ -1,15 +1,17 @@
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, Request, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
+from fastapi.responses import Response, StreamingResponse
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, delete, or_, and_
 from backend.app.db.session import get_db
 from backend.app.models.device import Device, PowerStatus, HealthStatus, AgentStatus
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
-from backend.app.models.alert import AlertPolicyModel
+from backend.app.models.alert import AlertPolicyModel, AlertModel
 from backend.app.models.schedule import ScheduleModel
 from backend.app.schemas.device import BulkOperationRequestSchema, DeviceProbeSchema, AgentlessDeviceCreateSchema
 from backend.app.services.wol_service import wol_service
+from backend.app.services.excel_report_service import generate_monitoring_excel_report
 from backend.app.ws.manager import ws_manager
 from backend.app.core.config import settings
 
@@ -890,6 +892,156 @@ async def get_device_stats(request: Request, db: AsyncSession = Depends(get_db))
         "disconnectedSessions": disconnected_sessions,
         "hardwareAlertsCount": 0,
     }
+
+@router.get("/reports/excel")
+async def export_excel_report(
+    time_range: str = "24h",
+    group: Optional[str] = None,
+    building: Optional[str] = None,
+    floor: Optional[str] = None,
+    room: Optional[str] = None,
+    device_id: Optional[str] = None,
+    from_ts: Optional[float] = None,
+    to_ts: Optional[float] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    now_ts = time.time()
+    seconds_map = {
+        "1h": 3600,
+        "6h": 21600,
+        "24h": 86400,
+        "7d": 604800,
+        "30d": 2592000,
+        "weekly_12w": 7257600
+    }
+    
+    if from_ts and to_ts and to_ts > from_ts:
+        start_ts = from_ts
+        end_ts = to_ts
+        period_key = "custom"
+    else:
+        window_sec = seconds_map.get(time_range, 86400)
+        start_ts = now_ts - window_sec
+        end_ts = now_ts
+        if time_range == "24h":
+            period_key = "hourly_24h"
+        elif time_range == "7d":
+            period_key = "daily_7d"
+        elif time_range == "30d":
+            period_key = "daily_30d"
+        elif time_range == "weekly_12w":
+            period_key = "weekly_12w"
+        else:
+            period_key = time_range
+
+    # 1. Fetch filtered devices
+    query = select(Device)
+    if device_id:
+        query = query.where(or_(Device.id == device_id, Device.hostname == device_id))
+    else:
+        if building:
+            query = query.where(Device.building == building)
+        if floor:
+            query = query.where(Device.floor == floor)
+        if room:
+            query = query.where(Device.room == room)
+        if group and group != "ALL":
+            query = query.where(Device.group_name.ilike(f"%{group}%"))
+
+    result = await db.execute(query)
+    raw_devices = result.scalars().all()
+    devices_data = [format_device_summary(d) for d in raw_devices]
+    target_dev_ids = {d["id"].upper() for d in devices_data}
+
+    # 2. Scope title
+    if device_id and devices_data:
+        d0 = devices_data[0]
+        scope_title = f"{d0.get('name', device_id)} ({device_id})"
+    elif building or floor or room:
+        parts = [p for p in [building, floor, room] if p]
+        scope_title = " / ".join(parts)
+        if group and group != "ALL":
+            scope_title += f" [Группа: {group}]"
+    elif group and group != "ALL":
+        scope_title = f"Группа {group}"
+    else:
+        scope_title = "Весь парк ПК (Fleet)"
+
+    # 3. Filter telemetry points
+    relevant_points = []
+    if device_id:
+        pts = device_telemetry_history.get(device_id, [])
+        relevant_points = [p for p in pts if start_ts <= p.get("time", 0) <= end_ts]
+    else:
+        relevant_points = [
+            p for p in fleet_telemetry_history
+            if start_ts <= p.get("time", 0) <= end_ts and (not target_dev_ids or p.get("deviceId", "").upper() in target_dev_ids)
+        ]
+
+    # 4. Filter power events
+    relevant_power_events = []
+    for d_id, ev_list in device_power_logs.items():
+        if target_dev_ids and d_id.upper() not in target_dev_ids:
+            continue
+        for ev in ev_list:
+            ev_iso = ev.get("timestamp", "")
+            try:
+                dt = datetime.fromisoformat(ev_iso.replace("Z", "+00:00"))
+                ev_ts = dt.timestamp()
+                if start_ts <= ev_ts <= end_ts:
+                    relevant_power_events.append(ev)
+            except Exception:
+                relevant_power_events.append(ev)
+
+    # Sort power events newest first
+    relevant_power_events.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+
+    # 5. Fetch alerts
+    alert_query = select(AlertModel)
+    if target_dev_ids:
+        alert_query = alert_query.where(AlertModel.device_id.in_(list(target_dev_ids)))
+    alert_res = await db.execute(alert_query)
+    raw_alerts = alert_res.scalars().all()
+    alerts_data = []
+    for a in raw_alerts:
+        created_iso = a.created_at.isoformat() if a.created_at else ""
+        try:
+            a_ts = a.created_at.replace(tzinfo=timezone.utc).timestamp()
+            if start_ts <= a_ts <= end_ts:
+                alerts_data.append({
+                    "id": a.id,
+                    "timestamp": created_iso,
+                    "deviceId": a.device_id,
+                    "severity": a.severity,
+                    "category": a.category,
+                    "description": a.description
+                })
+        except Exception:
+            alerts_data.append({
+                "id": a.id,
+                "timestamp": created_iso,
+                "deviceId": a.device_id,
+                "severity": a.severity,
+                "category": a.category,
+                "description": a.description
+            })
+
+    # Generate XLSX binary
+    report_bytes = generate_monitoring_excel_report(
+        period_type=period_key,
+        scope_title=scope_title,
+        devices=devices_data,
+        telemetry_points=relevant_points,
+        power_events=relevant_power_events,
+        alerts=alerts_data
+    )
+
+    filename = f"report_{period_key}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return Response(
+        content=report_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 @router.get("/telemetry/fleet-history")
 async def get_fleet_telemetry_history(

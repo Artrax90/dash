@@ -5,7 +5,7 @@ import {
   LoaderCircle, LogOut, Menu, Monitor, Moon, MoreHorizontal, Network, Power, RefreshCw, Search, Send, Server,
   Settings, ShieldCheck, Sun, Tag, Terminal, UserRound, Users as UsersIcon, Wifi, X, Zap, Plus, Trash2, Play,
   Edit3, Lock, Download, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
-  Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb, Building, Layers, MapPin
+  Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb, Building, Layers, MapPin, FileSpreadsheet, Clock, BarChart2
 } from 'lucide-react';
 import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, getActiveUserName, wsClient, notificationService } from '@/api';
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
@@ -4585,6 +4585,65 @@ function Monitoring({
   const [telemetryHistory, setTelemetryHistory] = useState<{ label: string; timestamp: number; cpu: number; ram: number; disk: number; activeCount: number }[]>([]);
   const [hasTelemetryData, setHasTelemetryData] = useState(false);
 
+  // Excel Export Modal States
+  const [showExportModal, setShowExportModal] = useState(false);
+  const [exportPeriod, setExportPeriod] = useState<'hourly_24h' | 'daily_7d' | 'daily_30d' | 'weekly_12w' | 'custom'>('hourly_24h');
+  const [exportCustomStart, setExportCustomStart] = useState('');
+  const [exportCustomEnd, setExportCustomEnd] = useState('');
+  const [exportScopeMode, setExportScopeMode] = useState<'all' | 'building' | 'group' | 'device'>('all');
+  const [exportSelectedBuilding, setExportSelectedBuilding] = useState('');
+  const [exportSelectedFloor, setExportSelectedFloor] = useState('');
+  const [exportSelectedRoom, setExportSelectedRoom] = useState('');
+  const [exportSelectedGroup, setExportSelectedGroup] = useState('');
+  const [exportSelectedDeviceId, setExportSelectedDeviceId] = useState('');
+  const [exportingExcel, setExportingExcel] = useState(false);
+
+  const handleExportExcel = async () => {
+    try {
+      setExportingExcel(true);
+      const params: any = {};
+      if (exportPeriod === 'hourly_24h') params.timeRange = '24h';
+      else if (exportPeriod === 'daily_7d') params.timeRange = '7d';
+      else if (exportPeriod === 'daily_30d') params.timeRange = '30d';
+      else if (exportPeriod === 'weekly_12w') params.timeRange = 'weekly_12w';
+      else if (exportPeriod === 'custom') {
+        params.timeRange = 'custom';
+        if (exportCustomStart) params.fromTs = Math.floor(new Date(exportCustomStart).getTime() / 1000);
+        if (exportCustomEnd) params.toTs = Math.floor(new Date(exportCustomEnd).getTime() / 1000);
+      }
+
+      if (exportScopeMode === 'device' && exportSelectedDeviceId) {
+        params.deviceId = exportSelectedDeviceId;
+      } else if (exportScopeMode === 'building') {
+        if (exportSelectedBuilding) params.building = exportSelectedBuilding;
+        if (exportSelectedFloor) params.floor = exportSelectedFloor;
+        if (exportSelectedRoom) params.room = exportSelectedRoom;
+      } else if (exportScopeMode === 'group' && exportSelectedGroup) {
+        params.group = exportSelectedGroup;
+      } else if (selectedGroup && selectedGroup !== 'ALL') {
+        params.group = selectedGroup;
+      }
+
+      const blob = await devicesApi.downloadExcelReport(params);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const dateStr = new Date().toISOString().slice(0, 10);
+      a.download = `fleet_monitoring_report_${exportPeriod}_${dateStr}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      setShowExportModal(false);
+      if (notify) notify('Отчет Excel с графиками успешно выгружен', 'success');
+    } catch (err: any) {
+      console.error('Failed to export excel:', err);
+      if (notify) notify(err.message || 'Ошибка выгрузки отчета Excel', 'error');
+    } finally {
+      setExportingExcel(false);
+    }
+  };
+
   const loadData = useCallback(async () => {
     try {
       setRefreshing(true);
@@ -4752,6 +4811,12 @@ function Monitoring({
         description="Оперативный контроль утилизации ЦП, памяти, дисков и сетевого трафика рабочих станций в реальном времени."
         actions={
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <Button
+              icon={<Download size={14} />}
+              onClick={() => setShowExportModal(true)}
+            >
+              Экспорт в Excel
+            </Button>
             <Button
               icon={<RotateCw size={14} className={refreshing ? 'spin' : ''} />}
               onClick={loadData}
@@ -5339,6 +5404,223 @@ function Monitoring({
           </table>
         </div>
       </section>
+
+      {/* EXPORT TO EXCEL MODAL */}
+      {showExportModal && (
+        <div className="modal-backdrop" onClick={() => !exportingExcel && setShowExportModal(false)}>
+          <div className="confirm-modal" style={{ maxWidth: '580px', width: '92%' }} onClick={e => e.stopPropagation()}>
+            <div className="confirm-icon" style={{ background: 'rgba(16, 185, 129, 0.15)', color: 'var(--green)' }}>
+              <FileSpreadsheet size={24} />
+            </div>
+            <h2 style={{ fontSize: '18px', fontWeight: 700, marginBottom: '6px' }}>
+              Выгрузка отчёта мониторинга в Excel (.xlsx)
+            </h2>
+            <p style={{ color: 'var(--muted)', fontSize: '13px', marginBottom: '18px', lineHeight: 1.5 }}>
+              Сформировать книгу Excel со встроенными нативными интерактивными графиками загрузки ЦП, памяти, дисков и активности станций.
+            </p>
+
+            {/* 1. Period Selector */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '7px' }}>
+                Временной срез и детализация
+              </label>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: '8px' }}>
+                <button
+                  type="button"
+                  className={`group-filter-pill-btn ${exportPeriod === 'hourly_24h' ? 'active' : ''}`}
+                  style={{ justifyContent: 'center', padding: '9px 12px' }}
+                  onClick={() => setExportPeriod('hourly_24h')}
+                >
+                  <Clock size={14} /> По часам (24 часа)
+                </button>
+                <button
+                  type="button"
+                  className={`group-filter-pill-btn ${exportPeriod === 'daily_7d' ? 'active' : ''}`}
+                  style={{ justifyContent: 'center', padding: '9px 12px' }}
+                  onClick={() => setExportPeriod('daily_7d')}
+                >
+                  <Calendar size={14} /> По дням (7 дней)
+                </button>
+                <button
+                  type="button"
+                  className={`group-filter-pill-btn ${exportPeriod === 'daily_30d' ? 'active' : ''}`}
+                  style={{ justifyContent: 'center', padding: '9px 12px' }}
+                  onClick={() => setExportPeriod('daily_30d')}
+                >
+                  <Calendar size={14} /> По дням (30 дней)
+                </button>
+                <button
+                  type="button"
+                  className={`group-filter-pill-btn ${exportPeriod === 'weekly_12w' ? 'active' : ''}`}
+                  style={{ justifyContent: 'center', padding: '9px 12px' }}
+                  onClick={() => setExportPeriod('weekly_12w')}
+                >
+                  <BarChart2 size={14} /> По неделям (12 недель)
+                </button>
+              </div>
+            </div>
+
+            {/* 2. Scope / Target Selector */}
+            <div style={{ marginBottom: '16px' }}>
+              <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '7px' }}>
+                Область охвата (Фильтр)
+              </label>
+              <div style={{ display: 'flex', gap: '6px', marginBottom: '10px' }}>
+                <button
+                  type="button"
+                  className={`group-filter-pill-btn ${exportScopeMode === 'all' ? 'active' : ''}`}
+                  onClick={() => setExportScopeMode('all')}
+                >
+                  Все ПК
+                </button>
+                <button
+                  type="button"
+                  className={`group-filter-pill-btn ${exportScopeMode === 'building' ? 'active' : ''}`}
+                  onClick={() => setExportScopeMode('building')}
+                >
+                  Корпус / Кабинет
+                </button>
+                <button
+                  type="button"
+                  className={`group-filter-pill-btn ${exportScopeMode === 'group' ? 'active' : ''}`}
+                  onClick={() => setExportScopeMode('group')}
+                >
+                  Группа
+                </button>
+                <button
+                  type="button"
+                  className={`group-filter-pill-btn ${exportScopeMode === 'device' ? 'active' : ''}`}
+                  onClick={() => setExportScopeMode('device')}
+                >
+                  Один ПК
+                </button>
+              </div>
+
+              {exportScopeMode === 'building' && (
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '8px' }}>
+                  <div>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '3px' }}>Корпус</span>
+                    <select
+                      className="text-input"
+                      style={{ width: '100%' }}
+                      value={exportSelectedBuilding}
+                      onChange={e => {
+                        setExportSelectedBuilding(e.target.value);
+                        setExportSelectedFloor('');
+                        setExportSelectedRoom('');
+                      }}
+                    >
+                      <option value="">Все корпуса</option>
+                      {Array.from(new Set(devices.map(d => d.building).filter(Boolean))).map(b => (
+                        <option key={b} value={b}>{b}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '3px' }}>Этаж</span>
+                    <select
+                      className="text-input"
+                      style={{ width: '100%' }}
+                      value={exportSelectedFloor}
+                      onChange={e => {
+                        setExportSelectedFloor(e.target.value);
+                        setExportSelectedRoom('');
+                      }}
+                    >
+                      <option value="">Все этажи</option>
+                      {Array.from(
+                        new Set(
+                          devices
+                            .filter(d => !exportSelectedBuilding || d.building === exportSelectedBuilding)
+                            .map(d => d.floor)
+                            .filter(Boolean)
+                        )
+                      ).map(f => (
+                        <option key={f} value={f}>{f}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '3px' }}>Кабинет</span>
+                    <select
+                      className="text-input"
+                      style={{ width: '100%' }}
+                      value={exportSelectedRoom}
+                      onChange={e => setExportSelectedRoom(e.target.value)}
+                    >
+                      <option value="">Все кабинеты</option>
+                      {Array.from(
+                        new Set(
+                          devices
+                            .filter(d => (!exportSelectedBuilding || d.building === exportSelectedBuilding) && (!exportSelectedFloor || d.floor === exportSelectedFloor))
+                            .map(d => d.room)
+                            .filter(Boolean)
+                        )
+                      ).map(r => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+                </div>
+              )}
+
+              {exportScopeMode === 'group' && (
+                <div>
+                  <select
+                    className="text-input"
+                    style={{ width: '100%' }}
+                    value={exportSelectedGroup}
+                    onChange={e => setExportSelectedGroup(e.target.value)}
+                  >
+                    <option value="">Выберите группу...</option>
+                    {allGroups.map(grp => (
+                      <option key={grp} value={grp}>{grp}</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+
+              {exportScopeMode === 'device' && (
+                <div>
+                  <select
+                    className="text-input"
+                    style={{ width: '100%' }}
+                    value={exportSelectedDeviceId}
+                    onChange={e => setExportSelectedDeviceId(e.target.value)}
+                  >
+                    <option value="">Выберите рабочий компьютер...</option>
+                    {devices.map(d => (
+                      <option key={d.id} value={d.id}>
+                        {d.name} ({d.id}) - {d.ip} {d.room ? `· каб. ${d.room}` : ''}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+            </div>
+
+            {/* Info notice about excel charts */}
+            <div style={{ background: 'var(--surface-2)', padding: '10px 14px', borderRadius: '8px', fontSize: '11.5px', color: 'var(--muted)', marginBottom: '20px', borderLeft: '3px solid var(--blue)' }}>
+              📊 <strong>Нативные диаграммы Excel</strong>: сформированный файл будет содержать 5 вкладок (Сводка и Графики, Телеметрия нагрузки, События питания, Алерты и Полный реестр ПК) с интерактивными графиками.
+            </div>
+
+            {/* Action buttons */}
+            <div className="confirm-actions" style={{ marginTop: '12px' }}>
+              <Button onClick={() => setShowExportModal(false)} disabled={exportingExcel}>
+                Отмена
+              </Button>
+              <Button
+                primary
+                icon={<Download size={14} className={exportingExcel ? 'spin' : ''} />}
+                onClick={handleExportExcel}
+                disabled={exportingExcel}
+              >
+                {exportingExcel ? 'Формирование Excel...' : 'Скачать отчет (.xlsx)'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }

@@ -138,6 +138,10 @@ export interface Device {
   name: string;
   hostname: string;
   group: string;
+  group_name?: string;
+  building?: string;
+  floor?: string;
+  room?: string;
   ip: string;
   mac: string;
   osType: OsType;

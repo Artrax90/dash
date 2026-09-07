@@ -201,6 +201,32 @@ export const devicesApi = {
     }
     return { deviceId, timeRange, points: [], hasData: false };
   },
+  downloadExcelReport: async (params: {
+    timeRange?: string;
+    group?: string;
+    building?: string;
+    floor?: string;
+    room?: string;
+    deviceId?: string;
+    fromTs?: number;
+    toTs?: number;
+  }): Promise<Blob> => {
+    const q = new URLSearchParams();
+    if (params.timeRange) q.append('time_range', params.timeRange);
+    if (params.group && params.group !== 'ALL') q.append('group', params.group);
+    if (params.building) q.append('building', params.building);
+    if (params.floor) q.append('floor', params.floor);
+    if (params.room) q.append('room', params.room);
+    if (params.deviceId) q.append('device_id', params.deviceId);
+    if (params.fromTs) q.append('from_ts', String(params.fromTs));
+    if (params.toTs) q.append('to_ts', String(params.toTs));
+
+    const res = await fetch(`${API_BASE}/devices/reports/excel?${q.toString()}`);
+    if (!res.ok) {
+      throw new Error(`Ошибка формирования отчета Excel (${res.status})`);
+    }
+    return await res.blob();
+  },
   delete: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`${API_BASE}/devices/${id}`, { method: 'DELETE' });
