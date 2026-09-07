@@ -2255,3 +2255,128 @@ async def save_device_automation(device_id: str, payload: Dict[str, Any]):
     save_device_configs(cfgs)
     return {"status": "saved", "deviceId": device_id, "automation": payload}
 
+
+async def execute_process_kill(
+    device_id: str,
+    pid: int,
+    process_name: str = "",
+    user: str = "Оператор",
+    db: Optional[AsyncSession] = None
+) -> Dict[str, Any]:
+    """
+    Terminates a specific process on the target workstation:
+    1. Direct zero-latency UNICAST UDP trigger WM_CMD:KILL_PROCESS to the device LAN IP
+    2. Heartbeat command queue for persistent delivery
+    3. Live telemetry cache removal
+    4. Audit & power logging
+    """
+    from backend.app.db.session import AsyncSessionLocal
+    from backend.app.api.v1.agents import send_direct_lan_power_signal, queue_device_command
+
+    target_device: Optional[Device] = None
+    if db:
+        res = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
+        target_device = res.scalar_one_or_none()
+    else:
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
+            target_device = res.scalar_one_or_none()
+
+    if not target_device:
+        return {"status": "error", "success": False, "message": f"Устройство {device_id} не найдено"}
+
+    # 1. Direct UDP LAN Trigger (instant zero-latency execution)
+    # extra_arg formatted as: "sessionId|userName|pid|remoteHost|clientIp" or "pid|processName"
+    if target_device.ip_address:
+        send_direct_lan_power_signal(
+            ip_address=target_device.ip_address,
+            action="KILL_PROCESS",
+            device_id=target_device.id,
+            mac_address=target_device.mac_address,
+            hostname=target_device.hostname,
+            extra_arg=f"0||{pid}||{process_name}"
+        )
+
+    # 2. Queue command for heartbeat delivery
+    queue_device_command(
+        device_id=target_device.id,
+        action="KILL_PROCESS",
+        force=True,
+        reason=f"Снятие процесса {process_name} (PID {pid}) оператором {user}",
+        extra_data={"pid": pid, "processName": process_name, "user": user}
+    )
+
+    # 3. Remove PID from live processes cache immediately
+    dev_key = target_device.id
+    if dev_key in device_live_processes:
+        device_live_processes[dev_key] = [
+            p for p in device_live_processes[dev_key] if p.get("pid") != pid
+        ]
+
+    # 4. Power / Event logging
+    proc_label = f"«{process_name}» (PID {pid})" if process_name else f"PID {pid}"
+    log_device_power_event(
+        device_id=target_device.id,
+        action="KILL_PROCESS",
+        details=f"Принудительное завершение процесса {proc_label}",
+        status="Success",
+        initiator=user,
+        source="MANUAL",
+        device_name=target_device.name
+    )
+
+    # 5. Broadcast live telemetry update to UI
+    try:
+        await ws_manager.broadcast_event("device.process.killed", {
+            "deviceId": target_device.id,
+            "pid": pid,
+            "processName": process_name
+        })
+    except Exception:
+        pass
+
+    return {
+        "status": "success",
+        "success": True,
+        "deviceId": target_device.id,
+        "pid": pid,
+        "processName": process_name,
+        "message": f"Команда завершения процесса {proc_label} успешно отправлена"
+    }
+
+
+@router.post("/{device_id}/processes/{pid}/kill")
+async def kill_device_process_endpoint(
+    device_id: str,
+    pid: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Terminates a running process on the specified workstation by PID.
+    """
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+
+    process_name = body.get("name") or body.get("processName") or ""
+    raw_user = body.get("user") or request.headers.get("X-User-Name") or "Оператор"
+    import urllib.parse
+    initiator = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
+
+    result = await execute_process_kill(
+        device_id=device_id,
+        pid=pid,
+        process_name=process_name,
+        user=initiator,
+        db=db
+    )
+
+    if result.get("status") == "error":
+        raise HTTPException(status_code=404, detail=result.get("message"))
+
+    return result
+
+

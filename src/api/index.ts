@@ -367,7 +367,20 @@ export const devicesApi = {
     } catch {}
     return true;
   },
+  killProcess: async (deviceId: string, pid: number, processName: string): Promise<{ success: boolean; message: string }> => {
+    const res = await fetch(`${API_BASE}/devices/${deviceId}/processes/${pid}/kill`, {
+      method: 'POST',
+      headers: getAuthHeaders(),
+      body: JSON.stringify({ name: processName, user: getActiveUserName() })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Ошибка снятия процесса' }));
+      throw new Error(err.detail || 'Ошибка снятия процесса');
+    }
+    return await res.json();
+  },
   setBaseline: async (deviceId: string, spec: HardwareSpec, approvedBy?: string): Promise<HardwareBaseline> => {
+
     const author = approvedBy || getActiveUserName();
     try {
       const res = await fetch(`${API_BASE}/hardware/baseline/${deviceId}`, {
@@ -1232,8 +1245,26 @@ export const authApi = {
       throw new Error(err.detail || 'Ошибка смены пароля');
     }
     return await res.json();
+  },
+  validateSession: async (): Promise<{ valid: boolean; active: boolean; reason?: string }> => {
+    try {
+      const res = await fetch(`${API_BASE}/users/validate-session`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return { valid: true, active: true };
+  },
+  logout: async (): Promise<void> => {
+    try {
+      await fetch(`${API_BASE}/users/logout`, {
+        method: 'POST',
+        headers: getAuthHeaders()
+      });
+    } catch {}
   }
 };
+
 
 export const auditApi = {
   list: async (): Promise<AuditEntry[]> => {

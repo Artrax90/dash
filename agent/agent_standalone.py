@@ -62,11 +62,19 @@ def execute_power_command(action: str, extra: dict = None):
         else:
             if sess_id is not None:
                 subprocess.run(f"loginctl terminate-session {sess_id} 2>/dev/null || pkill -KILL -s {sess_id} 2>/dev/null", shell=True)
+    elif act in ["KILL_PROCESS", "TERMINATE_PROCESS"]:
+        target_pid = extra.get("pid") if extra else None
+        if target_pid:
+            if is_win:
+                subprocess.run(f"taskkill /F /PID {target_pid} /T 2>nul", shell=True)
+            else:
+                subprocess.run(f"kill -9 {target_pid} 2>/dev/null", shell=True)
     elif act in ["LOCK"]:
         if is_win:
             subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
         else:
             subprocess.run("loginctl lock-session || xdg-screensaver lock || true", shell=True)
+
 
 def get_rdp_sessions() -> list:
     sessions = []
@@ -1236,6 +1244,13 @@ def execute_power_command(action: str, extra: dict = None):
                     subprocess.Popen(f"loginctl terminate-session {sess_id} || true", shell=True)
                 else:
                     subprocess.Popen("pkill -KILL -u $(whoami) || true", shell=True)
+        elif act in ["KILL_PROCESS", "TERMINATE_PROCESS"]:
+            target_pid = (extra or {}).get("pid")
+            if target_pid:
+                if is_win:
+                    subprocess.Popen(f"taskkill /F /PID {target_pid} /T", shell=True)
+                else:
+                    subprocess.Popen(f"kill -9 {target_pid}", shell=True)
         elif act in ["LOCK"]:
             if is_win:
                 subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
@@ -1243,6 +1258,7 @@ def execute_power_command(action: str, extra: dict = None):
                 subprocess.Popen("loginctl lock-session || true", shell=True)
     except Exception as e:
         print(f"[!] Error executing action {act}: {e}")
+
 
 def main():
     print("==================================================")
@@ -1348,7 +1364,21 @@ def main():
                                     threading.Thread(target=send_heartbeat, args=(server_base, cfg), daemon=True).start()
                                     threading.Thread(target=send_inventory, args=(server_base, cfg), daemon=True).start()
                                 else:
-                                    execute_power_command(cmd_act)
+                                    extra_info = {}
+                                    if len(parts) >= 6:
+                                        extra_str = ":".join(parts[5:]).strip()
+                                        subparts = extra_str.split("|")
+                                        if len(subparts) >= 3 and subparts[2]:
+                                            try:
+                                                extra_info["pid"] = int(subparts[2].strip())
+                                            except Exception:
+                                                pass
+                                        if len(subparts) >= 1 and subparts[0]:
+                                            extra_info["sessionId"] = subparts[0].strip()
+                                        if len(subparts) >= 2 and subparts[1]:
+                                            extra_info["username"] = subparts[1].strip()
+                                    execute_power_command(cmd_act, extra=extra_info)
+
         except Exception:
             pass
 

@@ -1,4 +1,4 @@
-﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
 $embeddedServer = "__SERVER_URL__"
 $embeddedToken = "__TOKEN__"
 
@@ -1098,7 +1098,20 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     elseif (`$act -eq 'LOCK') {
         & "`$env:SystemRoot\System32\rundll32.exe" user32.dll,LockWorkStation
     }
+    elseif (`$act -eq 'KILL_PROCESS' -or `$act -eq 'TERMINATE_PROCESS') {
+        `$targetPid = `$null
+        if (`$cmdObj -and `$cmdObj.pid -and "`$(`$cmdObj.pid)".Trim() -ne "") {
+            try { `$targetPid = [int]`$cmdObj.pid } catch {}
+        }
+        if (`$targetPid -and `$targetPid -gt 0) {
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /PID `$targetPid /T 2>`$null } catch {}
+            try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$targetPid" -ErrorAction SilentlyContinue).Terminate() } catch {}
+            try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        try { Invoke-Heartbeat `$true } catch {}
+    }
 }
+
 
 function Get-LiveRdpSessions() {
     `$sessions = @()

@@ -12,6 +12,47 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 USERS_FILE = os.path.join(settings.DATA_DIR, "users.json")
 
+# In-memory store of single active session per username: username_lower -> {"token": token, "loginTime": ...}
+user_active_sessions: Dict[str, Dict[str, Any]] = {}
+
+def register_user_session(username: str, token: Optional[str] = None) -> str:
+    """
+    Registers a single active session for the given username.
+    If an existing session exists, it is invalidated.
+    Returns the new valid session token.
+    """
+    clean_username = (username or "").strip().lower()
+    if not clean_username:
+        clean_username = "admin"
+    new_token = token or f"wm_sess_{secrets.token_hex(24)}"
+    user_active_sessions[clean_username] = {
+        "token": new_token,
+        "loginTime": datetime.now(timezone.utc).isoformat()
+    }
+    return new_token
+
+def validate_user_session(username: str, token: str) -> bool:
+    """
+    Validates if the provided token matches the single active session for the user.
+    """
+    clean_username = (username or "").strip().lower()
+    if not clean_username or not token:
+        return False
+    sess = user_active_sessions.get(clean_username)
+    if not sess:
+        # If no active session tracked yet, return False
+        return False
+    return sess.get("token") == token
+
+def revoke_user_sessions(username: str):
+    """
+    Revokes any active session for the given user.
+    """
+    clean_username = (username or "").strip().lower()
+    if clean_username in user_active_sessions:
+        del user_active_sessions[clean_username]
+
+
 def is_superadmin_role(role: Optional[str]) -> bool:
     if not role:
         return False
@@ -424,12 +465,29 @@ async def login(payload: LoginPayload):
     user["lastLogin"] = datetime.now(timezone.utc).strftime("%d.%m.%Y %H:%M")
     save_users(users)
 
-    session_token = f"wm_sess_{secrets.token_hex(24)}"
+    # Check if there is an existing active session for this user
+    old_session = user_active_sessions.get(clean_username)
+    session_token = register_user_session(clean_username)
+
+    if old_session and old_session.get("token") and old_session.get("token") != session_token:
+        # Notify WebSocket clients that the previous session on another PC is kicked out
+        try:
+            from backend.app.ws.manager import ws_manager
+            await ws_manager.broadcast_event("session.invalidated", {
+                "username": clean_username,
+                "previousToken": old_session.get("token"),
+                "newToken": session_token,
+                "reason": "Вход выполнен с другого устройства или вкладки"
+            })
+        except Exception:
+            pass
+
     return {
         "status": "success",
         "token": session_token,
         "user": sanitize_user(user)
     }
+
 
 @router.post("/change-password")
 async def change_password(payload: ChangePasswordPayload):
@@ -463,3 +521,47 @@ async def change_password(payload: ChangePasswordPayload):
     user["salt"] = s
     save_users(users)
     return {"status": "success", "message": f"Пароль учетной записи {user.get('username', 'admin')} успешно обновлен"}
+
+
+@router.get("/validate-session")
+async def validate_session_endpoint(request: Request):
+    """
+    Check whether the caller's session token is still the single active session.
+    If another session logged in, this returns valid=False so client logs out immediately.
+    """
+    auth_header = request.headers.get("Authorization", "")
+    token = ""
+    if auth_header.startswith("Bearer "):
+        token = auth_header[7:].strip()
+    x_username = request.headers.get("X-Username", "").strip().lower()
+
+    if not x_username or not token:
+        # If no active user is set yet, session is neutral
+        return {"valid": True, "active": False}
+
+    active_sess = user_active_sessions.get(x_username)
+    if not active_sess:
+        # If no session registered yet in memory (e.g. server restart), register current token
+        register_user_session(x_username, token)
+        return {"valid": True, "active": True}
+
+    if active_sess.get("token") != token:
+        return {
+            "valid": False,
+            "active": False,
+            "reason": "Вход выполнен с другого устройства или сессия завершена"
+        }
+
+    return {"valid": True, "active": True}
+
+
+@router.post("/logout")
+async def logout_endpoint(request: Request):
+    """
+    Revoke active session for user.
+    """
+    x_username = request.headers.get("X-Username", "").strip().lower()
+    if x_username:
+        revoke_user_sessions(x_username)
+    return {"status": "success"}
+

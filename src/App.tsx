@@ -383,6 +383,9 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
     setError('');
     try {
       const res = await authApi.login(username.trim(), password.trim());
+      if (res.token) {
+        try { localStorage.setItem('wm_token', res.token); } catch {}
+      }
       onLogin(res.user);
     } catch (err: any) {
       setError(err?.message || 'Неверный логин или пароль');
@@ -410,12 +413,16 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
         password: setupPassword.trim(),
         telegramChatId: setupTelegram.trim()
       });
+      if (res.token) {
+        try { localStorage.setItem('wm_token', res.token); } catch {}
+      }
       onLogin(res.user);
     } catch (err: any) {
       setError(err?.message || 'Ошибка первичной инициализации');
       setLoading(false);
     }
   };
+
 
   const inputStyle: React.CSSProperties = {
     width: '100%',
@@ -751,14 +758,61 @@ function App() {
       alertsApi.list().then(list => setActiveAlertsCount(list.filter(a => a.state !== 'Resolved').length)).catch(() => {});
     });
 
+    // Single Web Session Enforcement: Real-time kick-out when same user logs in on another device
+    const unsubSessionInvalidated = wsClient.on('session.invalidated', (evt: any) => {
+      try {
+        const myToken = localStorage.getItem('wm_token');
+        const savedSession = localStorage.getItem('wm_user_session');
+        const myUser = savedSession ? JSON.parse(savedSession) : null;
+        const myUsername = myUser?.username?.trim().toLowerCase();
+        const targetUsername = evt?.username?.trim().toLowerCase();
+
+        if (myUsername && targetUsername && myUsername === targetUsername) {
+          // If my active token matches the one being superseded or is different from the newly issued token
+          if (myToken && evt.previousToken && myToken === evt.previousToken) {
+            localStorage.removeItem('wm_user_session');
+            localStorage.removeItem('wm_token');
+            setCurrentUser(null);
+            setToast({
+              message: '⚠️ Сессия завершена: выполнен вход в систему под этой учетной записью с другого компьютера или вкладки.',
+              type: 'error'
+            });
+          }
+        }
+      } catch {}
+    });
+
+    // Periodic check (every 10s) to guarantee single session integrity even if WebSocket was temporarily disconnected
+    const sessionCheckInterval = setInterval(async () => {
+      try {
+        const myToken = localStorage.getItem('wm_token');
+        const savedSession = localStorage.getItem('wm_user_session');
+        if (myToken && savedSession) {
+          const res = await authApi.validateSession();
+          if (res && res.valid === false) {
+            localStorage.removeItem('wm_user_session');
+            localStorage.removeItem('wm_token');
+            setCurrentUser(null);
+            setToast({
+              message: '⚠️ ' + (res.reason || 'Сессия завершена: выполнен вход с другого компьютера.'),
+              type: 'error'
+            });
+          }
+        }
+      } catch {}
+    }, 10000);
+
     return () => {
       window.removeEventListener('popstate', handlePopState);
       window.removeEventListener('hashchange', handlePopState);
       unsubAlert();
       unsubHw();
       unsubResolved();
+      unsubSessionInvalidated();
+      clearInterval(sessionCheckInterval);
     };
   }, []);
+
 
   // Update live counters periodically
   useEffect(() => {
@@ -1186,13 +1240,16 @@ function App() {
             <div className="modal-actions">
               <Button onClick={() => setShowLogoutModal(false)}>{t('common.cancel')}</Button>
               <Button primary onClick={() => {
+                authApi.logout().catch(() => {});
                 try {
                   localStorage.removeItem('wm_user_session');
+                  localStorage.removeItem('wm_token');
                 } catch {}
                 setCurrentUser(null);
                 setShowLogoutModal(false);
                 notify('Вы успешно вышли из системы');
               }}>Выйти</Button>
+
             </div>
           </div>
         </div>
@@ -4249,10 +4306,22 @@ function DeviceMonitoringTab({
     );
   };
 
-  const handleKillProcess = (pid: number, name: string) => {
-    setTerminatedPids(prev => [...prev, pid]);
-    notify?.(`Процесс "${name}" (PID ${pid}) успешно завершен на ${device.name}`);
+  const [killingPids, setKillingPids] = useState<number[]>([]);
+
+  const handleKillProcess = async (pid: number, name: string) => {
+    if (killingPids.includes(pid)) return;
+    setKillingPids(prev => [...prev, pid]);
+    try {
+      await devicesApi.killProcess(device.id, pid, name);
+      setTerminatedPids(prev => [...prev, pid]);
+      notify?.(`Процесс "${name}" (PID ${pid}) успешно завершен на ${device.name}`);
+    } catch (err: any) {
+      notify?.(`Не удалось завершить процесс "${name}": ${err?.message || 'ошибка связи'}`, 'error');
+    } finally {
+      setKillingPids(prev => prev.filter(p => p !== pid));
+    }
   };
+
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: '20px', marginTop: '16px' }}>
@@ -4783,13 +4852,22 @@ function DeviceMonitoringTab({
                       <button
                         type="button"
                         className="button"
-                        style={{ padding: '3px 8px', fontSize: '11px', color: 'var(--red)', borderColor: 'var(--red-soft)' }}
+                        disabled={killingPids.includes(proc.pid)}
+                        style={{
+                          padding: '3px 8px',
+                          fontSize: '11px',
+                          color: 'var(--red)',
+                          borderColor: 'var(--red-soft)',
+                          opacity: killingPids.includes(proc.pid) ? 0.6 : 1,
+                          cursor: killingPids.includes(proc.pid) ? 'wait' : 'pointer'
+                        }}
                         onClick={() => handleKillProcess(proc.pid, proc.name)}
                         title="Завершить процесс"
                       >
-                        Снять
+                        {killingPids.includes(proc.pid) ? 'Снятие...' : 'Снять'}
                       </button>
                     </td>
+
                   </tr>
                 ))
               )}
