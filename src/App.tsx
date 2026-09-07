@@ -4402,12 +4402,12 @@ function DeviceMonitoringTab({
         </div>
       </div>
 
-      {/* Pro Dark NOC Observability Console */}
+      {/* Pro NOC Observability Console */}
       <div className="pro-chart-console">
         <div className="pro-chart-header">
           <div>
             <h3 className="pro-chart-title">
-              <Activity size={18} style={{ color: '#22d3ee' }} />
+              <Activity size={18} className="pro-chart-title-icon" />
               System Performance (CPU &amp; RAM)
             </h3>
             <p className="pro-chart-sub">
@@ -4428,18 +4428,18 @@ function DeviceMonitoringTab({
               className={`pro-chip ${metricTab === 'cpu' ? 'active-cpu' : ''}`}
               onClick={() => setMetricTab('cpu')}
             >
-              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px #22d3ee' }} />
+              <span className="pro-chip-dot-cpu" />
               CPU ({dynamicCpu}%)
             </div>
             <div
               className={`pro-chip ${metricTab === 'ram' ? 'active-ram' : ''}`}
               onClick={() => setMetricTab('ram')}
             >
-              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 6px #c084fc' }} />
+              <span className="pro-chip-dot-ram" />
               RAM ({dynamicRam}%)
             </div>
 
-            <div className="scope-selector" style={{ margin: '0 0 0 6px', background: 'rgba(255,255,255,0.06)' }}>
+            <div className="scope-selector pro-chart-scope">
               <button className={timeRange === '1h' ? 'selected' : ''} onClick={() => setTimeRange('1h')}>1h</button>
               <button className={timeRange === '6h' ? 'selected' : ''} onClick={() => setTimeRange('6h')}>6h</button>
               <button className={timeRange === '24h' ? 'selected' : ''} onClick={() => setTimeRange('24h')}>24h</button>
@@ -4471,12 +4471,12 @@ function DeviceMonitoringTab({
             <svg className="pro-chart-svg" viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
               <defs>
                 <linearGradient id={`pcCpuGradPro_${device.id}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.36" />
-                  <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.0" />
+                  <stop offset="0%" stopColor="var(--pro-chart-cpu-grad-start)" stopOpacity="var(--pro-chart-cpu-grad-opacity)" />
+                  <stop offset="100%" stopColor="var(--pro-chart-cpu-grad-start)" stopOpacity="0.0" />
                 </linearGradient>
                 <linearGradient id={`pcRamGradPro_${device.id}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#c084fc" stopOpacity="0.28" />
-                  <stop offset="100%" stopColor="#c084fc" stopOpacity="0.0" />
+                  <stop offset="0%" stopColor="var(--pro-chart-ram-grad-start)" stopOpacity="var(--pro-chart-ram-grad-opacity)" />
+                  <stop offset="100%" stopColor="var(--pro-chart-ram-grad-start)" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
 
@@ -4488,9 +4488,7 @@ function DeviceMonitoringTab({
                   y1={getY(val)}
                   x2={svgWidth}
                   y2={getY(val)}
-                  stroke="rgba(255, 255, 255, 0.07)"
-                  strokeDasharray="4 4"
-                  strokeWidth={1}
+                  className="pro-chart-grid-line"
                 />
               ))}
 
@@ -4500,11 +4498,7 @@ function DeviceMonitoringTab({
                   <path d={cpuAreaPath} fill={`url(#pcCpuGradPro_${device.id})`} />
                   <path
                     d={cpuLinePath}
-                    fill="none"
-                    stroke="#22d3ee"
-                    strokeWidth="2.8"
-                    strokeLinecap="round"
-                    style={{ filter: 'drop-shadow(0 0 6px rgba(34, 211, 238, 0.75))' }}
+                    className="pro-chart-line-cpu"
                   />
                 </>
               )}
@@ -4515,11 +4509,7 @@ function DeviceMonitoringTab({
                   <path d={ramAreaPath} fill={`url(#pcRamGradPro_${device.id})`} />
                   <path
                     d={ramLinePath}
-                    fill="none"
-                    stroke="#c084fc"
-                    strokeWidth="2.4"
-                    strokeLinecap="round"
-                    style={{ filter: 'drop-shadow(0 0 6px rgba(192, 132, 252, 0.7))' }}
+                    className="pro-chart-line-ram"
                   />
                 </>
               )}
@@ -5380,7 +5370,7 @@ function Monitoring({
         <div className="pro-chart-header">
           <div>
             <h3 className="pro-chart-title">
-              <Activity size={18} style={{ color: '#22d3ee' }} />
+              <Activity size={18} className="pro-chart-title-icon" />
               Fleet-wide Resource Utilization
             </h3>
             <p className="pro-chart-sub">
@@ -5401,18 +5391,18 @@ function Monitoring({
               className={`pro-chip ${metricTab === 'cpu' ? 'active-cpu' : ''}`}
               onClick={() => setMetricTab('cpu')}
             >
-              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px #22d3ee' }} />
+              <span className="pro-chip-dot-cpu" />
               CPU avg ({avgCpu}%)
             </div>
             <div
               className={`pro-chip ${metricTab === 'ram' ? 'active-ram' : ''}`}
               onClick={() => setMetricTab('ram')}
             >
-              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 6px #c084fc' }} />
+              <span className="pro-chip-dot-ram" />
               RAM avg ({avgRam}%)
             </div>
 
-            <div className="scope-selector" style={{ margin: '0 0 0 6px', background: 'rgba(255,255,255,0.06)' }}>
+            <div className="scope-selector pro-chart-scope">
               <button className={timeRange === '1h' ? 'selected' : ''} onClick={() => setTimeRange('1h')}>1h</button>
               <button className={timeRange === '6h' ? 'selected' : ''} onClick={() => setTimeRange('6h')}>6h</button>
               <button className={timeRange === '24h' ? 'selected' : ''} onClick={() => setTimeRange('24h')}>24h</button>
@@ -5444,12 +5434,12 @@ function Monitoring({
             <svg className="pro-chart-svg" viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
               <defs>
                 <linearGradient id="fleetCpuGradPro" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.36" />
-                  <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.0" />
+                  <stop offset="0%" stopColor="var(--pro-chart-cpu-grad-start)" stopOpacity="var(--pro-chart-cpu-grad-opacity)" />
+                  <stop offset="100%" stopColor="var(--pro-chart-cpu-grad-start)" stopOpacity="0.0" />
                 </linearGradient>
                 <linearGradient id="fleetRamGradPro" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#c084fc" stopOpacity="0.28" />
-                  <stop offset="100%" stopColor="#c084fc" stopOpacity="0.0" />
+                  <stop offset="0%" stopColor="var(--pro-chart-ram-grad-start)" stopOpacity="var(--pro-chart-ram-grad-opacity)" />
+                  <stop offset="100%" stopColor="var(--pro-chart-ram-grad-start)" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
 
@@ -5461,9 +5451,7 @@ function Monitoring({
                   y1={getY(val)}
                   x2={svgWidth}
                   y2={getY(val)}
-                  stroke="rgba(255, 255, 255, 0.07)"
-                  strokeDasharray="4 4"
-                  strokeWidth={1}
+                  className="pro-chart-grid-line"
                 />
               ))}
 
@@ -5473,11 +5461,7 @@ function Monitoring({
                   <path d={cpuAreaPath} fill="url(#fleetCpuGradPro)" />
                   <path
                     d={cpuLinePath}
-                    fill="none"
-                    stroke="#22d3ee"
-                    strokeWidth="2.8"
-                    strokeLinecap="round"
-                    style={{ filter: 'drop-shadow(0 0 6px rgba(34, 211, 238, 0.75))' }}
+                    className="pro-chart-line-cpu"
                   />
                 </>
               )}
@@ -5488,11 +5472,7 @@ function Monitoring({
                   <path d={ramAreaPath} fill="url(#fleetRamGradPro)" />
                   <path
                     d={ramLinePath}
-                    fill="none"
-                    stroke="#c084fc"
-                    strokeWidth="2.4"
-                    strokeLinecap="round"
-                    style={{ filter: 'drop-shadow(0 0 6px rgba(192, 132, 252, 0.7))' }}
+                    className="pro-chart-line-ram"
                   />
                 </>
               )}
