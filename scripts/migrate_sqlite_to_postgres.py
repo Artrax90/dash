@@ -270,7 +270,7 @@ def ensure_postgres_driver():
 def main():
     parser = argparse.ArgumentParser(description="Migrate Workstation Manager data from SQLite to PostgreSQL.")
     parser.add_argument("--sqlite", type=str, help="Path to source SQLite database file")
-    parser.add_argument("--postgres-url", type=str, help="Target PostgreSQL connection URL")
+    parser.add_argument("--postgres-url", type=str, nargs="?", const="", default=None, help="Target PostgreSQL connection URL")
     parser.add_argument("--truncate", action="store_true", help="Truncate target tables before inserting")
     parser.add_argument("--dry-run", action="store_true", help="Perform dry run without modifying target DB")
     args = parser.parse_args()
@@ -303,11 +303,19 @@ def main():
         sys.exit(1)
 
     # Determine PostgreSQL URL
-    pg_url = args.postgres_url or os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL")
+    pg_url = (args.postgres_url or "").strip()
+    if not pg_url:
+        pg_url = os.getenv("DATABASE_URL") or os.getenv("POSTGRES_URL") or ""
+
     if not pg_url or not is_postgres_url(pg_url):
-        logger.error("No PostgreSQL URL provided. Set DATABASE_URL in environment or use --postgres-url")
-        logger.error("Example: postgresql://postgres:postgres_pass@localhost:5432/workstation_manager")
-        sys.exit(1)
+        import socket
+        try:
+            socket.gethostbyname("postgres")
+            pg_url = "postgresql://postgres:postgres_pass@postgres:5432/workstation_manager"
+            logger.info(f"Auto-detected Docker PostgreSQL URL: {pg_url}")
+        except Exception:
+            pg_url = "postgresql://postgres:postgres_pass@localhost:5432/workstation_manager"
+            logger.info(f"Auto-detected Local PostgreSQL URL: {pg_url}")
 
     sync_pg_url = normalize_postgres_url(pg_url)
     logger.info(f"Connecting to source SQLite: {sqlite_path}")
