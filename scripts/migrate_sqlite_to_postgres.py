@@ -241,6 +241,24 @@ def normalize_postgres_url(url: str) -> str:
         url = url.replace("postgresql://", "postgresql+psycopg2://")
     return url
 
+def ensure_postgres_driver():
+    """Ensure psycopg2 driver is available, auto-installing psycopg2-binary if running in container/environment without it."""
+    try:
+        import psycopg2
+        return
+    except ImportError:
+        pass
+    try:
+        import subprocess
+        logger.info("psycopg2 driver not found. Installing psycopg2-binary automatically...")
+        res = subprocess.run([sys.executable, "-m", "pip", "install", "--no-cache-dir", "psycopg2-binary"], capture_output=True, text=True)
+        if res.returncode == 0:
+            logger.info("psycopg2-binary installed successfully.")
+        else:
+            logger.warning(f"Failed to auto-install psycopg2-binary: {res.stderr}")
+    except Exception as e:
+        logger.warning(f"Could not auto-install psycopg2-binary: {e}")
+
 def main():
     parser = argparse.ArgumentParser(description="Migrate Workstation Manager data from SQLite to PostgreSQL.")
     parser.add_argument("--sqlite", type=str, help="Path to source SQLite database file")
@@ -287,6 +305,7 @@ def main():
     logger.info(f"Connecting to source SQLite: {sqlite_path}")
     logger.info(f"Connecting to target PostgreSQL: {sync_pg_url.split('@')[-1] if '@' in sync_pg_url else sync_pg_url}")
 
+    ensure_postgres_driver()
     src_engine = create_engine(f"sqlite:///{sqlite_path}")
     dst_engine = create_engine(sync_pg_url)
 

@@ -43,6 +43,8 @@ COPY --from=frontend-builder /app/dist /app/dist
 COPY backend /app/backend
 COPY agent /app/agent
 COPY data /app/data
+COPY scripts /app/scripts
+RUN chmod +x /app/scripts/*.sh /app/scripts/*.py 2>/dev/null || true
 
 # Ensure data directory exists for persistent storage
 RUN mkdir -p /app/data
