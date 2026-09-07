@@ -907,6 +907,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
     Automatically detects and updates client IP and MAC address if network interface changes.
     """
     device_id = payload.get("deviceId")
+    rep_ver = payload.get("agentVersion") or payload.get("version")
     metrics = payload.get("metrics") or {}
     
     # Detect active client IP
@@ -916,6 +917,12 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
         client_ip = str(reported_ip).strip()
     elif request.client and request.client.host and not request.client.host.startswith("127."):
         client_ip = request.client.host.strip()
+    elif reported_ip and str(reported_ip).strip():
+        client_ip = str(reported_ip).strip()
+    elif request.client and request.client.host:
+        client_ip = request.client.host.strip()
+    else:
+        client_ip = "127.0.0.1"
 
     reported_mac = payload.get("mac") or payload.get("macAddress")
     clean_mac = None
@@ -1003,7 +1010,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
     if not device and device_id:
         clean_name = payload.get("hostname") or device_id
-        clean_mac = str(payload.get("mac")).replace("-", ":").upper() if payload.get("mac") else None
+        clean_mac = str(payload.get("mac")).replace("-", ":").upper() if payload.get("mac") else "00:00:00:00:00:00"
         device = Device(
             id=device_id,
             name=clean_name,

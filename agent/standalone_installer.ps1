@@ -1,4 +1,4 @@
-# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
 $embeddedServer = "__SERVER_URL__"
 $embeddedToken = "__TOKEN__"
 
@@ -780,6 +780,9 @@ if (-not `$osCaption -or `$osCaption -eq '`$osCaption') {
 try {
     `$global:agentMutex = New-Object System.Threading.Mutex(`$false, `$mutexName)
     `$hasMutex = `$global:agentMutex.WaitOne(8000, `$false)
+} catch [System.Threading.AbandonedMutexException] {
+    # The previous process holding this mutex was terminated without releasing it. We now own it.
+    `$hasMutex = `$true
 } catch {
     `$hasMutex = `$false
 }

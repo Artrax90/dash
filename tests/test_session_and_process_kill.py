@@ -127,4 +127,36 @@ async def test_agent_update_logs_no_fake_success():
     assert logs_after[0]["status"] == "SUCCESS"
     assert settings.LATEST_AGENT_VERSION in logs_after[0]["details"]
 
+@pytest.mark.anyio
+async def test_agent_heartbeat_new_device_registration():
+    """Verify that heartbeat from a brand new device registers successfully without NameError or constraint failures."""
+    from backend.app.api.v1.agents import agent_heartbeat
+    from backend.app.db.session import AsyncSessionLocal
+    from backend.app.models.device import Device
+    from starlette.requests import Request
+    from sqlalchemy import delete
+
+    test_dev_id = "TEST-NEW-HEARTBEAT-REG-001"
+    async with AsyncSessionLocal() as db:
+        try:
+            scope = {'type': 'http', 'client': ('192.168.1.155', 54321), 'headers': []}
+            req = Request(scope)
+            payload = {
+                "deviceId": test_dev_id,
+                "hostname": "TEST-HOST-REG-001",
+                "version": "2.9.5",
+                "ip": "192.168.1.155",
+                "mac": "AA:BB:CC:DD:EE:FF",
+                "cpu": 15,
+                "ram": 45,
+                "disk": 50
+            }
+            res = await agent_heartbeat(payload, req, db)
+            assert res["status"] == "ok"
+            assert res["latestVersion"] == "2.9.5"
+        finally:
+            await db.execute(delete(Device).where(Device.id == test_dev_id))
+            await db.commit()
+
+
 
