@@ -183,7 +183,28 @@ export const devicesApi = {
     }
     return [];
   },
-  getFleetTelemetryHistory: async (timeRange: string = '24h', group: string = 'ALL'): Promise<{ timeRange: string; points: { label: string; timestamp: number; cpu: number; ram: number; disk: number; activeCount: number }[]; hasData: boolean }> => {
+  getFleetTelemetryHistory: async (timeRange: string = '24h', group: string = 'ALL'): Promise<{
+    timeRange: string;
+    points: {
+      label: string;
+      timestamp: number;
+      cpu: number;
+      maxCpu?: number;
+      ram: number;
+      disk: number;
+      activeCount: number;
+      offlineCount?: number;
+      totalCount?: number;
+      topStressed?: {
+        deviceId: string;
+        deviceName: string;
+        cpu: number;
+        ram: number;
+        topProcesses?: { pid: number; name: string; cpu: number; ram: number; user?: string }[];
+      }[];
+    }[];
+    hasData: boolean;
+  }> => {
     try {
       const res = await fetch(`${API_BASE}/devices/telemetry/fleet-history?time_range=${timeRange}&group=${encodeURIComponent(group)}`);
       if (res.ok) return await res.json();
@@ -192,14 +213,38 @@ export const devicesApi = {
     }
     return { timeRange, points: [], hasData: false };
   },
-  getDeviceTelemetryHistory: async (deviceId: string, timeRange: string = '1h'): Promise<{ deviceId: string; timeRange: string; points: { label: string; timestamp: number; cpu: number; ram: number; disk: number }[]; hasData: boolean }> => {
+  getDeviceTelemetryHistory: async (deviceId: string, timeRange: string = '1h'): Promise<{
+    deviceId: string;
+    timeRange: string;
+    points: {
+      label: string;
+      timestamp: number;
+      cpu: number;
+      maxCpu?: number;
+      ram: number;
+      disk: number;
+      isOnline?: boolean;
+      topProcesses?: { pid: number; name: string; cpu: number; ram: number; user?: string }[];
+    }[];
+    events?: {
+      id?: string;
+      timestamp: string;
+      time: number;
+      action: string;
+      title?: string;
+      details?: string;
+      status?: string;
+      initiator?: string;
+    }[];
+    hasData: boolean;
+  }> => {
     try {
       const res = await fetch(`${API_BASE}/devices/${deviceId}/telemetry-history?time_range=${timeRange}`);
       if (res.ok) return await res.json();
     } catch {
       // fallback
     }
-    return { deviceId, timeRange, points: [], hasData: false };
+    return { deviceId, timeRange, points: [], events: [], hasData: false };
   },
   downloadExcelReport: async (params: {
     timeRange?: string;

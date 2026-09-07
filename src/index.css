@@ -2826,3 +2826,193 @@
   padding-right: 4px !important;
 }
 
+/* ==================================================== */
+/* INTERACTIVE TELEMETRY CHARTS & TOOLTIPS (V2.10)      */
+/* ==================================================== */
+
+.interactive-chart-box {
+  position: relative;
+  width: 100%;
+  user-select: none;
+}
+
+.uptime-strip-container {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+  padding: 10px 14px;
+  background: rgba(15, 23, 42, 0.4);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.uptime-strip-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+}
+
+.uptime-strip-bar {
+  display: flex;
+  height: 10px;
+  width: 100%;
+  border-radius: 5px;
+  overflow: hidden;
+  gap: 2px;
+  background: rgba(100, 116, 139, 0.2);
+}
+
+.uptime-strip-segment {
+  height: 100%;
+  transition: opacity 0.15s ease;
+  border-radius: 2px;
+  cursor: pointer;
+}
+
+.uptime-strip-segment:hover {
+  filter: brightness(1.25);
+  transform: scaleY(1.3);
+}
+
+.chart-event-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 10px;
+  font-weight: 600;
+  padding: 2px 7px;
+  border-radius: 4px;
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.3);
+  white-space: nowrap;
+}
+
+.chart-event-tag.reboot {
+  background: rgba(245, 158, 11, 0.15);
+  color: #fbbf24;
+  border-color: rgba(245, 158, 11, 0.3);
+}
+
+.chart-event-tag.shutdown {
+  background: rgba(239, 68, 68, 0.15);
+  color: #f87171;
+  border-color: rgba(239, 68, 68, 0.3);
+}
+
+.chart-event-tag.wake {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border-color: rgba(16, 185, 129, 0.3);
+}
+
+.chart-hover-inspector {
+  position: absolute;
+  top: 10px;
+  pointer-events: none;
+  z-index: 50;
+  min-width: 250px;
+  max-width: 320px;
+  background: rgba(15, 23, 42, 0.94);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(148, 163, 184, 0.25);
+  border-radius: 8px;
+  padding: 10px 14px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
+  color: #f8fafc;
+  transform: translateX(-50%);
+  transition: left 0.04s ease-out;
+}
+
+.chart-hover-inspector-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+  padding-bottom: 6px;
+  margin-bottom: 8px;
+}
+
+.chart-hover-inspector-title {
+  font-family: 'DM Mono', monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  color: #cbd5e1;
+}
+
+.chart-hover-inspector-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.chart-hover-stat-item {
+  display: flex;
+  flex-direction: column;
+}
+
+.chart-hover-stat-label {
+  font-size: 10px;
+  color: #94a3b8;
+}
+
+.chart-hover-stat-val {
+  font-size: 13px;
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+}
+
+.chart-hover-procs-list {
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  padding-top: 6px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.chart-hover-proc-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 10.5px;
+  background: rgba(255, 255, 255, 0.03);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
+.chart-hover-proc-name {
+  font-family: 'DM Mono', monospace;
+  color: #e2e8f0;
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chart-hover-proc-val {
+  color: #38bdf8;
+  font-weight: 600;
+  font-family: 'DM Mono', monospace;
+}
+
+.chart-crosshair-line {
+  stroke: rgba(255, 255, 255, 0.35);
+  stroke-dasharray: 3 3;
+  stroke-width: 1.5;
+  pointer-events: none;
+}
+
+.fleet-dynamics-bar {
+  margin-top: 14px;
+  padding: 10px 14px;
+  background: rgba(15, 23, 42, 0.3);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+

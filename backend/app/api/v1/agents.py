@@ -1425,14 +1425,17 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
             await db.commit()
 
-            # Record real live telemetry point in history
+            # Record real live telemetry point in history with top processes
             from backend.app.api.v1.devices import record_telemetry_snapshot, format_device_summary
+            proc_list = payload.get("processes") if isinstance(payload.get("processes"), list) else None
             record_telemetry_snapshot(
                 device_id=device.id,
                 cpu=device.cpu_usage or 0,
                 ram=device.ram_usage or 0,
                 disk=device.disk_usage or 0,
-                is_online=True
+                is_online=True,
+                top_processes=proc_list,
+                device_name=device.name or device.hostname or device.id
             )
 
             # Broadcast device updated event if IP/power changed

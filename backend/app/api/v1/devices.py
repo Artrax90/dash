@@ -64,26 +64,57 @@ fleet_telemetry_history: List[Dict[str, Any]] = []
 # In-memory storage of per-device telemetry points
 device_telemetry_history: Dict[str, List[Dict[str, Any]]] = collections.defaultdict(list)
 
-def record_telemetry_snapshot(device_id: str, cpu: int, ram: int, disk: int, is_online: bool):
+def record_telemetry_snapshot(
+    device_id: str,
+    cpu: int,
+    ram: int,
+    disk: int,
+    is_online: bool,
+    top_processes: Optional[List[Dict[str, Any]]] = None,
+    device_name: Optional[str] = None
+):
     global fleet_telemetry_history, device_telemetry_history
     now_iso = datetime.utcnow().isoformat() + "Z"
     now_ts = time.time()
+    
+    # Normalize top 3 processes
+    cleaned_procs = []
+    if top_processes and isinstance(top_processes, list):
+        for p in top_processes[:3]:
+            try:
+                c_val = float(str(p.get("cpu", "0")).replace("%", "").strip())
+            except Exception:
+                c_val = 0.0
+            try:
+                r_val = float(str(p.get("ram", "0")).replace("MB", "").replace("GB", "").strip())
+            except Exception:
+                r_val = 0.0
+            cleaned_procs.append({
+                "pid": p.get("pid", 0),
+                "name": p.get("name", "Unknown"),
+                "cpu": c_val,
+                "ram": r_val,
+                "user": p.get("user", "")
+            })
+            
     snapshot = {
         "timestamp": now_iso,
         "time": now_ts,
         "deviceId": device_id,
+        "deviceName": device_name or device_id,
         "cpu": cpu,
         "ram": ram,
         "disk": disk,
-        "isOnline": is_online
+        "isOnline": is_online,
+        "topProcesses": cleaned_procs
     }
     fleet_telemetry_history.append(snapshot)
-    if len(fleet_telemetry_history) > 5000:
-        fleet_telemetry_history = fleet_telemetry_history[-5000:]
+    if len(fleet_telemetry_history) > 10000:
+        fleet_telemetry_history = fleet_telemetry_history[-10000:]
         
     device_telemetry_history[device_id].append(snapshot)
-    if len(device_telemetry_history[device_id]) > 1000:
-        device_telemetry_history[device_id] = device_telemetry_history[device_id][-1000:]
+    if len(device_telemetry_history[device_id]) > 2000:
+        device_telemetry_history[device_id] = device_telemetry_history[device_id][-2000:]
 
 def log_device_power_event(
     device_id: str,
@@ -1059,14 +1090,25 @@ async def get_fleet_telemetry_history(
     window_sec = seconds_map.get(time_range, 86400)
     start_ts = now_ts - window_sec
     
-    relevant_points = [p for p in fleet_telemetry_history if p["time"] >= start_ts]
-    
-    if group and group != "ALL":
-        res = await db.execute(select(Device).where(Device.group_name.ilike(f"%{group}%")))
-        grp_dev_ids = {d.id for d in res.scalars().all()}
-        relevant_points = [p for p in relevant_points if p["deviceId"] in grp_dev_ids]
+    # Query all active devices in scope to calculate realistic offline/online counts
+    all_scope_devices = []
+    try:
+        query = select(Device)
+        if group and group != "ALL":
+            query = query.where(Device.group_name.ilike(f"%{group}%"))
+        dev_res = await db.execute(query)
+        all_scope_devices = dev_res.scalars().all()
+    except Exception:
+        pass
+    total_fleet_count = len(all_scope_devices)
+    grp_dev_ids = {d.id for d in all_scope_devices}
 
-    bucket_count = 7
+    relevant_points = [p for p in fleet_telemetry_history if p["time"] >= start_ts]
+    if group and group != "ALL" and grp_dev_ids:
+        relevant_points = [p for p in relevant_points if p.get("deviceId") in grp_dev_ids]
+
+    # High resolution: 30 time buckets for smooth curves and accurate peaks
+    bucket_count = 30
     bucket_step = window_sec / (bucket_count - 1)
     
     def format_label(ts: float, r: str) -> str:
@@ -1079,7 +1121,7 @@ async def get_fleet_telemetry_history(
             return "Сейчас" if hrs_ago < 0.2 else f"-{int(hrs_ago)}ч"
         elif r == "7d":
             days = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
-            return days[dt.weekday()]
+            return f"{days[dt.weekday()]} {dt.strftime('%H:%M')}"
         else:
             return dt.strftime("%H:%M")
 
@@ -1093,21 +1135,47 @@ async def get_fleet_telemetry_history(
             avg_c = round(sum(p["cpu"] for p in online_pts) / len(online_pts))
             avg_r = round(sum(p["ram"] for p in online_pts) / len(online_pts))
             avg_d = round(sum(p["disk"] for p in online_pts) / len(online_pts))
+            max_c = max(p["cpu"] for p in online_pts)
             active_cnt = len(set(p["deviceId"] for p in online_pts))
+            
+            # Find top stressed computers and their top processes in this time bucket
+            stressed = sorted(online_pts, key=lambda x: (x.get("cpu", 0), x.get("ram", 0)), reverse=True)
+            top_stressed = []
+            seen_devs = set()
+            for s in stressed:
+                d_id = s.get("deviceId")
+                if d_id and d_id not in seen_devs:
+                    seen_devs.add(d_id)
+                    top_stressed.append({
+                        "deviceId": d_id,
+                        "deviceName": s.get("deviceName") or d_id,
+                        "cpu": s.get("cpu", 0),
+                        "ram": s.get("ram", 0),
+                        "topProcesses": s.get("topProcesses", [])
+                    })
+                if len(top_stressed) >= 3:
+                    break
         else:
             avg_c = 0
             avg_r = 0
             avg_d = 0
+            max_c = 0
             active_cnt = 0
+            top_stressed = []
             
+        offline_cnt = max(0, total_fleet_count - active_cnt)
         label = "Сейчас" if i == bucket_count - 1 else format_label(b_time, time_range)
         buckets.append({
             "label": label,
             "timestamp": b_time,
             "cpu": avg_c,
+            "maxCpu": max_c,
             "ram": avg_r,
             "disk": avg_d,
-            "activeCount": active_cnt
+            "activeCount": active_cnt,
+            "offlineCount": offline_cnt,
+            "totalCount": total_fleet_count,
+            "topStressed": top_stressed
         })
 
     return {
@@ -1132,9 +1200,17 @@ async def get_device_telemetry_history(
     start_ts = now_ts - window_sec
     
     pts = device_telemetry_history.get(device_id, [])
+    if not pts:
+        # Check case-insensitive
+        for k, v in device_telemetry_history.items():
+            if k.lower() == device_id.lower():
+                pts = v
+                break
+                
     relevant_points = [p for p in pts if p["time"] >= start_ts]
 
-    bucket_count = 7
+    # High resolution: 30 time buckets
+    bucket_count = 30
     bucket_step = window_sec / (bucket_count - 1)
     
     def format_label(ts: float, r: str) -> str:
@@ -1147,7 +1223,7 @@ async def get_device_telemetry_history(
             return "Сейчас" if hrs_ago < 0.2 else f"-{int(hrs_ago)}ч"
         elif r == "7d":
             days = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
-            return days[dt.weekday()]
+            return f"{days[dt.weekday()]} {dt.strftime('%H:%M')}"
         else:
             return dt.strftime("%H:%M")
 
@@ -1162,24 +1238,59 @@ async def get_device_telemetry_history(
             avg_c = round(sum(p["cpu"] for p in online_pts) / len(online_pts))
             avg_r = round(sum(p["ram"] for p in online_pts) / len(online_pts))
             avg_d = round(sum(p["disk"] for p in online_pts) / len(online_pts))
+            max_c = max(p["cpu"] for p in online_pts)
+            
+            # Select the snapshot with the highest CPU to inspect top processes
+            peak_snap = max(online_pts, key=lambda x: x.get("cpu", 0))
+            top_procs = peak_snap.get("topProcesses", [])
+            is_on = True
         else:
             avg_c = 0
             avg_r = 0
             avg_d = 0
+            max_c = 0
+            top_procs = []
+            is_on = False
             
         label = "Сейчас" if i == bucket_count - 1 else format_label(b_time, time_range)
         buckets.append({
             "label": label,
             "timestamp": b_time,
             "cpu": avg_c,
+            "maxCpu": max_c,
             "ram": avg_r,
-            "disk": avg_d
+            "disk": avg_d,
+            "isOnline": is_on,
+            "topProcesses": top_procs
         })
+
+    # Retrieve power/lifecycle events for this device in the time window
+    raw_events = device_power_logs.get(device_id.upper(), []) or device_power_logs.get(device_id, [])
+    events_in_range = []
+    for ev in raw_events:
+        try:
+            ev_ts_str = ev.get("timestamp") or ""
+            ev_dt = datetime.fromisoformat(ev_ts_str.replace("Z", "+00:00"))
+            ev_ts = ev_dt.timestamp()
+            if start_ts <= ev_ts <= now_ts:
+                events_in_range.append({
+                    "id": ev.get("id"),
+                    "timestamp": ev_ts_str,
+                    "time": ev_ts,
+                    "action": ev.get("action", "EVENT"),
+                    "title": ev.get("title", ""),
+                    "details": ev.get("details", ""),
+                    "status": ev.get("status", "Success"),
+                    "initiator": ev.get("initiator", "")
+                })
+        except Exception:
+            pass
 
     return {
         "deviceId": device_id,
         "timeRange": time_range,
         "points": buckets,
+        "events": events_in_range,
         "hasData": has_data
     }
 

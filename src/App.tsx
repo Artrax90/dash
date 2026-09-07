@@ -3991,12 +3991,18 @@ function DeviceMonitoringTab({
   const [hasHistoryData, setHasHistoryData] = useState(false);
   const [heartbeatCounter, setHeartbeatCounter] = useState(1);
 
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
+  const [deviceEvents, setDeviceEvents] = useState<any[]>([]);
+
   const loadHistory = useCallback(async () => {
     try {
       const res = await devicesApi.getDeviceTelemetryHistory(device.id, timeRange);
       if (res && Array.isArray(res.points) && res.points.length > 0) {
         setDeviceHistory(res.points);
         setHasHistoryData(Boolean(res.hasData));
+        if (Array.isArray(res.events)) {
+          setDeviceEvents(res.events);
+        }
       }
       setHeartbeatCounter(c => c + 1);
     } catch (err) {
@@ -4053,23 +4059,34 @@ function DeviceMonitoringTab({
   const netIp = netPrimary?.ip || device.ip;
   const netMac = netPrimary?.mac || device.mac;
 
-  // Time-series points for this specific machine
-  const getTimePoints = () => {
-    if (timeRange === '1h') return ['-60м', '-50м', '-40м', '-30м', '-20м', '-10м', 'Сейчас'];
-    if (timeRange === '6h') return ['-6ч', '-5ч', '-4ч', '-3ч', '-2ч', '-1ч', 'Сейчас'];
-    if (timeRange === '7d') return ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'];
-    return ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', 'Сейчас'];
-  };
-
-  const defaultLabels = getTimePoints();
+  // Time-series points for this specific machine (fallback: 30 smooth points)
+  const defaultPointCount = 30;
   const chartPoints = (deviceHistory.length > 0)
     ? deviceHistory
-    : defaultLabels.map((lbl, idx) => ({
-        label: lbl,
-        cpu: (idx === defaultLabels.length - 1 && device.powerStatus === 'On') ? dynamicCpu : 0,
-        ram: (idx === defaultLabels.length - 1 && device.powerStatus === 'On') ? dynamicRam : 0,
-        disk: dynamicDisk
-      }));
+    : Array.from({ length: defaultPointCount }, (_, idx) => {
+        const pct = idx / (defaultPointCount - 1);
+        const label = idx === defaultPointCount - 1
+          ? 'Сейчас'
+          : (timeRange === '1h' ? `-${Math.round(60 * (1 - pct))}м` : `-${Math.round(24 * (1 - pct))}ч`);
+        return {
+          label,
+          timestamp: Date.now() - (1 - pct) * 3600 * 1000,
+          cpu: (idx === defaultPointCount - 1 && device.powerStatus === 'On') ? dynamicCpu : 0,
+          ram: (idx === defaultPointCount - 1 && device.powerStatus === 'On') ? dynamicRam : 0,
+          disk: dynamicDisk,
+          isOnline: device.powerStatus === 'On' && idx === defaultPointCount - 1,
+          topProcesses: []
+        };
+      });
+
+  // Calculate smooth SVG path
+  const svgWidth = 700;
+  const svgHeight = 220;
+  const getX = (index: number) => (index / Math.max(1, chartPoints.length - 1)) * svgWidth;
+  const getY = (val: number) => svgHeight - (Math.max(0, Math.min(100, val)) / 100) * (svgHeight - 20) - 10;
+
+  const activeHoverPoint = hoveredIdx !== null && chartPoints[hoveredIdx] ? chartPoints[hoveredIdx] : null;
+  const hoverX = hoveredIdx !== null ? getX(hoveredIdx) : 0;
 
   // Real agent reported processes
   const baseProcesses: any[] = ((device as any).processes && Array.isArray((device as any).processes))
@@ -4341,7 +4358,59 @@ function DeviceMonitoringTab({
           </div>
         </div>
 
-        <div className="chart-wrapper">
+        {/* Uptime Ribbon Timeline */}
+        <div className="uptime-strip-container">
+          <div className="uptime-strip-header">
+            <span>Лента доступности (Uptime Timeline за {timeRange})</span>
+            <span>
+              {device.powerStatus === 'On' ? (
+                <span style={{ color: 'var(--green)' }}>● Работает сейчас</span>
+              ) : (
+                <span style={{ color: 'var(--muted)' }}>○ Выключен (Офлайн)</span>
+              )}
+            </span>
+          </div>
+          <div className="uptime-strip-bar">
+            {chartPoints.map((pt, i) => {
+              const isUp = Boolean(pt.isOnline || (pt.cpu && pt.cpu > 0) || (i === chartPoints.length - 1 && device.powerStatus === 'On'));
+              return (
+                <div
+                  key={i}
+                  className="uptime-strip-segment"
+                  style={{
+                    flex: 1,
+                    background: isUp ? '#10b981' : 'rgba(148, 163, 184, 0.25)'
+                  }}
+                  title={`${pt.label}: ${isUp ? 'ПК включен и в сети' : 'ПК выключен / офлайн'}`}
+                />
+              );
+            })}
+          </div>
+        </div>
+
+        {/* System Power Events Badges Bar (if any in range) */}
+        {deviceEvents.length > 0 && (
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px', alignItems: 'center' }}>
+            <span style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>События на шкале:</span>
+            {deviceEvents.slice(0, 5).map((ev, eIdx) => {
+              const act = (ev.action || '').toUpperCase();
+              const isReboot = act === 'REBOOT';
+              const isWake = act === 'WAKE' || act === 'BOOT';
+              const isShut = act === 'SHUTDOWN';
+              return (
+                <span
+                  key={eIdx}
+                  className={`chart-event-tag ${isReboot ? 'reboot' : isShut ? 'shutdown' : isWake ? 'wake' : ''}`}
+                  title={`${ev.details || ev.title} (${ev.initiator || 'Система'})`}
+                >
+                  {isReboot ? '🔄' : isShut ? '🛑' : isWake ? '⚡' : '📌'} {ev.title || ev.action}
+                </span>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="chart-wrapper interactive-chart-box">
           <div className="chart-legend">
             {(metricTab === 'all' || metricTab === 'cpu') && (
               <span className="legend-item"><i style={{ background: '#5b8def' }} /> ЦП (%)</span>
@@ -4349,14 +4418,26 @@ function DeviceMonitoringTab({
             {(metricTab === 'all' || metricTab === 'ram') && (
               <span className="legend-item"><i style={{ background: '#39b98a' }} /> ОЗУ (%)</span>
             )}
+            <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--muted)' }}>
+              Наведите курсор на график для инспекции процессов в моменте времени
+            </span>
           </div>
 
-          <div className="svg-container">
+          <div
+            className="svg-container"
+            onMouseMove={e => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+              const idx = Math.round((relX / rect.width) * (chartPoints.length - 1));
+              setHoveredIdx(idx);
+            }}
+            onMouseLeave={() => setHoveredIdx(null)}
+          >
             <div className="grid-lines"><i /><i /><i /><i /><i /></div>
-            <svg viewBox="0 0 700 240" preserveAspectRatio="none">
+            <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
               <defs>
                 <linearGradient id={`pcCpuGrad_${device.id}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#5b8def" stopOpacity="0.3" />
+                  <stop offset="0%" stopColor="#5b8def" stopOpacity="0.32" />
                   <stop offset="100%" stopColor="#5b8def" stopOpacity="0.0" />
                 </linearGradient>
                 <linearGradient id={`pcRamGrad_${device.id}`} x1="0" y1="0" x2="0" y2="1">
@@ -4365,21 +4446,22 @@ function DeviceMonitoringTab({
                 </linearGradient>
               </defs>
 
-              {/* CPU Line + Area */}
+              {/* CPU Area & Line */}
               {(metricTab === 'all' || metricTab === 'cpu') && (
                 <>
                   <path
-                    d={`M 0 240 L 0 ${240 - (chartPoints[0]?.cpu || 0) * 2.2} ` +
-                      chartPoints.map((p, i) => `L ${(i / Math.max(1, chartPoints.length - 1)) * 700} ${240 - (p?.cpu || 0) * 2.2}`).join(' ') +
-                      ` L 700 240 Z`}
+                    d={`M 0 ${svgHeight} L 0 ${getY(chartPoints[0]?.cpu || 0)} ` +
+                      chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.cpu || 0)}`).join(' ') +
+                      ` L ${svgWidth} ${svgHeight} Z`}
                     fill={`url(#pcCpuGrad_${device.id})`}
                   />
                   <path
-                    d={`M 0 ${240 - (chartPoints[0]?.cpu || 0) * 2.2} ` +
-                      chartPoints.map((p, i) => `L ${(i / Math.max(1, chartPoints.length - 1)) * 700} ${240 - (p?.cpu || 0) * 2.2}`).join(' ')}
+                    d={`M 0 ${getY(chartPoints[0]?.cpu || 0)} ` +
+                      chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.cpu || 0)}`).join(' ')}
                     fill="none"
                     stroke="#5b8def"
                     strokeWidth="2.8"
+                    strokeLinecap="round"
                   />
                 </>
               )}
@@ -4387,18 +4469,108 @@ function DeviceMonitoringTab({
               {/* RAM Line */}
               {(metricTab === 'all' || metricTab === 'ram') && (
                 <path
-                  d={`M 0 ${240 - (chartPoints[0]?.ram || 0) * 2.2} ` +
-                    chartPoints.map((p, i) => `L ${(i / Math.max(1, chartPoints.length - 1)) * 700} ${240 - (p?.ram || 0) * 2.2}`).join(' ')}
+                  d={`M 0 ${getY(chartPoints[0]?.ram || 0)} ` +
+                    chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.ram || 0)}`).join(' ')}
                   fill="none"
                   stroke="#39b98a"
                   strokeWidth="2.4"
                   strokeDasharray="4 2"
+                  strokeLinecap="round"
                 />
+              )}
+
+              {/* Interactive Crosshair Guideline */}
+              {hoveredIdx !== null && (
+                <>
+                  <line
+                    x1={hoverX}
+                    y1={0}
+                    x2={hoverX}
+                    y2={svgHeight}
+                    className="chart-crosshair-line"
+                  />
+                  {(metricTab === 'all' || metricTab === 'cpu') && (
+                    <circle
+                      cx={hoverX}
+                      cy={getY(activeHoverPoint?.cpu || 0)}
+                      r={5}
+                      fill="#5b8def"
+                      stroke="#ffffff"
+                      strokeWidth={2}
+                    />
+                  )}
+                  {(metricTab === 'all' || metricTab === 'ram') && (
+                    <circle
+                      cx={hoverX}
+                      cy={getY(activeHoverPoint?.ram || 0)}
+                      r={4.5}
+                      fill="#39b98a"
+                      stroke="#ffffff"
+                      strokeWidth={2}
+                    />
+                  )}
+                </>
               )}
             </svg>
 
+            {/* Floating Inspector Tooltip Popover */}
+            {hoveredIdx !== null && activeHoverPoint && (
+              <div
+                className="chart-hover-inspector"
+                style={{
+                  left: `${Math.max(160, Math.min(svgWidth - 160, (hoverX / svgWidth) * 100))}%`
+                }}
+              >
+                <div className="chart-hover-inspector-header">
+                  <span className="chart-hover-inspector-title">⏱ {activeHoverPoint.label}</span>
+                  <span style={{ fontSize: '10px', color: activeHoverPoint.isOnline ? '#34d399' : '#94a3b8' }}>
+                    {activeHoverPoint.isOnline ? '● ПК в сети' : '○ Офлайн'}
+                  </span>
+                </div>
+                <div className="chart-hover-inspector-grid">
+                  <div className="chart-hover-stat-item">
+                    <span className="chart-hover-stat-label">ЦП:</span>
+                    <span className="chart-hover-stat-val" style={{ color: '#60a5fa' }}>{activeHoverPoint.cpu}%</span>
+                  </div>
+                  <div className="chart-hover-stat-item">
+                    <span className="chart-hover-stat-label">ОЗУ:</span>
+                    <span className="chart-hover-stat-val" style={{ color: '#34d399' }}>{activeHoverPoint.ram}%</span>
+                  </div>
+                  <div className="chart-hover-stat-item">
+                    <span className="chart-hover-stat-label">Диск C:</span>
+                    <span className="chart-hover-stat-val" style={{ color: '#c084fc' }}>{activeHoverPoint.disk}%</span>
+                  </div>
+                </div>
+
+                {/* Top Consuming Processes in this moment */}
+                {activeHoverPoint.topProcesses && activeHoverPoint.topProcesses.length > 0 ? (
+                  <div className="chart-hover-procs-list">
+                    <div style={{ fontSize: '10px', fontWeight: 600, color: '#cbd5e1' }}>
+                      Топ процессов в этот момент:
+                    </div>
+                    {activeHoverPoint.topProcesses.map((pr: any, pIdx: number) => (
+                      <div key={pIdx} className="chart-hover-proc-row">
+                        <span className="chart-hover-proc-name" title={pr.name}>
+                          {pIdx + 1}. {pr.name}
+                        </span>
+                        <span className="chart-hover-proc-val">
+                          ЦП {pr.cpu}% {pr.ram ? `· ${Math.round(pr.ram)} MB` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '10px', color: '#64748b', fontStyle: 'italic', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '4px' }}>
+                    {activeHoverPoint.isOnline ? 'Стандартная фоновая активность' : 'Станция была выключена'}
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="x-axis">
-              {chartPoints.map((p, idx) => <span key={idx}>{p.label}</span>)}
+              {chartPoints.filter((_, i) => i === 0 || i === Math.floor(chartPoints.length / 2) || i === chartPoints.length - 1).map((p, idx) => (
+                <span key={idx}>{p.label}</span>
+              ))}
             </div>
           </div>
         </div>
@@ -4582,8 +4754,9 @@ function Monitoring({
   const [sortBy, setSortBy] = useState<'stress' | 'cpu' | 'ram' | 'disk' | 'name'>('stress');
   const [metricTab, setMetricTab] = useState<'all' | 'cpu' | 'ram'>('all');
   const [refreshing, setRefreshing] = useState(false);
-  const [telemetryHistory, setTelemetryHistory] = useState<{ label: string; timestamp: number; cpu: number; ram: number; disk: number; activeCount: number }[]>([]);
+  const [telemetryHistory, setTelemetryHistory] = useState<any[]>([]);
   const [hasTelemetryData, setHasTelemetryData] = useState(false);
+  const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
 
   // Excel Export Modal States
   const [showExportModal, setShowExportModal] = useState(false);
@@ -4784,24 +4957,36 @@ function Monitoring({
 
   const freeFleetStorageGb = Math.max(0, totalFleetStorageGb - usedFleetStorageGb);
 
-  // Time-series Chart Points based on real history or fallbacks
-  const getTimeLabels = () => {
-    if (timeRange === '1h') return ['-60м', '-50м', '-40м', '-30м', '-20м', '-10м', 'Сейчас'];
-    if (timeRange === '6h') return ['-6ч', '-5ч', '-4ч', '-3ч', '-2ч', '-1ч', 'Сейчас'];
-    if (timeRange === '7d') return ['ПН', 'ВТ', 'СР', 'ЧТ', 'ПТ', 'СБ', 'ВС'];
-    return ['00:00', '04:00', '08:00', '12:00', '16:00', '20:00', 'Сейчас'];
-  };
-
-  const defaultLabels = getTimeLabels();
+  // Time-series Chart Points based on real history or fallbacks (30 high-res points)
+  const defaultFleetPointCount = 30;
   const chartPoints = (telemetryHistory.length > 0)
     ? telemetryHistory
-    : defaultLabels.map((lbl, idx) => ({
-        label: lbl,
-        cpu: (idx === defaultLabels.length - 1) ? avgCpu : 0,
-        ram: (idx === defaultLabels.length - 1) ? avgRam : 0,
-        disk: avgDisk,
-        activeCount: (idx === defaultLabels.length - 1) ? scopeOnlineDevices.length : 0
-      }));
+    : Array.from({ length: defaultFleetPointCount }, (_, idx) => {
+        const pct = idx / (defaultFleetPointCount - 1);
+        const label = idx === defaultFleetPointCount - 1
+          ? 'Сейчас'
+          : (timeRange === '1h' ? `-${Math.round(60 * (1 - pct))}м` : `-${Math.round(24 * (1 - pct))}ч`);
+        return {
+          label,
+          timestamp: Date.now() - (1 - pct) * 3600 * 1000,
+          cpu: (idx === defaultFleetPointCount - 1) ? avgCpu : 0,
+          maxCpu: (idx === defaultFleetPointCount - 1) ? peakCpu : 0,
+          ram: (idx === defaultFleetPointCount - 1) ? avgRam : 0,
+          disk: avgDisk,
+          activeCount: (idx === defaultFleetPointCount - 1) ? scopeOnlineDevices.length : 0,
+          offlineCount: (idx === defaultFleetPointCount - 1) ? Math.max(0, scopeDevices.length - scopeOnlineDevices.length) : scopeDevices.length,
+          totalCount: scopeDevices.length,
+          topStressed: []
+        };
+      });
+
+  const svgWidth = 700;
+  const svgHeight = 220;
+  const getX = (index: number) => (index / Math.max(1, chartPoints.length - 1)) * svgWidth;
+  const getY = (val: number) => svgHeight - (Math.max(0, Math.min(100, val)) / 100) * (svgHeight - 20) - 10;
+
+  const activeHoverPoint = hoveredIdx !== null && chartPoints[hoveredIdx] ? chartPoints[hoveredIdx] : null;
+  const hoverX = hoveredIdx !== null ? getX(hoveredIdx) : 0;
 
   return (
     <>
@@ -5052,7 +5237,7 @@ function Monitoring({
             <h2>Динамика нагрузки парка ({timeRange})</h2>
             <p>
               {scopeOnlineDevices.length > 0
-                ? 'Реальная телеметрия по активным рабочим станциям'
+                ? 'Реальная телеметрия по активным рабочим станциям с инспекцией пиков нагрузки'
                 : 'Все станции офлайн · Ожидание запуска агентов'}
             </p>
           </div>
@@ -5092,10 +5277,13 @@ function Monitoring({
             {(metricTab === 'all' || metricTab === 'ram') && (
               <span><i className="green-line" /> ОЗУ (%)</span>
             )}
+            <span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '12px' }}>
+              Наведите курсор для инспекции аномалий и процессов
+            </span>
           </div>
         </div>
 
-        <div className="chart">
+        <div className="chart interactive-chart-box">
           <div className="y-axis">
             <span>100%</span>
             <span>75%</span>
@@ -5104,16 +5292,25 @@ function Monitoring({
             <span>0%</span>
           </div>
 
-          <div className="chart-area">
+          <div
+            className="chart-area"
+            onMouseMove={e => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              const relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
+              const idx = Math.round((relX / rect.width) * (chartPoints.length - 1));
+              setHoveredIdx(idx);
+            }}
+            onMouseLeave={() => setHoveredIdx(null)}
+          >
             <div className="grid-lines"><i /><i /><i /><i /><i /></div>
-            <svg viewBox="0 0 700 240" preserveAspectRatio="none">
+            <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
               <defs>
                 <linearGradient id="cpuAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#5b8def" stopOpacity="0.25" />
+                  <stop offset="0%" stopColor="#5b8def" stopOpacity="0.28" />
                   <stop offset="100%" stopColor="#5b8def" stopOpacity="0.0" />
                 </linearGradient>
                 <linearGradient id="ramAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#39b98a" stopOpacity="0.2" />
+                  <stop offset="0%" stopColor="#39b98a" stopOpacity="0.22" />
                   <stop offset="100%" stopColor="#39b98a" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
@@ -5122,17 +5319,18 @@ function Monitoring({
               {(metricTab === 'all' || metricTab === 'cpu') && (
                 <>
                   <path
-                    d={`M 0 240 L 0 ${240 - (chartPoints[0]?.cpu || 0) * 2.2} ` +
-                      chartPoints.map((p, i) => `L ${(i / Math.max(1, chartPoints.length - 1)) * 700} ${240 - (p?.cpu || 0) * 2.2}`).join(' ') +
-                      ` L 700 240 Z`}
+                    d={`M 0 ${svgHeight} L 0 ${getY(chartPoints[0]?.cpu || 0)} ` +
+                      chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.cpu || 0)}`).join(' ') +
+                      ` L ${svgWidth} ${svgHeight} Z`}
                     fill="url(#cpuAreaGrad)"
                   />
                   <path
-                    d={`M 0 ${240 - (chartPoints[0]?.cpu || 0) * 2.2} ` +
-                      chartPoints.map((p, i) => `L ${(i / Math.max(1, chartPoints.length - 1)) * 700} ${240 - (p?.cpu || 0) * 2.2}`).join(' ')}
+                    d={`M 0 ${getY(chartPoints[0]?.cpu || 0)} ` +
+                      chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.cpu || 0)}`).join(' ')}
                     fill="none"
                     stroke="#5b8def"
                     strokeWidth="2.8"
+                    strokeLinecap="round"
                   />
                 </>
               )}
@@ -5140,19 +5338,144 @@ function Monitoring({
               {/* RAM Line */}
               {(metricTab === 'all' || metricTab === 'ram') && (
                 <path
-                  d={`M 0 ${240 - (chartPoints[0]?.ram || 0) * 2.2} ` +
-                    chartPoints.map((p, i) => `L ${(i / Math.max(1, chartPoints.length - 1)) * 700} ${240 - (p?.ram || 0) * 2.2}`).join(' ')}
+                  d={`M 0 ${getY(chartPoints[0]?.ram || 0)} ` +
+                    chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.ram || 0)}`).join(' ')}
                   fill="none"
                   stroke="#39b98a"
                   strokeWidth="2.4"
                   strokeDasharray="4 2"
+                  strokeLinecap="round"
                 />
+              )}
+
+              {/* Interactive Crosshair Guideline */}
+              {hoveredIdx !== null && (
+                <>
+                  <line
+                    x1={hoverX}
+                    y1={0}
+                    x2={hoverX}
+                    y2={svgHeight}
+                    className="chart-crosshair-line"
+                  />
+                  {(metricTab === 'all' || metricTab === 'cpu') && (
+                    <circle
+                      cx={hoverX}
+                      cy={getY(activeHoverPoint?.cpu || 0)}
+                      r={5}
+                      fill="#5b8def"
+                      stroke="#ffffff"
+                      strokeWidth={2}
+                    />
+                  )}
+                  {(metricTab === 'all' || metricTab === 'ram') && (
+                    <circle
+                      cx={hoverX}
+                      cy={getY(activeHoverPoint?.ram || 0)}
+                      r={4.5}
+                      fill="#39b98a"
+                      stroke="#ffffff"
+                      strokeWidth={2}
+                    />
+                  )}
+                </>
               )}
             </svg>
 
+            {/* Floating Inspector Tooltip Popover for Fleet */}
+            {hoveredIdx !== null && activeHoverPoint && (
+              <div
+                className="chart-hover-inspector"
+                style={{
+                  left: `${Math.max(160, Math.min(svgWidth - 160, (hoverX / svgWidth) * 100))}%`
+                }}
+              >
+                <div className="chart-hover-inspector-header">
+                  <span className="chart-hover-inspector-title">⏱ {activeHoverPoint.label}</span>
+                  <span style={{ fontSize: '10.5px', color: '#34d399', fontWeight: 600 }}>
+                    {activeHoverPoint.activeCount} онлайн / {activeHoverPoint.offlineCount || 0} офлайн
+                  </span>
+                </div>
+                <div className="chart-hover-inspector-grid">
+                  <div className="chart-hover-stat-item">
+                    <span className="chart-hover-stat-label">ЦП (сред/пик):</span>
+                    <span className="chart-hover-stat-val" style={{ color: '#60a5fa' }}>
+                      {activeHoverPoint.cpu}% {activeHoverPoint.maxCpu ? `(${activeHoverPoint.maxCpu}%)` : ''}
+                    </span>
+                  </div>
+                  <div className="chart-hover-stat-item">
+                    <span className="chart-hover-stat-label">ОЗУ (сред):</span>
+                    <span className="chart-hover-stat-val" style={{ color: '#34d399' }}>{activeHoverPoint.ram}%</span>
+                  </div>
+                  <div className="chart-hover-stat-item">
+                    <span className="chart-hover-stat-label">Диск (сред):</span>
+                    <span className="chart-hover-stat-val" style={{ color: '#c084fc' }}>{activeHoverPoint.disk}%</span>
+                  </div>
+                </div>
+
+                {/* Stressed PCs / Heavy Processes in this bucket */}
+                {activeHoverPoint.topStressed && activeHoverPoint.topStressed.length > 0 ? (
+                  <div className="chart-hover-procs-list">
+                    <div style={{ fontSize: '10px', fontWeight: 600, color: '#f87171' }}>
+                      Наиболее нагруженные станции:
+                    </div>
+                    {activeHoverPoint.topStressed.map((st: any, sIdx: number) => {
+                      const topProc = st.topProcesses && st.topProcesses[0];
+                      return (
+                        <div key={sIdx} className="chart-hover-proc-row">
+                          <span className="chart-hover-proc-name">
+                            {st.deviceName || st.deviceId}
+                          </span>
+                          <span className="chart-hover-proc-val" style={{ color: '#fca5a5' }}>
+                            ЦП {st.cpu}% {topProc ? `(${topProc.name})` : ''}
+                          </span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ fontSize: '10px', color: '#64748b', fontStyle: 'italic', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '4px' }}>
+                    Нагрузка распределена равномерно без критических аномалий
+                  </div>
+                )}
+              </div>
+            )}
+
             <div className="x-axis">
-              {chartPoints.map((p, idx) => <span key={idx}>{p.label}</span>)}
+              {chartPoints.filter((_, i) => i === 0 || i === Math.floor(chartPoints.length / 2) || i === chartPoints.length - 1).map((p, idx) => (
+                <span key={idx}>{p.label}</span>
+              ))}
             </div>
+          </div>
+        </div>
+
+        {/* Synchronized Fleet Dynamics Timeline Ribbon (Online vs Offline) */}
+        <div className="fleet-dynamics-bar" style={{ margin: '0 21px 18px' }}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px', color: 'var(--muted)' }}>
+            <span>Динамика активных ПК в сети ({timeRange})</span>
+            <span>
+              В сети сейчас: <strong style={{ color: 'var(--green)' }}>{scopeOnlineDevices.length}</strong> / {scopeDevices.length} ПК
+            </span>
+          </div>
+          <div style={{ display: 'flex', height: '10px', borderRadius: '5px', overflow: 'hidden', gap: '2px', background: 'rgba(100, 116, 139, 0.2)' }}>
+            {chartPoints.map((pt, pIdx) => {
+              const total = pt.totalCount || scopeDevices.length || 1;
+              const onlineShare = Math.min(1, Math.max(0, (pt.activeCount || 0) / total));
+              return (
+                <div
+                  key={pIdx}
+                  style={{
+                    flex: 1,
+                    background: onlineShare > 0
+                      ? `rgba(16, 185, 129, ${Math.max(0.35, onlineShare)})`
+                      : 'rgba(148, 163, 184, 0.2)',
+                    borderRadius: '2px',
+                    transition: 'opacity 0.15s ease'
+                  }}
+                  title={`${pt.label}: ${pt.activeCount || 0} ПК онлайн из ${total}`}
+                />
+              );
+            })}
           </div>
         </div>
       </section>
