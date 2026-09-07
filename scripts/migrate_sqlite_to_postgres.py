@@ -21,7 +21,15 @@ PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
-from backend.app.db.session import Base, is_postgres_url
+try:
+    from backend.app.db.session import Base, is_postgres_url
+except ImportError:
+    from backend.app.db.session import Base
+    def is_postgres_url(url: str) -> bool:
+        if not url:
+            return False
+        u = str(url).lower()
+        return u.startswith("postgresql") or u.startswith("postgres")
 # Ensure all models are imported so Base.metadata is fully populated
 from backend.app.models import (
     Device, UserModel, CustomRoleModel, ScheduleModel,

@@ -8,7 +8,8 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 # 1. Check if workstation-manager is running inside Docker
 if command -v docker &>/dev/null && docker compose ps --services --filter "status=running" 2>/dev/null | grep -q "workstation-manager"; then
     echo "🐳 Обнаружен работающий контейнер Docker: workstation-manager"
-    echo "📦 Синхронизация scripts в контейнер..."
+    echo "📦 Синхронизация backend и scripts в контейнер..."
+    docker cp "$REPO_DIR/backend" workstation-manager:/app/
     docker cp "$SCRIPT_DIR" workstation-manager:/app/
     echo "🚀 Запуск миграции внутри контейнера workstation-manager..."
     exec docker compose exec -T workstation-manager python3 /app/scripts/migrate_sqlite_to_postgres.py "$@"
