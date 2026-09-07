@@ -870,6 +870,39 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
         & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 /d p:0:0
     }
+    elseif (`$act -eq 'KILL_PROCESS' -or `$act -eq 'TERMINATE_PROCESS') {
+        `$targetPid = `$null
+        if (`$cmdObj -and `$cmdObj.pid) {
+            try { `$targetPid = [int]`$cmdObj.pid } catch {}
+        }
+        if (-not `$targetPid -and `$cmdObj -and `$cmdObj.extra -and `$cmdObj.extra.pid) {
+            try { `$targetPid = [int]`$cmdObj.extra.pid } catch {}
+        }
+        if (-not `$targetPid -and `$cmdObj -and `$cmdObj.sessionId) {
+            try {
+                `$sVal = [int]`$cmdObj.sessionId
+                if (`$sVal -ge 100) { `$targetPid = `$sVal }
+            } catch {}
+        }
+        `$pName = `$null
+        if (`$cmdObj -and `$cmdObj.processName) { `$pName = [string]`$cmdObj.processName }
+        if (-not `$pName -and `$cmdObj -and `$cmdObj.extra -and `$cmdObj.extra.processName) { `$pName = [string]`$cmdObj.extra.processName }
+        if (-not `$pName -and `$cmdObj -and `$cmdObj.clientIp -and `$cmdObj.clientIp -match '\.exe$') { `$pName = [string]`$cmdObj.clientIp }
+
+        if (`$targetPid -and `$targetPid -gt 0) {
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /PID `$targetPid /T 2>`$null } catch {}
+            try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$targetPid" -ErrorAction SilentlyContinue).Terminate() } catch {}
+            try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
+        }
+        if (`$pName -and `$pName.Trim() -ne "" -and `$pName -ne "0") {
+            `$pClean = `$pName.Trim()
+            if (-not `$pClean.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+                `$pClean = `$pClean + ".exe"
+            }
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM `$pClean /T 2>`$null } catch {}
+        }
+        try { Invoke-Heartbeat `$true } catch {}
+    }
     elseif (`$act -eq 'CLOSE_RDP' -or `$act -eq 'CLOSE_RDP_CLIENT' -or `$act -eq 'KILL_RDP' -or `$act -eq 'DISCONNECT_RDP') {
         `$targetPid = `$null
         if (`$cmdObj -and `$cmdObj.pid) {
@@ -2006,7 +2039,7 @@ try {
                                     if (`$subParts.Length -ge 4 -and `$subParts[3]) { `$remHostVal = `$subParts[3].Trim() }
                                     if (`$subParts.Length -ge 5 -and `$subParts[4]) { `$clientIpVal = `$subParts[4].Trim() }
                                 }
-                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal }
+                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal; processName = (if (`$subParts -and `$subParts.Length -ge 5 -and `$subParts[4]) { `$subParts[4].Trim() } else { "" }) }
                                 Execute-PowerCommand `$cmdAction `$true `$cmdObj
                             }
                         }
