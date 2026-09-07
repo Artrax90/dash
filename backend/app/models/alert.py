@@ -6,14 +6,14 @@ from backend.app.db.session import Base
 class AlertModel(Base):
     __tablename__ = "alerts"
 
-    id = Column(String(32), primary_key=True) # e.g. "ALT-101"
+    id = Column(String(100), primary_key=True) # e.g. "ALT-101" or "ALT-OFF-PC-3B33-1788770430"
     device_id = Column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), nullable=True, index=True)
     alert_type = Column(String(50), nullable=False) # HARDWARE_MISMATCH, POWER_FAILED, etc.
     category = Column(String(30), default="General") # Hardware, Power, Security, Resource
     severity = Column(String(20), default="Warning") # Critical, Warning, Info
     state = Column(String(20), default="Open") # Open, Acknowledged, Resolved
     created_at = Column(DateTime, default=datetime.utcnow)
-    description = Column(String(500), nullable=False)
+    description = Column(String(1000), nullable=False)
 
 class AlertPolicyModel(Base):
     __tablename__ = "alert_policies"

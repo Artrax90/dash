@@ -30,14 +30,14 @@ class HardwareBaselineModel(Base):
 class HardwareChangeModel(Base):
     __tablename__ = "hardware_changes"
 
-    id = Column(String(32), primary_key=True) # e.g. "HWC-001"
+    id = Column(String(100), primary_key=True) # e.g. "HWC-001" or "HWC-PC-1F7D-USB-ADD-CE877CF1-382312"
     device_id = Column(String(32), ForeignKey("devices.id", ondelete="CASCADE"), nullable=False, index=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
     component = Column(String(50), nullable=False) # RAM, Storage, GPU, CPU, etc.
     change_type = Column(String(20), nullable=False) # REMOVED, ADDED, MODIFIED
     severity = Column(String(20), default="Warning") # Critical, Warning, Info
-    previous_value = Column(String(255), nullable=False)
-    current_value = Column(String(255), nullable=False)
+    previous_value = Column(String(500), nullable=False)
+    current_value = Column(String(500), nullable=False)
     acknowledged = Column(Boolean, default=False)
     diff_status = Column(String(30), default="MISMATCH") # MISMATCH, ACCEPTED_AS_BASELINE, RESOLVED
 

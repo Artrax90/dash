@@ -5,7 +5,7 @@ from backend.app.db.session import Base
 class ScheduleModel(Base):
     __tablename__ = "schedules"
 
-    id = Column(String(32), primary_key=True) # e.g. "SCH-01"
+    id = Column(String(100), primary_key=True) # e.g. "SCH-01"
     name = Column(String(100), nullable=False)
     schedule_type = Column(String(50), default="Custom") # Morning Wake, Evening Shutdown, Custom
     description = Column(String(255), default="")
@@ -20,7 +20,7 @@ class ScheduleModel(Base):
 class OperationModel(Base):
     __tablename__ = "operations"
 
-    id = Column(String(32), primary_key=True) # e.g. "OP-2026-001"
+    id = Column(String(100), primary_key=True) # e.g. "OP-2026-001"
     action = Column(String(50), nullable=False) # WAKE, SHUTDOWN, FORCE_SHUTDOWN, REBOOT, LOGOFF
     initiated_by = Column(String(100), default="SYSTEM")
     target_type = Column(String(20), default="Device") # Device, Group, Fleet
@@ -35,7 +35,7 @@ class OperationModel(Base):
 class AgentEnrollmentTokenModel(Base):
     __tablename__ = "agent_enrollment_tokens"
 
-    id = Column(String(32), primary_key=True) # e.g. "TOK-01"
+    id = Column(String(100), primary_key=True) # e.g. "TOK-01"
     token = Column(String(100), nullable=False, unique=True, index=True)
     target_group = Column(String(100), default="Default")
     server_url = Column(String(255), default="https://localhost:8443")
@@ -49,7 +49,7 @@ class AgentEnrollmentTokenModel(Base):
 class UserModel(Base):
     __tablename__ = "users"
 
-    id = Column(String(32), primary_key=True)
+    id = Column(String(100), primary_key=True)
     username = Column(String(50), nullable=False, unique=True, index=True)
     email = Column(String(100), nullable=False, unique=True)
     hashed_password = Column(String(255), nullable=False)
@@ -65,7 +65,7 @@ class UserModel(Base):
 class CustomRoleModel(Base):
     __tablename__ = "custom_roles"
 
-    id = Column(String(32), primary_key=True)
+    id = Column(String(100), primary_key=True)
     name = Column(String(100), nullable=False, unique=True)
     description = Column(String(255), default="")
     is_builtin = Column(Boolean, default=False)
@@ -76,7 +76,7 @@ class CustomRoleModel(Base):
 class AuditLogModel(Base):
     __tablename__ = "audit_logs"
 
-    id = Column(String(32), primary_key=True) # e.g. "AUD-001"
+    id = Column(String(100), primary_key=True) # e.g. "AUD-001"
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
     user = Column(String(100), nullable=False, index=True)
     action = Column(String(100), nullable=False)

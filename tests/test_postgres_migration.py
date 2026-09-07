@@ -178,5 +178,35 @@ def test_orphaned_foreign_key_handling(tmp_path):
         assert row is not None
         assert row[0] == "ALT-02"
 
+def test_hardware_change_long_id_migration(tmp_path):
+    src_db_file = str(tmp_path / "hwc_src.db")
+    src_engine = create_engine(f"sqlite:///{src_db_file}")
+    Base.metadata.create_all(src_engine)
+
+    long_hwc_id = "HWC-PC-1F7D-USB-REM-CE877CF1-951715" # 36 chars > 32
+    with src_engine.begin() as conn:
+        conn.execute(text("""
+            INSERT INTO devices (id, name, hostname, group_name, ip_address, mac_address)
+            VALUES ('PC-1F7D', 'Workstation', 'ws-1f7d', 'Office', '192.168.1.20', 'AA:BB:CC:DD:EE:20')
+        """))
+        conn.execute(text(f"""
+            INSERT INTO hardware_changes (id, device_id, component, change_type, previous_value, current_value)
+            VALUES ('{long_hwc_id}', 'PC-1F7D', 'Storage', 'REMOVED', 'Old SSD', 'Removed')
+        """))
+
+    dst_db_file = str(tmp_path / "hwc_dst.db")
+    dst_engine = create_engine(f"sqlite:///{dst_db_file}")
+    Base.metadata.create_all(dst_engine)
+
+    summary = migrate_data(src_engine, dst_engine, truncate=True)
+    assert summary["hardware_changes"]["src"] == 1
+    assert summary["hardware_changes"]["dst"] == 1
+
+    with dst_engine.connect() as conn:
+        res = conn.execute(text(f"SELECT id, component FROM hardware_changes WHERE id='{long_hwc_id}'")).fetchone()
+        assert res is not None
+        assert res[0] == long_hwc_id
+
+
 
 

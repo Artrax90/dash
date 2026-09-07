@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 
 from sqlalchemy import create_engine, text, inspect, Table, select
-from sqlalchemy.types import JSON, DateTime, Boolean, Integer, Float
+from sqlalchemy.types import JSON, DateTime, Boolean, Integer, Float, String
 
 # Ensure project root is in sys.path
 PROJECT_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
@@ -117,6 +117,13 @@ def transform_row_for_target(table: Table, row_dict: Dict[str, Any]) -> Dict[str
             try:
                 transformed[key] = int(val)
             except (ValueError, TypeError):
+                transformed[key] = val
+
+        # String columns with length safety
+        elif isinstance(col.type, String):
+            if val is not None and col.type.length and len(str(val)) > col.type.length:
+                transformed[key] = str(val)[:col.type.length]
+            else:
                 transformed[key] = val
 
         # Default: pass-through
@@ -327,6 +334,31 @@ def ensure_postgres_driver():
     except Exception as e:
         logger.warning(f"Could not auto-install psycopg2-binary: {e}")
 
+def widen_postgres_columns(dst_engine):
+    """Ensure PostgreSQL columns have sufficient width for long IDs and descriptions on pre-existing tables."""
+    if dst_engine.dialect.name != "postgresql":
+        return
+    logger.info("Verifying PostgreSQL column lengths...")
+    with dst_engine.begin() as conn:
+        for sql in [
+            "ALTER TABLE hardware_changes ALTER COLUMN id TYPE VARCHAR(100)",
+            "ALTER TABLE hardware_changes ALTER COLUMN previous_value TYPE VARCHAR(500)",
+            "ALTER TABLE hardware_changes ALTER COLUMN current_value TYPE VARCHAR(500)",
+            "ALTER TABLE alerts ALTER COLUMN id TYPE VARCHAR(100)",
+            "ALTER TABLE alerts ALTER COLUMN description TYPE VARCHAR(1000)",
+            "ALTER TABLE operations ALTER COLUMN id TYPE VARCHAR(100)",
+            "ALTER TABLE audit_logs ALTER COLUMN id TYPE VARCHAR(100)",
+            "ALTER TABLE agent_enrollment_tokens ALTER COLUMN id TYPE VARCHAR(100)",
+            "ALTER TABLE schedules ALTER COLUMN id TYPE VARCHAR(100)",
+            "ALTER TABLE users ALTER COLUMN id TYPE VARCHAR(100)",
+            "ALTER TABLE custom_roles ALTER COLUMN id TYPE VARCHAR(100)",
+            "ALTER TABLE hardware_baselines ALTER COLUMN id TYPE VARCHAR(100)",
+        ]:
+            try:
+                conn.execute(text(sql))
+            except Exception:
+                pass
+
 def main():
     parser = argparse.ArgumentParser(description="Migrate Workstation Manager data from SQLite to PostgreSQL.")
     parser.add_argument("--sqlite", type=str, help="Path to source SQLite database file")
@@ -389,6 +421,7 @@ def main():
     if not args.dry_run:
         logger.info("Ensuring PostgreSQL schema and tables exist...")
         Base.metadata.create_all(dst_engine)
+        widen_postgres_columns(dst_engine)
 
     # Execute migration
     summary = migrate_data(
