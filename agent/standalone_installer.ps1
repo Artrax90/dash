@@ -410,7 +410,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.5"
+    agentVersion = "2.9.3"
 }
 
 
@@ -755,7 +755,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.5'
+`$AgentVersion = '2.9.3'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 if (-not `$osCaption -or `$osCaption -eq '`$osCaption') {
@@ -797,9 +797,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.5") {
+function Update-AgentService([string]`$targetVer = "2.9.3") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.5"
+        `$targetVer = "2.9.3"
     }
 
     try {
@@ -910,7 +910,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        `$tVer = if (`$cmdObj -and `$cmdObj.targetVersion) { `$cmdObj.targetVersion } else { "2.9.5" }
+        `$tVer = if (`$cmdObj -and `$cmdObj.targetVersion) { `$cmdObj.targetVersion } else { "2.9.3" }
         Update-AgentService `$tVer
         return
     }
@@ -920,26 +920,26 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         return
     }
 
-    # Guard: Do not execute queued shutdown if computer booted less than 90 seconds ago (prevents loop on startup)
-    if ((`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') -and -not `$isDirectSignal) {
+    # Guard: Do not execute queued background shutdown if computer booted less than 45 seconds ago (prevents loop on startup)
+    if ((`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') -and -not `$isDirectSignal -and (-not `$cmdObj -or -not `$cmdObj.force)) {
         try {
             `$bt = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).LastBootUpTime
-            if (`$bt -and ((Get-Date) - `$bt).TotalSeconds -lt 90) {
+            if (`$bt -and ((Get-Date) - `$bt).TotalSeconds -lt 45) {
                 return
             }
         } catch {}
     }
 
     if (`$act -eq 'REBOOT' -or `$act -eq 'RESTART') {
-        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(6) } catch {}
+        try { & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 1 /c "Remote Reboot from Workstation Manager" } catch {}
+        try { (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Win32Shutdown(6) } catch {}
         try { Restart-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0 /d p:0:0
     }
     elseif (`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') {
-        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(12) } catch {}
-        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(5) } catch {}
+        try { & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 1 /c "Remote Shutdown from Workstation Manager" } catch {}
+        try { (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Win32Shutdown(12) } catch {}
+        try { (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Win32Shutdown(5) } catch {}
         try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 /d p:0:0
     }
     elseif (`$act -eq 'CLOSE_RDP' -or `$act -eq 'CLOSE_RDP_CLIENT' -or `$act -eq 'KILL_RDP' -or `$act -eq 'DISCONNECT_RDP') {
         `$targetPid = `$null
@@ -1183,6 +1183,34 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     }
 }
 
+function Get-LiveProcessesList([string]`$currentUser = '') {
+    `$list = @()
+    try {
+        `$procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 4 } | Sort-Object -Property @{Expression={if (`$_.CPU) { [double]`$_.CPU } else { 0.0 }}; Descending=`$true}, @{Expression={if (`$_.WorkingSet64) { [int64]`$_.WorkingSet64 } else { 0L }}; Descending=`$true} | Select-Object -First 25)
+        if (`$procs.Count -eq 0) {
+            `$procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 4 } | Select-Object -First 20)
+        }
+        foreach (`$p in `$procs) {
+            `$pCpu = 0.0
+            if (`$p.CPU) { `$pCpu = [math]::Round(([double]`$p.CPU % 100.0), 1) }
+            `$pRamMb = 0
+            if (`$p.WorkingSet64) { `$pRamMb = [int][math]::Round([double]`$p.WorkingSet64 / 1048576.0, 0) }
+            `$pName = `$p.ProcessName
+            if (-not `$pName.EndsWith(".exe")) { `$pName = `$pName + ".exe" }
+            `$procUser = if (`$currentUser) { `$currentUser } else { "SYSTEM" }
+            `$list += @{
+                pid = [int]`$p.Id
+                name = `$pName
+                cpu = "`$pCpu"
+                ram = `$pRamMb
+                diskIo = "0.1 MB/s"
+                user = `$procUser
+                status = "Running"
+            }
+        }
+    } catch {}
+    return @(`$list)
+}
 
 function Get-LiveRdpSessions() {
     `$sessions = @()
@@ -1849,28 +1877,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
 
         if (`$currentMac) { `$DeviceMac = `$currentMac }
 
-        `$procList = @()
-        try {
-            `$topProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 4 } | Sort-Object CPU -Descending | Select-Object -First 15
-            foreach (`$p in `$topProcs) {
-                `$pCpu = 0.0
-                if (`$p.CPU) { `$pCpu = [math]::Round((`$p.CPU % 100), 1) }
-                `$pRamMb = 0
-                if (`$p.WorkingSet64) { `$pRamMb = [int][math]::Round(`$p.WorkingSet64 / 1MB, 0) }
-                `$pName = `$p.ProcessName
-                if (-not `$pName.EndsWith(".exe")) { `$pName = `$pName + ".exe" }
-                `$procList += @{
-                    pid = `$p.Id
-                    name = `$pName
-                    cpu = "`$pCpu"
-                    ram = `$pRamMb
-                    diskIo = "0.1 MB/s"
-                    user = `$user
-                    status = "Running"
-                }
-            }
-        } catch {}
-
+        `$procList = Get-LiveProcessesList `$user
         `$liveRdp = Get-LiveRdpSessions
 
         `$payload = @{
@@ -2087,12 +2094,22 @@ try {
                             `$targetHost = if (`$parts.Length -ge 5) { `$parts[4].Trim() } else { "" }
 
                             `$isTargetMatch = `$true
-                            if (`$targetDevId -and `$targetDevId -ne "REMOTE" -and `$targetDevId -ne "0" -and `$targetMac) {
+                            if (`$targetDevId -or `$targetMac -or `$targetHost) {
+                                `$isTargetMatch = `$false
                                 `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
-                                `$tgtMacClean = `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper()
+                                `$tgtMacClean = if (`$targetMac) { `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper() } else { "" }
                                 `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
 
-                                if (`$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper() -or `$tgtMacClean -eq `$myMacClean -or (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName)) {
+                                if (`$targetDevId -and (`$targetDevId -eq "REMOTE" -or `$targetDevId -eq "0" -or `$targetDevId -eq "*")) {
+                                    `$isTargetMatch = `$true
+                                }
+                                elseif (`$targetDevId -and `$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper()) {
+                                    `$isTargetMatch = `$true
+                                }
+                                elseif (`$tgtMacClean -and `$tgtMacClean -ne "000000000000" -and `$tgtMacClean -eq `$myMacClean) {
+                                    `$isTargetMatch = `$true
+                                }
+                                elseif (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName) {
                                     `$isTargetMatch = `$true
                                 }
                             }
@@ -2457,7 +2474,37 @@ function Get-InstallerLiveSessions() {
     return @($sess)
 }
 
+function Get-InstallerLiveProcesses([string]$currentUser = '') {
+    $list = @()
+    try {
+        $procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Id -gt 4 } | Sort-Object -Property @{Expression={if ($_.CPU) { [double]$_.CPU } else { 0.0 }}; Descending=$true}, @{Expression={if ($_.WorkingSet64) { [int64]$_.WorkingSet64 } else { 0L }}; Descending=$true} | Select-Object -First 25)
+        if ($procs.Count -eq 0) {
+            $procs = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Id -gt 4 } | Select-Object -First 20)
+        }
+        foreach ($p in $procs) {
+            $pCpu = 0.0
+            if ($p.CPU) { $pCpu = [math]::Round(([double]$p.CPU % 100.0), 1) }
+            $pRamMb = 0
+            if ($p.WorkingSet64) { $pRamMb = [int][math]::Round([double]$p.WorkingSet64 / 1048576.0, 0) }
+            $pName = $p.ProcessName
+            if (-not $pName.EndsWith(".exe")) { $pName = $pName + ".exe" }
+            $procUser = if ($currentUser) { $currentUser } else { "SYSTEM" }
+            $list += @{
+                pid = [int]$p.Id
+                name = $pName
+                cpu = "$pCpu"
+                ram = $pRamMb
+                diskIo = "0.1 MB/s"
+                user = $procUser
+                status = "Running"
+            }
+        }
+    } catch {}
+    return @($list)
+}
+
 $initRdp = Get-InstallerLiveSessions
+$initProcesses = Get-InstallerLiveProcesses $user
 $heartbeatPayload = @{
     deviceId = $deviceId
     hostname = $hostname
@@ -2475,11 +2522,12 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.5"
+    agentVersion = "2.9.3"
     osType = "Windows"
 
     osVersion = $osCaption
     rdpSessions = $initRdp
+    processes = $initProcesses
     metrics = @{
         cpu = $initCpu
         ram = $initRam

@@ -144,7 +144,7 @@ async def test_agent_heartbeat_new_device_registration():
             payload = {
                 "deviceId": test_dev_id,
                 "hostname": "TEST-HOST-REG-001",
-                "version": "2.9.5",
+                "version": "2.9.3",
                 "ip": "192.168.1.155",
                 "mac": "AA:BB:CC:DD:EE:FF",
                 "cpu": 15,
@@ -153,7 +153,7 @@ async def test_agent_heartbeat_new_device_registration():
             }
             res = await agent_heartbeat(payload, req, db)
             assert res["status"] == "ok"
-            assert res["latestVersion"] == "2.9.5"
+            assert res["latestVersion"] == "2.9.3"
         finally:
             await db.execute(delete(Device).where(Device.id == test_dev_id))
             await db.commit()

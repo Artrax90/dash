@@ -1154,8 +1154,10 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
             if "processes" in payload and isinstance(payload["processes"], list) and len(payload["processes"]) > 0:
                 from backend.app.api.v1.devices import device_live_processes
-                device_live_processes[device.id.upper()] = payload["processes"]
-                device_live_processes[device.hostname.upper()] = payload["processes"]
+                procs = payload["processes"]
+                for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None), device_id, (device_id.upper() if device_id else None)):
+                    if k:
+                        device_live_processes[k] = procs
 
             raw_rdp = payload.get("rdpSessions") if "rdpSessions" in payload else (payload.get("rdp_sessions") or payload.get("sessions"))
             has_rdp_key = "rdpSessions" in payload or "rdp_sessions" in payload or "sessions" in payload

@@ -1476,9 +1476,16 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
         }
 
     # Fetch live reported processes
-    reported_procs = device_live_processes.get(device.id.upper()) or device_live_processes.get(device.hostname.upper())
+    reported_procs = None
+    for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None)):
+        if k and k in device_live_processes and device_live_processes[k]:
+            reported_procs = device_live_processes[k]
+            break
+
     if reported_procs:
         data["processes"] = reported_procs
+    elif device.power_status != PowerStatus.ON:
+        data["processes"] = []
     else:
         is_linux = "LINUX" in str(device.os_type).upper() or "UBUNTU" in str(device.os_type).upper() or "DEBIAN" in str(device.os_type).upper()
         if is_linux:
@@ -1510,9 +1517,16 @@ async def get_device_processes(device_id: str, db: AsyncSession = Depends(get_db
     if not device:
         raise HTTPException(status_code=404, detail="Device not found")
     
-    reported_procs = device_live_processes.get(device.id.upper()) or device_live_processes.get(device.hostname.upper())
+    reported_procs = None
+    for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None)):
+        if k and k in device_live_processes and device_live_processes[k]:
+            reported_procs = device_live_processes[k]
+            break
+
     if reported_procs:
         return reported_procs
+    elif device.power_status != PowerStatus.ON:
+        return []
     
     is_linux = "LINUX" in str(device.os_type).upper() or "UBUNTU" in str(device.os_type).upper() or "DEBIAN" in str(device.os_type).upper()
     if is_linux:
