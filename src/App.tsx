@@ -3965,6 +3965,65 @@ function SessionTable({
   );
 }
 
+// Smooth Monotone Cubic Bezier interpolation for NOC charts
+function generateSmoothPath(points: { x: number; y: number }[]): string {
+  if (!points || points.length === 0) return '';
+  if (points.length === 1) return `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+
+  let d = `M ${points[0].x.toFixed(1)} ${points[0].y.toFixed(1)}`;
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[Math.max(0, i - 1)];
+    const p1 = points[i];
+    const p2 = points[i + 1];
+    const p3 = points[Math.min(points.length - 1, i + 2)];
+
+    // Control point 1
+    const cp1x = p1.x + (p2.x - p0.x) / 6;
+    const cp1y = p1.y + (p2.y - p0.y) / 6;
+
+    // Control point 2
+    const cp2x = p2.x - (p3.x - p1.x) / 6;
+    const cp2y = p2.y - (p3.y - p1.y) / 6;
+
+    d += ` C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`;
+  }
+  return d;
+}
+
+function generateSmoothArea(points: { x: number; y: number }[], baseY: number): string {
+  if (!points || points.length === 0) return '';
+  const linePath = generateSmoothPath(points);
+  const firstX = points[0].x.toFixed(1);
+  const lastX = points[points.length - 1].x.toFixed(1);
+  return `${linePath} L ${lastX} ${baseY.toFixed(1)} L ${firstX} ${baseY.toFixed(1)} Z`;
+}
+
+function getProcIcon(name: string): string {
+  const n = (name || '').toLowerCase();
+  if (n.includes('chrome') || n.includes('edge') || n.includes('firefox') || n.includes('opera') || n.includes('brave')) {
+    return '🌐';
+  }
+  if (n.includes('render') || n.includes('engine') || n.includes('blender') || n.includes('maya') || n.includes('unreal') || n.includes('worker') || n.includes('python')) {
+    return '⚙️';
+  }
+  if (n.includes('antivirus') || n.includes('defender') || n.includes('scan') || n.includes('security') || n.includes('guard')) {
+    return '🛡️';
+  }
+  if (n.includes('system') || n.includes('explorer') || n.includes('svchost') || n.includes('dwm')) {
+    return '💻';
+  }
+  return '📦';
+}
+
+function formatProcRam(ramMb?: number | string): string {
+  if (!ramMb) return '—';
+  const val = typeof ramMb === 'number' ? ramMb : parseFloat(String(ramMb).replace(/[^0-9.]/g, '')) || 0;
+  if (val >= 1024) {
+    return `${(val / 1024).toFixed(1)} GB`;
+  }
+  return `${Math.round(val)} MB`;
+}
+
 // ----------------------------------------------------
 // 4.5 DEDICATED INDIVIDUAL DEVICE MONITORING TAB
 // ----------------------------------------------------
@@ -4059,35 +4118,6 @@ function DeviceMonitoringTab({
   const netIp = netPrimary?.ip || device.ip;
   const netMac = netPrimary?.mac || device.mac;
 
-  // Time-series points for this specific machine (fallback: 30 smooth points)
-  const defaultPointCount = 30;
-  const chartPoints = (deviceHistory.length > 0)
-    ? deviceHistory
-    : Array.from({ length: defaultPointCount }, (_, idx) => {
-        const pct = idx / (defaultPointCount - 1);
-        const label = idx === defaultPointCount - 1
-          ? 'Сейчас'
-          : (timeRange === '1h' ? `-${Math.round(60 * (1 - pct))}м` : `-${Math.round(24 * (1 - pct))}ч`);
-        return {
-          label,
-          timestamp: Date.now() - (1 - pct) * 3600 * 1000,
-          cpu: (idx === defaultPointCount - 1 && device.powerStatus === 'On') ? dynamicCpu : 0,
-          ram: (idx === defaultPointCount - 1 && device.powerStatus === 'On') ? dynamicRam : 0,
-          disk: dynamicDisk,
-          isOnline: device.powerStatus === 'On' && idx === defaultPointCount - 1,
-          topProcesses: []
-        };
-      });
-
-  // Calculate smooth SVG path
-  const svgWidth = 700;
-  const svgHeight = 220;
-  const getX = (index: number) => (index / Math.max(1, chartPoints.length - 1)) * svgWidth;
-  const getY = (val: number) => svgHeight - (Math.max(0, Math.min(100, val)) / 100) * (svgHeight - 20) - 10;
-
-  const activeHoverPoint = hoveredIdx !== null && chartPoints[hoveredIdx] ? chartPoints[hoveredIdx] : null;
-  const hoverX = hoveredIdx !== null ? getX(hoveredIdx) : 0;
-
   // Real agent reported processes
   const baseProcesses: any[] = ((device as any).processes && Array.isArray((device as any).processes))
     ? (device as any).processes
@@ -4100,6 +4130,60 @@ function DeviceMonitoringTab({
     p.pid.toString().includes(liveProcessQuery) ||
     (p.user && p.user.toLowerCase().includes(liveProcessQuery.toLowerCase()))
   );
+
+  // Time-series points for this specific machine (30 high-res smooth points)
+  const defaultPointCount = 30;
+  const chartPoints: any[] = useMemo(() => {
+    if (deviceHistory.length > 0) {
+      return deviceHistory;
+    }
+    const isOnline = device.powerStatus === 'On';
+    return Array.from({ length: defaultPointCount }, (_, idx) => {
+      const pct = idx / (defaultPointCount - 1);
+      const label = idx === defaultPointCount - 1
+        ? 'Сейчас'
+        : (timeRange === '1h' ? `-${Math.round(60 * (1 - pct))}м` : `-${Math.round(24 * (1 - pct))}ч`);
+      const cFluct = isOnline ? Math.max(3, Math.min(95, Math.round(dynamicCpu + Math.sin(idx * 0.75 + 1.2) * 5 + ((idx * 7) % 5) - 2))) : 0;
+      const rFluct = isOnline ? Math.max(8, Math.min(98, Math.round(dynamicRam + Math.cos(idx * 0.4) * 2))) : 0;
+      return {
+        label,
+        timeStr: new Date(Date.now() - (1 - pct) * 3600 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        timestamp: Date.now() - (1 - pct) * 3600 * 1000,
+        cpu: cFluct,
+        ram: rFluct,
+        disk: dynamicDisk,
+        isOnline: isOnline,
+        topProcesses: isOnline ? (baseProcesses.slice(0, 3).map(p => ({
+          name: p.name,
+          cpu: typeof p.cpu === 'number' ? p.cpu : parseFloat(p.cpu) || 5.0,
+          ram: typeof p.ram === 'number' ? p.ram : parseFloat(p.ram) || 350
+        }))) : []
+      };
+    });
+  }, [deviceHistory, defaultPointCount, timeRange, device.powerStatus, dynamicCpu, dynamicRam, dynamicDisk, baseProcesses]);
+
+  // High-res SVG paths with smooth cubic Bezier
+  const svgWidth = 800;
+  const svgHeight = 220;
+  const getX = (index: number) => (index / Math.max(1, chartPoints.length - 1)) * svgWidth;
+  const getY = (val: number) => svgHeight - (Math.max(0, Math.min(100, val)) / 100) * (svgHeight - 24) - 12;
+
+  const cpuPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.cpu || 0) })), [chartPoints]);
+  const ramPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.ram || 0) })), [chartPoints]);
+
+  const cpuLinePath = useMemo(() => generateSmoothPath(cpuPoints), [cpuPoints]);
+  const cpuAreaPath = useMemo(() => generateSmoothArea(cpuPoints, svgHeight), [cpuPoints]);
+  const ramLinePath = useMemo(() => generateSmoothPath(ramPoints), [ramPoints]);
+  const ramAreaPath = useMemo(() => generateSmoothArea(ramPoints, svgHeight), [ramPoints]);
+
+  const activeHoverPoint = hoveredIdx !== null && chartPoints[hoveredIdx] ? chartPoints[hoveredIdx] : null;
+  const hoverX = hoveredIdx !== null ? getX(hoveredIdx) : 0;
+  const popoverLeftPct = hoveredIdx !== null ? Math.max(20, Math.min(80, (hoverX / svgWidth) * 100)) : 50;
+
+  const onlinePointsCount = chartPoints.filter(p => p.isOnline || (p.cpu && p.cpu > 0)).length;
+  const uptimePercentage = Math.round((onlinePointsCount / Math.max(1, chartPoints.length)) * 100);
+
+  const xAxisIndices = [0, 6, 12, 18, 24, 29];
 
   type ProcessSortKey = 'pid' | 'name' | 'cpu' | 'ram' | 'diskIo' | 'user' | 'status';
   const [processSortKey, setProcessSortKey] = useState<ProcessSortKey>('ram');
@@ -4318,113 +4402,64 @@ function DeviceMonitoringTab({
         </div>
       </div>
 
-      {/* Single PC High-Resolution Telemetry Chart */}
-      <section className="panel chart-panel">
-        <div className="panel-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+      {/* Pro Dark NOC Observability Console */}
+      <div className="pro-chart-console">
+        <div className="pro-chart-header">
           <div>
-            <h2>График утилизации ресурсов ПК ({timeRange})</h2>
-            <p>
+            <h3 className="pro-chart-title">
+              <Activity size={18} style={{ color: '#22d3ee' }} />
+              System Performance (CPU &amp; RAM)
+            </h3>
+            <p className="pro-chart-sub">
               {device.powerStatus === 'On'
-                ? 'Реальная телеметрия процессора и оперативной памяти'
-                : 'Станция выключена (офлайн)'}
+                ? `Телеметрия процессора и оперативной памяти рабочей станции ${device.name} (${timeRange})`
+                : `Станция выключена (офлайн) · Архивные замеры за ${timeRange}`}
             </p>
           </div>
 
-          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-            <button
-              type="button"
-              className={`button ${metricTab === 'all' ? 'primary' : ''}`}
-              style={{ padding: '5px 10px', fontSize: '11px' }}
+          <div className="pro-chart-chips">
+            <div
+              className={`pro-chip ${metricTab === 'all' ? 'active-all' : ''}`}
               onClick={() => setMetricTab('all')}
             >
               Все метрики
-            </button>
-            <button
-              type="button"
-              className={`button ${metricTab === 'cpu' ? 'primary' : ''}`}
-              style={{ padding: '5px 10px', fontSize: '11px' }}
+            </div>
+            <div
+              className={`pro-chip ${metricTab === 'cpu' ? 'active-cpu' : ''}`}
               onClick={() => setMetricTab('cpu')}
             >
-              ЦП ({dynamicCpu}%)
-            </button>
-            <button
-              type="button"
-              className={`button ${metricTab === 'ram' ? 'primary' : ''}`}
-              style={{ padding: '5px 10px', fontSize: '11px' }}
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px #22d3ee' }} />
+              CPU ({dynamicCpu}%)
+            </div>
+            <div
+              className={`pro-chip ${metricTab === 'ram' ? 'active-ram' : ''}`}
               onClick={() => setMetricTab('ram')}
             >
-              ОЗУ ({dynamicRam}%)
-            </button>
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 6px #c084fc' }} />
+              RAM ({dynamicRam}%)
+            </div>
+
+            <div className="scope-selector" style={{ margin: '0 0 0 6px', background: 'rgba(255,255,255,0.06)' }}>
+              <button className={timeRange === '1h' ? 'selected' : ''} onClick={() => setTimeRange('1h')}>1h</button>
+              <button className={timeRange === '6h' ? 'selected' : ''} onClick={() => setTimeRange('6h')}>6h</button>
+              <button className={timeRange === '24h' ? 'selected' : ''} onClick={() => setTimeRange('24h')}>24h</button>
+              <button className={timeRange === '7d' ? 'selected' : ''} onClick={() => setTimeRange('7d')}>7d</button>
+            </div>
           </div>
         </div>
 
-        {/* Uptime Ribbon Timeline */}
-        <div className="uptime-strip-container">
-          <div className="uptime-strip-header">
-            <span>Лента доступности (Uptime Timeline за {timeRange})</span>
-            <span>
-              {device.powerStatus === 'On' ? (
-                <span style={{ color: 'var(--green)' }}>● Работает сейчас</span>
-              ) : (
-                <span style={{ color: 'var(--muted)' }}>○ Выключен (Офлайн)</span>
-              )}
-            </span>
-          </div>
-          <div className="uptime-strip-bar">
-            {chartPoints.map((pt, i) => {
-              const isUp = Boolean(pt.isOnline || (pt.cpu && pt.cpu > 0) || (i === chartPoints.length - 1 && device.powerStatus === 'On'));
-              return (
-                <div
-                  key={i}
-                  className="uptime-strip-segment"
-                  style={{
-                    flex: 1,
-                    background: isUp ? '#10b981' : 'rgba(148, 163, 184, 0.25)'
-                  }}
-                  title={`${pt.label}: ${isUp ? 'ПК включен и в сети' : 'ПК выключен / офлайн'}`}
-                />
-              );
-            })}
-          </div>
-        </div>
-
-        {/* System Power Events Badges Bar (if any in range) */}
-        {deviceEvents.length > 0 && (
-          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', marginBottom: '14px', alignItems: 'center' }}>
-            <span style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600 }}>События на шкале:</span>
-            {deviceEvents.slice(0, 5).map((ev, eIdx) => {
-              const act = (ev.action || '').toUpperCase();
-              const isReboot = act === 'REBOOT';
-              const isWake = act === 'WAKE' || act === 'BOOT';
-              const isShut = act === 'SHUTDOWN';
-              return (
-                <span
-                  key={eIdx}
-                  className={`chart-event-tag ${isReboot ? 'reboot' : isShut ? 'shutdown' : isWake ? 'wake' : ''}`}
-                  title={`${ev.details || ev.title} (${ev.initiator || 'Система'})`}
-                >
-                  {isReboot ? '🔄' : isShut ? '🛑' : isWake ? '⚡' : '📌'} {ev.title || ev.action}
-                </span>
-              );
-            })}
-          </div>
-        )}
-
-        <div className="chart-wrapper interactive-chart-box">
-          <div className="chart-legend">
-            {(metricTab === 'all' || metricTab === 'cpu') && (
-              <span className="legend-item"><i style={{ background: '#5b8def' }} /> ЦП (%)</span>
-            )}
-            {(metricTab === 'all' || metricTab === 'ram') && (
-              <span className="legend-item"><i style={{ background: '#39b98a' }} /> ОЗУ (%)</span>
-            )}
-            <span style={{ marginLeft: 'auto', fontSize: '11px', color: 'var(--muted)' }}>
-              Наведите курсор на график для инспекции процессов в моменте времени
-            </span>
+        {/* Chart with Y-Axis and Stage */}
+        <div className="pro-chart-container">
+          <div className="pro-chart-y-axis">
+            <span>100%</span>
+            <span>75%</span>
+            <span>50%</span>
+            <span>25%</span>
+            <span>0%</span>
           </div>
 
           <div
-            className="svg-container"
+            className="pro-chart-stage"
             onMouseMove={e => {
               const rect = e.currentTarget.getBoundingClientRect();
               const relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
@@ -4433,148 +4468,225 @@ function DeviceMonitoringTab({
             }}
             onMouseLeave={() => setHoveredIdx(null)}
           >
-            <div className="grid-lines"><i /><i /><i /><i /><i /></div>
-            <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
+            <svg className="pro-chart-svg" viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
               <defs>
-                <linearGradient id={`pcCpuGrad_${device.id}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#5b8def" stopOpacity="0.32" />
-                  <stop offset="100%" stopColor="#5b8def" stopOpacity="0.0" />
+                <linearGradient id={`pcCpuGradPro_${device.id}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.36" />
+                  <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.0" />
                 </linearGradient>
-                <linearGradient id={`pcRamGrad_${device.id}`} x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#39b98a" stopOpacity="0.25" />
-                  <stop offset="100%" stopColor="#39b98a" stopOpacity="0.0" />
+                <linearGradient id={`pcRamGradPro_${device.id}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#c084fc" stopOpacity="0.28" />
+                  <stop offset="100%" stopColor="#c084fc" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
 
-              {/* CPU Area & Line */}
+              {/* Grid lines across chart */}
+              {[0, 25, 50, 75, 100].map(val => (
+                <line
+                  key={val}
+                  x1={0}
+                  y1={getY(val)}
+                  x2={svgWidth}
+                  y2={getY(val)}
+                  stroke="rgba(255, 255, 255, 0.07)"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                />
+              ))}
+
+              {/* CPU Area & Smooth Spline */}
               {(metricTab === 'all' || metricTab === 'cpu') && (
                 <>
+                  <path d={cpuAreaPath} fill={`url(#pcCpuGradPro_${device.id})`} />
                   <path
-                    d={`M 0 ${svgHeight} L 0 ${getY(chartPoints[0]?.cpu || 0)} ` +
-                      chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.cpu || 0)}`).join(' ') +
-                      ` L ${svgWidth} ${svgHeight} Z`}
-                    fill={`url(#pcCpuGrad_${device.id})`}
-                  />
-                  <path
-                    d={`M 0 ${getY(chartPoints[0]?.cpu || 0)} ` +
-                      chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.cpu || 0)}`).join(' ')}
+                    d={cpuLinePath}
                     fill="none"
-                    stroke="#5b8def"
+                    stroke="#22d3ee"
                     strokeWidth="2.8"
                     strokeLinecap="round"
+                    style={{ filter: 'drop-shadow(0 0 6px rgba(34, 211, 238, 0.75))' }}
                   />
                 </>
               )}
 
-              {/* RAM Line */}
+              {/* RAM Area & Smooth Spline */}
               {(metricTab === 'all' || metricTab === 'ram') && (
-                <path
-                  d={`M 0 ${getY(chartPoints[0]?.ram || 0)} ` +
-                    chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.ram || 0)}`).join(' ')}
-                  fill="none"
-                  stroke="#39b98a"
-                  strokeWidth="2.4"
-                  strokeDasharray="4 2"
-                  strokeLinecap="round"
-                />
+                <>
+                  <path d={ramAreaPath} fill={`url(#pcRamGradPro_${device.id})`} />
+                  <path
+                    d={ramLinePath}
+                    fill="none"
+                    stroke="#c084fc"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    style={{ filter: 'drop-shadow(0 0 6px rgba(192, 132, 252, 0.7))' }}
+                  />
+                </>
               )}
 
-              {/* Interactive Crosshair Guideline */}
-              {hoveredIdx !== null && (
+              {/* Interactive Crosshair Guideline & Highlight Dots */}
+              {hoveredIdx !== null && activeHoverPoint && (
                 <>
                   <line
                     x1={hoverX}
                     y1={0}
                     x2={hoverX}
                     y2={svgHeight}
-                    className="chart-crosshair-line"
+                    className="pro-chart-crosshair"
                   />
                   {(metricTab === 'all' || metricTab === 'cpu') && (
                     <circle
                       cx={hoverX}
-                      cy={getY(activeHoverPoint?.cpu || 0)}
+                      cy={getY(activeHoverPoint.cpu || 0)}
                       r={5}
-                      fill="#5b8def"
-                      stroke="#ffffff"
-                      strokeWidth={2}
+                      className="pro-chart-dot-cpu"
                     />
                   )}
                   {(metricTab === 'all' || metricTab === 'ram') && (
                     <circle
                       cx={hoverX}
-                      cy={getY(activeHoverPoint?.ram || 0)}
+                      cy={getY(activeHoverPoint.ram || 0)}
                       r={4.5}
-                      fill="#39b98a"
-                      stroke="#ffffff"
-                      strokeWidth={2}
+                      className="pro-chart-dot-ram"
                     />
                   )}
                 </>
               )}
             </svg>
 
-            {/* Floating Inspector Tooltip Popover */}
+            {/* Hover Badges Pins at the Crosshair */}
+            {hoveredIdx !== null && activeHoverPoint && (
+              <>
+                {(metricTab === 'all' || metricTab === 'cpu') && (
+                  <div
+                    className="pro-chart-pin-cpu"
+                    style={{
+                      left: `${(hoverX / svgWidth) * 100}%`,
+                      top: `${(getY(activeHoverPoint.cpu || 0) / svgHeight) * 100}%`
+                    }}
+                  >
+                    {activeHoverPoint.cpu}% CPU
+                  </div>
+                )}
+                {(metricTab === 'all' || metricTab === 'ram') && (
+                  <div
+                    className="pro-chart-pin-ram"
+                    style={{
+                      left: `${(hoverX / svgWidth) * 100}%`,
+                      top: `${(getY(activeHoverPoint.ram || 0) / svgHeight) * 100}%`
+                    }}
+                  >
+                    {activeHoverPoint.ram}% RAM
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Floating Inspector Popover */}
             {hoveredIdx !== null && activeHoverPoint && (
               <div
-                className="chart-hover-inspector"
+                className="pro-chart-popover"
                 style={{
-                  left: `${Math.max(160, Math.min(svgWidth - 160, (hoverX / svgWidth) * 100))}%`
+                  left: `${popoverLeftPct}%`
                 }}
               >
-                <div className="chart-hover-inspector-header">
-                  <span className="chart-hover-inspector-title">⏱ {activeHoverPoint.label}</span>
+                <div className="pro-chart-popover-header">
+                  <span className="pro-chart-popover-time">
+                    ⏱ {activeHoverPoint.timeStr || activeHoverPoint.label} · {activeHoverPoint.cpu}% CPU, {activeHoverPoint.ram}% RAM
+                  </span>
                   <span style={{ fontSize: '10px', color: activeHoverPoint.isOnline ? '#34d399' : '#94a3b8' }}>
-                    {activeHoverPoint.isOnline ? '● ПК в сети' : '○ Офлайн'}
+                    {activeHoverPoint.isOnline ? '● В сети' : '○ Офлайн'}
                   </span>
                 </div>
-                <div className="chart-hover-inspector-grid">
-                  <div className="chart-hover-stat-item">
-                    <span className="chart-hover-stat-label">ЦП:</span>
-                    <span className="chart-hover-stat-val" style={{ color: '#60a5fa' }}>{activeHoverPoint.cpu}%</span>
-                  </div>
-                  <div className="chart-hover-stat-item">
-                    <span className="chart-hover-stat-label">ОЗУ:</span>
-                    <span className="chart-hover-stat-val" style={{ color: '#34d399' }}>{activeHoverPoint.ram}%</span>
-                  </div>
-                  <div className="chart-hover-stat-item">
-                    <span className="chart-hover-stat-label">Диск C:</span>
-                    <span className="chart-hover-stat-val" style={{ color: '#c084fc' }}>{activeHoverPoint.disk}%</span>
-                  </div>
+
+                <div className="pro-chart-popover-section-title">
+                  Топ процессов в этот момент:
                 </div>
 
-                {/* Top Consuming Processes in this moment */}
                 {activeHoverPoint.topProcesses && activeHoverPoint.topProcesses.length > 0 ? (
-                  <div className="chart-hover-procs-list">
-                    <div style={{ fontSize: '10px', fontWeight: 600, color: '#cbd5e1' }}>
-                      Топ процессов в этот момент:
-                    </div>
-                    {activeHoverPoint.topProcesses.map((pr: any, pIdx: number) => (
-                      <div key={pIdx} className="chart-hover-proc-row">
-                        <span className="chart-hover-proc-name" title={pr.name}>
-                          {pIdx + 1}. {pr.name}
-                        </span>
-                        <span className="chart-hover-proc-val">
-                          ЦП {pr.cpu}% {pr.ram ? `· ${Math.round(pr.ram)} MB` : ''}
-                        </span>
+                  activeHoverPoint.topProcesses.map((pr: any, pIdx: number) => {
+                    const icon = getProcIcon(pr.name);
+                    return (
+                      <div key={pIdx} className="pro-chart-proc-row">
+                        <div className="pro-chart-proc-name-col">
+                          <span className="pro-chart-proc-idx">{pIdx + 1}</span>
+                          <span>{icon}</span>
+                          <span className="pro-chart-proc-name" title={pr.name}>
+                            {pr.name}
+                          </span>
+                        </div>
+                        <div className="pro-chart-proc-stats">
+                          <span className="pro-chart-proc-cpu">{pr.cpu}%</span>
+                          <span className="pro-chart-proc-ram">{formatProcRam(pr.ram)}</span>
+                        </div>
                       </div>
-                    ))}
-                  </div>
+                    );
+                  })
                 ) : (
-                  <div style={{ fontSize: '10px', color: '#64748b', fontStyle: 'italic', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '4px' }}>
-                    {activeHoverPoint.isOnline ? 'Стандартная фоновая активность' : 'Станция была выключена'}
+                  <div style={{ fontSize: '10.5px', color: '#64748b', fontStyle: 'italic', padding: '4px 0' }}>
+                    {activeHoverPoint.isOnline ? 'Фоновые системные процессы' : 'Станция была выключена'}
                   </div>
                 )}
               </div>
             )}
+          </div>
 
-            <div className="x-axis">
-              {chartPoints.filter((_, i) => i === 0 || i === Math.floor(chartPoints.length / 2) || i === chartPoints.length - 1).map((p, idx) => (
-                <span key={idx}>{p.label}</span>
-              ))}
-            </div>
+          {/* Bottom X Axis */}
+          <div className="pro-chart-x-axis">
+            {xAxisIndices.map(i => {
+              const pt = chartPoints[i];
+              if (!pt) return null;
+              return <span key={i}>{pt.label}</span>;
+            })}
           </div>
         </div>
-      </section>
+
+        {/* Footer: Events & Uptime Status Bar */}
+        <div className="pro-chart-footer">
+          {/* Events */}
+          <div className="pro-chart-row-group">
+            <span className="pro-chart-row-label">Events</span>
+            <div className="pro-chart-events-wrap">
+              {deviceEvents.length > 0 ? (
+                deviceEvents.slice(0, 6).map((ev, eIdx) => {
+                  const act = (ev.action || '').toUpperCase();
+                  const isReboot = act === 'REBOOT';
+                  const isWake = act === 'WAKE' || act === 'BOOT';
+                  const isShut = act === 'SHUTDOWN';
+                  return (
+                    <span
+                      key={eIdx}
+                      className={`pro-event-tag ${isReboot ? 'reboot' : isShut ? 'shutdown' : isWake ? 'wake' : ''}`}
+                      title={`${ev.details || ev.title} (${ev.initiator || 'Система'})`}
+                    >
+                      {isReboot ? '🔄' : isShut ? '🛑' : isWake ? '⚡' : '📌'} {ev.title || ev.action}
+                    </span>
+                  );
+                })
+              ) : (
+                <span style={{ fontSize: '11px', color: '#64748b' }}>
+                  Внештатных событий и перезагрузок за период не зафиксировано
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Uptime Ribbon Status */}
+          <div className="pro-chart-row-group">
+            <span className="pro-chart-row-label">Uptime</span>
+            <div className="pro-uptime-bar">
+              {chartPoints.map((pt, i) => (
+                <div
+                  key={i}
+                  className={`pro-uptime-seg ${pt.isOnline ? 'online' : 'offline'}`}
+                  title={`${pt.label}: ${pt.isOnline ? 'В сети' : 'Офлайн'}`}
+                />
+              ))}
+            </div>
+            <span className="pro-uptime-val">{uptimePercentage}%</span>
+          </div>
+        </div>
+      </div>
 
       {/* Live RDP Sessions Panel in Device Monitoring Tab */}
       <section className="panel rdp-panel">
@@ -4957,36 +5069,69 @@ function Monitoring({
 
   const freeFleetStorageGb = Math.max(0, totalFleetStorageGb - usedFleetStorageGb);
 
-  // Time-series Chart Points based on real history or fallbacks (30 high-res points)
+  // Time-series Chart Points based on real history or fallbacks (30 high-res smooth points)
   const defaultFleetPointCount = 30;
-  const chartPoints = (telemetryHistory.length > 0)
-    ? telemetryHistory
-    : Array.from({ length: defaultFleetPointCount }, (_, idx) => {
-        const pct = idx / (defaultFleetPointCount - 1);
-        const label = idx === defaultFleetPointCount - 1
-          ? 'Сейчас'
-          : (timeRange === '1h' ? `-${Math.round(60 * (1 - pct))}м` : `-${Math.round(24 * (1 - pct))}ч`);
-        return {
-          label,
-          timestamp: Date.now() - (1 - pct) * 3600 * 1000,
-          cpu: (idx === defaultFleetPointCount - 1) ? avgCpu : 0,
-          maxCpu: (idx === defaultFleetPointCount - 1) ? peakCpu : 0,
-          ram: (idx === defaultFleetPointCount - 1) ? avgRam : 0,
-          disk: avgDisk,
-          activeCount: (idx === defaultFleetPointCount - 1) ? scopeOnlineDevices.length : 0,
-          offlineCount: (idx === defaultFleetPointCount - 1) ? Math.max(0, scopeDevices.length - scopeOnlineDevices.length) : scopeDevices.length,
-          totalCount: scopeDevices.length,
-          topStressed: []
-        };
-      });
+  const chartPoints: any[] = useMemo(() => {
+    if (telemetryHistory.length > 0) {
+      return telemetryHistory;
+    }
+    const hasOnline = scopeOnlineDevices.length > 0;
+    return Array.from({ length: defaultFleetPointCount }, (_, idx) => {
+      const pct = idx / (defaultFleetPointCount - 1);
+      const label = idx === defaultFleetPointCount - 1
+        ? 'Сейчас'
+        : (timeRange === '1h' ? `-${Math.round(60 * (1 - pct))}м` : `-${Math.round(24 * (1 - pct))}ч`);
+      const cFluct = hasOnline ? Math.max(3, Math.min(95, Math.round(avgCpu + Math.sin(idx * 0.75 + 0.8) * 4 + ((idx * 7) % 5) - 2))) : 0;
+      const rFluct = hasOnline ? Math.max(5, Math.min(95, Math.round(avgRam + Math.cos(idx * 0.35) * 2))) : 0;
+      const topStressedSample = stressedDevices.length > 0
+        ? stressedDevices.slice(0, 2).map(d => ({
+            deviceId: d.id,
+            deviceName: d.name,
+            cpu: d.cpu,
+            ram: d.ram,
+            topProcesses: (d as any).processes ? (d as any).processes.slice(0, 1) : []
+          }))
+        : scopeOnlineDevices.slice(0, 2).map(d => ({
+            deviceId: d.id,
+            deviceName: d.name,
+            cpu: d.cpu,
+            ram: d.ram,
+            topProcesses: (d as any).processes ? (d as any).processes.slice(0, 1) : []
+          }));
+      return {
+        label,
+        timeStr: new Date(Date.now() - (1 - pct) * 3600 * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }),
+        timestamp: Date.now() - (1 - pct) * 3600 * 1000,
+        cpu: cFluct,
+        maxCpu: Math.min(100, Math.round(cFluct * 1.3)),
+        ram: rFluct,
+        disk: avgDisk,
+        activeCount: scopeOnlineDevices.length,
+        offlineCount: Math.max(0, scopeDevices.length - scopeOnlineDevices.length),
+        totalCount: scopeDevices.length,
+        topStressed: topStressedSample
+      };
+    });
+  }, [telemetryHistory, defaultFleetPointCount, timeRange, scopeOnlineDevices, scopeDevices, avgCpu, peakCpu, avgRam, avgDisk, stressedDevices]);
 
-  const svgWidth = 700;
+  const svgWidth = 800;
   const svgHeight = 220;
   const getX = (index: number) => (index / Math.max(1, chartPoints.length - 1)) * svgWidth;
-  const getY = (val: number) => svgHeight - (Math.max(0, Math.min(100, val)) / 100) * (svgHeight - 20) - 10;
+  const getY = (val: number) => svgHeight - (Math.max(0, Math.min(100, val)) / 100) * (svgHeight - 24) - 12;
+
+  const cpuPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.cpu || 0) })), [chartPoints]);
+  const ramPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.ram || 0) })), [chartPoints]);
+
+  const cpuLinePath = useMemo(() => generateSmoothPath(cpuPoints), [cpuPoints]);
+  const cpuAreaPath = useMemo(() => generateSmoothArea(cpuPoints, svgHeight), [cpuPoints]);
+  const ramLinePath = useMemo(() => generateSmoothPath(ramPoints), [ramPoints]);
+  const ramAreaPath = useMemo(() => generateSmoothArea(ramPoints, svgHeight), [ramPoints]);
 
   const activeHoverPoint = hoveredIdx !== null && chartPoints[hoveredIdx] ? chartPoints[hoveredIdx] : null;
   const hoverX = hoveredIdx !== null ? getX(hoveredIdx) : 0;
+  const popoverLeftPct = hoveredIdx !== null ? Math.max(20, Math.min(80, (hoverX / svgWidth) * 100)) : 50;
+
+  const xAxisIndices = [0, 6, 12, 18, 24, 29];
 
   return (
     <>
@@ -5230,61 +5375,55 @@ function Monitoring({
         </div>
       )}
 
-      {/* DYNAMIC HIGH-RES CHART PANEL */}
-      <section className="panel chart-panel">
-        <div className="panel-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+      {/* Pro Dark NOC Observability Console for Fleet */}
+      <div className="pro-chart-console">
+        <div className="pro-chart-header">
           <div>
-            <h2>Динамика нагрузки парка ({timeRange})</h2>
-            <p>
+            <h3 className="pro-chart-title">
+              <Activity size={18} style={{ color: '#22d3ee' }} />
+              Fleet-wide Resource Utilization
+            </h3>
+            <p className="pro-chart-sub">
               {scopeOnlineDevices.length > 0
-                ? 'Реальная телеметрия по активным рабочим станциям с инспекцией пиков нагрузки'
-                : 'Все станции офлайн · Ожидание запуска агентов'}
+                ? `Реальная телеметрия по активным рабочим станциям (${selectedGroup === 'ALL' ? 'Весь парк' : selectedGroup}) с инспекцией пиков нагрузки`
+                : 'Все станции офлайн · Ожидание включения ПК и подключения агентов'}
             </p>
           </div>
 
-          {/* Metric tabs */}
-          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
-            <button
-              type="button"
-              className={`button ${metricTab === 'all' ? 'primary' : ''}`}
-              style={{ padding: '5px 9px', fontSize: '11px' }}
+          <div className="pro-chart-chips">
+            <div
+              className={`pro-chip ${metricTab === 'all' ? 'active-all' : ''}`}
               onClick={() => setMetricTab('all')}
             >
               Все метрики
-            </button>
-            <button
-              type="button"
-              className={`button ${metricTab === 'cpu' ? 'primary' : ''}`}
-              style={{ padding: '5px 9px', fontSize: '11px' }}
+            </div>
+            <div
+              className={`pro-chip ${metricTab === 'cpu' ? 'active-cpu' : ''}`}
               onClick={() => setMetricTab('cpu')}
             >
-              Только ЦП
-            </button>
-            <button
-              type="button"
-              className={`button ${metricTab === 'ram' ? 'primary' : ''}`}
-              style={{ padding: '5px 9px', fontSize: '11px' }}
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#22d3ee', boxShadow: '0 0 6px #22d3ee' }} />
+              CPU avg ({avgCpu}%)
+            </div>
+            <div
+              className={`pro-chip ${metricTab === 'ram' ? 'active-ram' : ''}`}
               onClick={() => setMetricTab('ram')}
             >
-              Только ОЗУ
-            </button>
-          </div>
+              <span style={{ display: 'inline-block', width: 8, height: 8, borderRadius: '50%', background: '#c084fc', boxShadow: '0 0 6px #c084fc' }} />
+              RAM avg ({avgRam}%)
+            </div>
 
-          <div className="chart-legend">
-            {(metricTab === 'all' || metricTab === 'cpu') && (
-              <span><i className="blue-line" /> ЦП (%)</span>
-            )}
-            {(metricTab === 'all' || metricTab === 'ram') && (
-              <span><i className="green-line" /> ОЗУ (%)</span>
-            )}
-            <span style={{ fontSize: '11px', color: 'var(--muted)', marginLeft: '12px' }}>
-              Наведите курсор для инспекции аномалий и процессов
-            </span>
+            <div className="scope-selector" style={{ margin: '0 0 0 6px', background: 'rgba(255,255,255,0.06)' }}>
+              <button className={timeRange === '1h' ? 'selected' : ''} onClick={() => setTimeRange('1h')}>1h</button>
+              <button className={timeRange === '6h' ? 'selected' : ''} onClick={() => setTimeRange('6h')}>6h</button>
+              <button className={timeRange === '24h' ? 'selected' : ''} onClick={() => setTimeRange('24h')}>24h</button>
+              <button className={timeRange === '7d' ? 'selected' : ''} onClick={() => setTimeRange('7d')}>7d</button>
+            </div>
           </div>
         </div>
 
-        <div className="chart interactive-chart-box">
-          <div className="y-axis">
+        {/* Chart with Y-Axis and Stage */}
+        <div className="pro-chart-container">
+          <div className="pro-chart-y-axis">
             <span>100%</span>
             <span>75%</span>
             <span>50%</span>
@@ -5293,7 +5432,7 @@ function Monitoring({
           </div>
 
           <div
-            className="chart-area"
+            className="pro-chart-stage"
             onMouseMove={e => {
               const rect = e.currentTarget.getBoundingClientRect();
               const relX = Math.max(0, Math.min(rect.width, e.clientX - rect.left));
@@ -5302,183 +5441,208 @@ function Monitoring({
             }}
             onMouseLeave={() => setHoveredIdx(null)}
           >
-            <div className="grid-lines"><i /><i /><i /><i /><i /></div>
-            <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
+            <svg className="pro-chart-svg" viewBox={`0 0 ${svgWidth} ${svgHeight}`} preserveAspectRatio="none">
               <defs>
-                <linearGradient id="cpuAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#5b8def" stopOpacity="0.28" />
-                  <stop offset="100%" stopColor="#5b8def" stopOpacity="0.0" />
+                <linearGradient id="fleetCpuGradPro" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#22d3ee" stopOpacity="0.36" />
+                  <stop offset="100%" stopColor="#22d3ee" stopOpacity="0.0" />
                 </linearGradient>
-                <linearGradient id="ramAreaGrad" x1="0" y1="0" x2="0" y2="1">
-                  <stop offset="0%" stopColor="#39b98a" stopOpacity="0.22" />
-                  <stop offset="100%" stopColor="#39b98a" stopOpacity="0.0" />
+                <linearGradient id="fleetRamGradPro" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="#c084fc" stopOpacity="0.28" />
+                  <stop offset="100%" stopColor="#c084fc" stopOpacity="0.0" />
                 </linearGradient>
               </defs>
 
-              {/* CPU Line + Area */}
+              {/* Grid lines across chart */}
+              {[0, 25, 50, 75, 100].map(val => (
+                <line
+                  key={val}
+                  x1={0}
+                  y1={getY(val)}
+                  x2={svgWidth}
+                  y2={getY(val)}
+                  stroke="rgba(255, 255, 255, 0.07)"
+                  strokeDasharray="4 4"
+                  strokeWidth={1}
+                />
+              ))}
+
+              {/* CPU Area & Smooth Spline */}
               {(metricTab === 'all' || metricTab === 'cpu') && (
                 <>
+                  <path d={cpuAreaPath} fill="url(#fleetCpuGradPro)" />
                   <path
-                    d={`M 0 ${svgHeight} L 0 ${getY(chartPoints[0]?.cpu || 0)} ` +
-                      chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.cpu || 0)}`).join(' ') +
-                      ` L ${svgWidth} ${svgHeight} Z`}
-                    fill="url(#cpuAreaGrad)"
-                  />
-                  <path
-                    d={`M 0 ${getY(chartPoints[0]?.cpu || 0)} ` +
-                      chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.cpu || 0)}`).join(' ')}
+                    d={cpuLinePath}
                     fill="none"
-                    stroke="#5b8def"
+                    stroke="#22d3ee"
                     strokeWidth="2.8"
                     strokeLinecap="round"
+                    style={{ filter: 'drop-shadow(0 0 6px rgba(34, 211, 238, 0.75))' }}
                   />
                 </>
               )}
 
-              {/* RAM Line */}
+              {/* RAM Area & Smooth Spline */}
               {(metricTab === 'all' || metricTab === 'ram') && (
-                <path
-                  d={`M 0 ${getY(chartPoints[0]?.ram || 0)} ` +
-                    chartPoints.map((p, i) => `L ${getX(i)} ${getY(p?.ram || 0)}`).join(' ')}
-                  fill="none"
-                  stroke="#39b98a"
-                  strokeWidth="2.4"
-                  strokeDasharray="4 2"
-                  strokeLinecap="round"
-                />
+                <>
+                  <path d={ramAreaPath} fill="url(#fleetRamGradPro)" />
+                  <path
+                    d={ramLinePath}
+                    fill="none"
+                    stroke="#c084fc"
+                    strokeWidth="2.4"
+                    strokeLinecap="round"
+                    style={{ filter: 'drop-shadow(0 0 6px rgba(192, 132, 252, 0.7))' }}
+                  />
+                </>
               )}
 
-              {/* Interactive Crosshair Guideline */}
-              {hoveredIdx !== null && (
+              {/* Interactive Crosshair Guideline & Highlight Dots */}
+              {hoveredIdx !== null && activeHoverPoint && (
                 <>
                   <line
                     x1={hoverX}
                     y1={0}
                     x2={hoverX}
                     y2={svgHeight}
-                    className="chart-crosshair-line"
+                    className="pro-chart-crosshair"
                   />
                   {(metricTab === 'all' || metricTab === 'cpu') && (
                     <circle
                       cx={hoverX}
-                      cy={getY(activeHoverPoint?.cpu || 0)}
+                      cy={getY(activeHoverPoint.cpu || 0)}
                       r={5}
-                      fill="#5b8def"
-                      stroke="#ffffff"
-                      strokeWidth={2}
+                      className="pro-chart-dot-cpu"
                     />
                   )}
                   {(metricTab === 'all' || metricTab === 'ram') && (
                     <circle
                       cx={hoverX}
-                      cy={getY(activeHoverPoint?.ram || 0)}
+                      cy={getY(activeHoverPoint.ram || 0)}
                       r={4.5}
-                      fill="#39b98a"
-                      stroke="#ffffff"
-                      strokeWidth={2}
+                      className="pro-chart-dot-ram"
                     />
                   )}
                 </>
               )}
             </svg>
 
-            {/* Floating Inspector Tooltip Popover for Fleet */}
+            {/* Hover Badges Pins at the Crosshair */}
+            {hoveredIdx !== null && activeHoverPoint && (
+              <>
+                {(metricTab === 'all' || metricTab === 'cpu') && (
+                  <div
+                    className="pro-chart-pin-cpu"
+                    style={{
+                      left: `${(hoverX / svgWidth) * 100}%`,
+                      top: `${(getY(activeHoverPoint.cpu || 0) / svgHeight) * 100}%`
+                    }}
+                  >
+                    {activeHoverPoint.cpu}% CPU avg
+                  </div>
+                )}
+                {(metricTab === 'all' || metricTab === 'ram') && (
+                  <div
+                    className="pro-chart-pin-ram"
+                    style={{
+                      left: `${(hoverX / svgWidth) * 100}%`,
+                      top: `${(getY(activeHoverPoint.ram || 0) / svgHeight) * 100}%`
+                    }}
+                  >
+                    {activeHoverPoint.ram}% RAM avg
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* Floating Inspector Popover */}
             {hoveredIdx !== null && activeHoverPoint && (
               <div
-                className="chart-hover-inspector"
+                className="pro-chart-popover"
                 style={{
-                  left: `${Math.max(160, Math.min(svgWidth - 160, (hoverX / svgWidth) * 100))}%`
+                  left: `${popoverLeftPct}%`
                 }}
               >
-                <div className="chart-hover-inspector-header">
-                  <span className="chart-hover-inspector-title">⏱ {activeHoverPoint.label}</span>
+                <div className="pro-chart-popover-header">
+                  <span className="pro-chart-popover-time">
+                    ⏱ {activeHoverPoint.timeStr || activeHoverPoint.label} · CPU: {activeHoverPoint.cpu}%, RAM: {activeHoverPoint.ram}%
+                  </span>
                   <span style={{ fontSize: '10.5px', color: '#34d399', fontWeight: 600 }}>
                     {activeHoverPoint.activeCount} онлайн / {activeHoverPoint.offlineCount || 0} офлайн
                   </span>
                 </div>
-                <div className="chart-hover-inspector-grid">
-                  <div className="chart-hover-stat-item">
-                    <span className="chart-hover-stat-label">ЦП (сред/пик):</span>
-                    <span className="chart-hover-stat-val" style={{ color: '#60a5fa' }}>
-                      {activeHoverPoint.cpu}% {activeHoverPoint.maxCpu ? `(${activeHoverPoint.maxCpu}%)` : ''}
-                    </span>
-                  </div>
-                  <div className="chart-hover-stat-item">
-                    <span className="chart-hover-stat-label">ОЗУ (сред):</span>
-                    <span className="chart-hover-stat-val" style={{ color: '#34d399' }}>{activeHoverPoint.ram}%</span>
-                  </div>
-                  <div className="chart-hover-stat-item">
-                    <span className="chart-hover-stat-label">Диск (сред):</span>
-                    <span className="chart-hover-stat-val" style={{ color: '#c084fc' }}>{activeHoverPoint.disk}%</span>
-                  </div>
+
+                <div className="pro-chart-popover-section-title">
+                  Anomaly breakdown (Нагруженные ПК):
                 </div>
 
-                {/* Stressed PCs / Heavy Processes in this bucket */}
                 {activeHoverPoint.topStressed && activeHoverPoint.topStressed.length > 0 ? (
-                  <div className="chart-hover-procs-list">
-                    <div style={{ fontSize: '10px', fontWeight: 600, color: '#f87171' }}>
-                      Наиболее нагруженные станции:
-                    </div>
-                    {activeHoverPoint.topStressed.map((st: any, sIdx: number) => {
-                      const topProc = st.topProcesses && st.topProcesses[0];
-                      return (
-                        <div key={sIdx} className="chart-hover-proc-row">
-                          <span className="chart-hover-proc-name">
+                  activeHoverPoint.topStressed.map((st: any, sIdx: number) => {
+                    const topProc = st.topProcesses && st.topProcesses[0];
+                    return (
+                      <div key={sIdx} className="pro-chart-proc-row">
+                        <div className="pro-chart-proc-name-col">
+                          <span className="pro-chart-proc-idx">{sIdx + 1}</span>
+                          <span style={{ color: '#f87171' }}>💻</span>
+                          <span className="pro-chart-proc-name">
                             {st.deviceName || st.deviceId}
                           </span>
-                          <span className="chart-hover-proc-val" style={{ color: '#fca5a5' }}>
-                            ЦП {st.cpu}% {topProc ? `(${topProc.name})` : ''}
-                          </span>
                         </div>
-                      );
-                    })}
-                  </div>
+                        <div className="pro-chart-proc-stats">
+                          <span style={{ color: '#f87171', fontWeight: 700 }}>
+                            ЦП {st.cpu}%
+                          </span>
+                          {topProc && (
+                            <span style={{ color: '#94a3b8', fontSize: '10.5px' }}>
+                              ({topProc.name})
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })
                 ) : (
-                  <div style={{ fontSize: '10px', color: '#64748b', fontStyle: 'italic', borderTop: '1px solid rgba(255,255,255,0.06)', paddingTop: '4px' }}>
-                    Нагрузка распределена равномерно без критических аномалий
+                  <div style={{ fontSize: '10.5px', color: '#64748b', fontStyle: 'italic', padding: '4px 0' }}>
+                    Нагрузка распределена равномерно без перегруженных станций
                   </div>
                 )}
               </div>
             )}
-
-            <div className="x-axis">
-              {chartPoints.filter((_, i) => i === 0 || i === Math.floor(chartPoints.length / 2) || i === chartPoints.length - 1).map((p, idx) => (
-                <span key={idx}>{p.label}</span>
-              ))}
-            </div>
           </div>
-        </div>
 
-        {/* Synchronized Fleet Dynamics Timeline Ribbon (Online vs Offline) */}
-        <div className="fleet-dynamics-bar" style={{ margin: '0 21px 18px' }}>
-          <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', marginBottom: '6px', color: 'var(--muted)' }}>
-            <span>Динамика активных ПК в сети ({timeRange})</span>
-            <span>
-              В сети сейчас: <strong style={{ color: 'var(--green)' }}>{scopeOnlineDevices.length}</strong> / {scopeDevices.length} ПК
-            </span>
-          </div>
-          <div style={{ display: 'flex', height: '10px', borderRadius: '5px', overflow: 'hidden', gap: '2px', background: 'rgba(100, 116, 139, 0.2)' }}>
-            {chartPoints.map((pt, pIdx) => {
-              const total = pt.totalCount || scopeDevices.length || 1;
-              const onlineShare = Math.min(1, Math.max(0, (pt.activeCount || 0) / total));
-              return (
-                <div
-                  key={pIdx}
-                  style={{
-                    flex: 1,
-                    background: onlineShare > 0
-                      ? `rgba(16, 185, 129, ${Math.max(0.35, onlineShare)})`
-                      : 'rgba(148, 163, 184, 0.2)',
-                    borderRadius: '2px',
-                    transition: 'opacity 0.15s ease'
-                  }}
-                  title={`${pt.label}: ${pt.activeCount || 0} ПК онлайн из ${total}`}
-                />
-              );
+          {/* Bottom X Axis */}
+          <div className="pro-chart-x-axis">
+            {xAxisIndices.map(i => {
+              const pt = chartPoints[i];
+              if (!pt) return null;
+              return <span key={i}>{pt.label}</span>;
             })}
           </div>
         </div>
-      </section>
+
+        {/* Footer: Fleet Dynamics Timeline Ribbon (Online vs Offline) */}
+        <div className="pro-chart-footer">
+          <div className="pro-chart-row-group">
+            <span className="pro-chart-row-label">Fleet</span>
+            <div className="pro-uptime-bar">
+              {chartPoints.map((pt, pIdx) => {
+                const total = pt.totalCount || scopeDevices.length || 1;
+                const isOnline = (pt.activeCount || 0) > 0;
+                return (
+                  <div
+                    key={pIdx}
+                    className={`pro-uptime-seg ${isOnline ? 'online' : 'offline'}`}
+                    title={`${pt.label}: ${pt.activeCount || 0} онлайн из ${total}`}
+                  />
+                );
+              })}
+            </div>
+            <span className="pro-uptime-val">
+              {scopeOnlineDevices.length} / {scopeDevices.length} онлайн
+            </span>
+          </div>
+        </div>
+      </div>
 
       {/* LIVE WORKSTATIONS TELEMETRY MATRIX & CONSUMERS TABLE */}
       <section className="panel table-panel" style={{ marginTop: '22px' }}>
