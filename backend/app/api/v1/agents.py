@@ -740,11 +740,11 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
 
 # Agent heartbeat and telemetry global & group configuration
 agent_settings = {
-    "defaultHeartbeatInterval": 5,
+    "defaultHeartbeatInterval": 60,
     "groupHeartbeatIntervals": {
-        "Servers": 5,
-        "DevOps": 5,
-        "Office": 5
+        "Servers": 30,
+        "DevOps": 30,
+        "Office": 60
     }
 }
 
@@ -1057,7 +1057,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
         except Exception:
             pass
 
-    effective_interval = agent_settings.get("defaultHeartbeatInterval", 5)
+    effective_interval = agent_settings.get("defaultHeartbeatInterval", 60)
     device = None
 
     # Cache all live network neighbors (Get-NetNeighbor) for instant fleet MAC discovery

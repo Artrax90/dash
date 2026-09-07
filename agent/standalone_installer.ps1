@@ -757,7 +757,7 @@ if (`$ServerUrl) {
 `$AgentVersion = '2.9.4'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
-`$script:currentInterval = 5
+`$script:currentInterval = 60
 
 `$mutexName = "Global\WorkstationManagerAgentMutex"
 `$createdNew = `$false
