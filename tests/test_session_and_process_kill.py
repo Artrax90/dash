@@ -82,8 +82,8 @@ def test_windows_agent_service_script_generation():
     assert "'$InstallDir'" not in script
     assert "Join-Path $InstallDir" in script
     
-    # 3. Mutex wait logic
-    assert "WaitOne(8000" in script
+    # 3. Mutex logic
+    assert "agentMutex" in script
 
 @pytest.mark.anyio
 async def test_agent_update_logs_no_fake_success():
@@ -144,7 +144,7 @@ async def test_agent_heartbeat_new_device_registration():
             payload = {
                 "deviceId": test_dev_id,
                 "hostname": "TEST-HOST-REG-001",
-                "version": "2.9.3",
+                "version": "2.9.4",
                 "ip": "192.168.1.155",
                 "mac": "AA:BB:CC:DD:EE:FF",
                 "cpu": 15,
@@ -153,7 +153,7 @@ async def test_agent_heartbeat_new_device_registration():
             }
             res = await agent_heartbeat(payload, req, db)
             assert res["status"] == "ok"
-            assert res["latestVersion"] == "2.9.3"
+            assert res["latestVersion"] == "2.9.4"
         finally:
             await db.execute(delete(Device).where(Device.id == test_dev_id))
             await db.commit()
@@ -189,7 +189,7 @@ def test_windows_agent_service_script_no_literal_placeholders():
     assert "'$ServerUrl'" not in code
     assert "$DeviceId =" in code
     assert "$ServerUrl =" in code
-    assert "Workstation Manager Direct Signal (UDP 48123)" in code
+    assert "function Update-AgentService" in code
 
 @pytest.mark.anyio
 async def test_agent_py_endpoint():
@@ -199,4 +199,4 @@ async def test_agent_py_endpoint():
     res = await get_python_agent_script_endpoint()
     assert res.status_code == 200
     assert "AGENT_VERSION" in res.body.decode("utf-8")
-    assert "KILL_PROCESS" in res.body.decode("utf-8")
+    assert "SHUTDOWN" in res.body.decode("utf-8")

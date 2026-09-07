@@ -51,43 +51,22 @@ $Config = @{
 Set-Content -Path $ConfigFile -Value $Config -Encoding UTF8
 Write-Host "[✓] Configuration saved to $ConfigFile" -ForegroundColor Green
 
-# 2. Deploy Agent Code
+# 2. Download Agent Code
 $AgentScript = Join-Path $InstallDir "agent.py"
-$localCandidates = @(
-    (Join-Path $PSScriptRoot "agent.py"),
-    (Join-Path $PSScriptRoot "agent_standalone.py")
-)
-$foundLocal = $false
-foreach ($cand in $localCandidates) {
-    if (Test-Path $cand) {
-        Copy-Item -Path $cand -Destination $AgentScript -Force -ErrorAction SilentlyContinue
-        Write-Host "[✓] Agent script copied from local package to $AgentScript" -ForegroundColor Green
-        $foundLocal = $true
-        break
-    }
-}
-
-if (-not $foundLocal) {
-    try {
-        Write-Host "[*] Downloading agent payload from server..." -ForegroundColor Gray
-        $AgentUrl = "$ServerUrl/agent.py"
-        Invoke-WebRequest -Uri $AgentUrl -OutFile $AgentScript -UseBasicParsing -TimeoutSec 15
-        Write-Host "[✓] Agent script downloaded to $AgentScript" -ForegroundColor Green
-    } catch {
-        Write-Host "[!] WebRequest download failed ($($_)), attempting direct Python download..." -ForegroundColor Yellow
-        try {
-            & python -c "import urllib.request; urllib.request.urlretrieve('$AgentUrl', r'$AgentScript')"
-            Write-Host "[✓] Agent script downloaded via Python." -ForegroundColor Green
-        } catch {
-            Write-Host "[!] Error downloading agent.py: $_" -ForegroundColor Red
-        }
-    }
-}
-
-# Open UDP port 48123 for Direct LAN Signals
 try {
-    & netsh.exe advfirewall firewall add rule name="Workstation Manager Direct Signal (UDP 48123)" dir=in action=allow protocol=UDP localport=48123 profile=any 2>$null | Out-Null
-} catch {}
+    Write-Host "[*] Downloading agent payload from server..." -ForegroundColor Gray
+    $AgentUrl = "$ServerUrl/agent.py"
+    Invoke-WebRequest -Uri $AgentUrl -OutFile $AgentScript -UseBasicParsing -TimeoutSec 15
+    Write-Host "[✓] Agent script downloaded to $AgentScript" -ForegroundColor Green
+} catch {
+    Write-Host "[!] WebRequest download failed ($($_)), attempting direct Python download..." -ForegroundColor Yellow
+    try {
+        & python -c "import urllib.request; urllib.request.urlretrieve('$AgentUrl', r'$AgentScript')"
+        Write-Host "[✓] Agent script downloaded via Python." -ForegroundColor Green
+    } catch {
+        Write-Host "[!] Error downloading agent.py: $_" -ForegroundColor Red
+    }
+}
 
 # 3. Register Startup Task
 try {

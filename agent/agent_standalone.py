@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.9.3"
+AGENT_VERSION = "2.9.4"
 
 def execute_power_command(action: str, extra: dict = None):
     act = str(action).upper().strip()
@@ -21,9 +21,8 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.9.3")
+        execute_agent_update(server_base, cfg, "2.9.4")
         return
-
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
             subprocess.run("shutdown /r /f /t 0", shell=True)
@@ -63,26 +62,11 @@ def execute_power_command(action: str, extra: dict = None):
         else:
             if sess_id is not None:
                 subprocess.run(f"loginctl terminate-session {sess_id} 2>/dev/null || pkill -KILL -s {sess_id} 2>/dev/null", shell=True)
-    elif act in ["KILL_PROCESS", "TERMINATE_PROCESS"]:
-        target_pid = None
-        target_pname = None
-        if extra:
-            target_pid = extra.get("pid") or (extra.get("extra", {}).get("pid") if isinstance(extra.get("extra"), dict) else None)
-            target_pname = extra.get("processName") or (extra.get("extra", {}).get("processName") if isinstance(extra.get("extra"), dict) else None)
-        if target_pid:
-            if is_win:
-                subprocess.run(f"taskkill /F /PID {target_pid} /T 2>nul", shell=True)
-            else:
-                subprocess.run(f"kill -9 {target_pid} 2>/dev/null", shell=True)
-        if target_pname and is_win:
-            clean_p = target_pname.replace(".exe", "")
-            subprocess.run(f"taskkill /F /IM {clean_p}.exe /T 2>nul", shell=True)
     elif act in ["LOCK"]:
         if is_win:
             subprocess.run("rundll32.exe user32.dll,LockWorkStation", shell=True)
         else:
             subprocess.run("loginctl lock-session || xdg-screensaver lock || true", shell=True)
-
 
 def get_rdp_sessions() -> list:
     sessions = []
@@ -1252,20 +1236,6 @@ def execute_power_command(action: str, extra: dict = None):
                     subprocess.Popen(f"loginctl terminate-session {sess_id} || true", shell=True)
                 else:
                     subprocess.Popen("pkill -KILL -u $(whoami) || true", shell=True)
-        elif act in ["KILL_PROCESS", "TERMINATE_PROCESS"]:
-            target_pid = None
-            target_pname = None
-            if extra:
-                target_pid = extra.get("pid") or (extra.get("extra", {}).get("pid") if isinstance(extra.get("extra"), dict) else None)
-                target_pname = extra.get("processName") or (extra.get("extra", {}).get("processName") if isinstance(extra.get("extra"), dict) else None)
-            if target_pid:
-                if is_win:
-                    subprocess.Popen(f"taskkill /F /PID {target_pid} /T", shell=True)
-                else:
-                    subprocess.Popen(f"kill -9 {target_pid}", shell=True)
-            if target_pname and is_win:
-                clean_p = target_pname.replace(".exe", "")
-                subprocess.Popen(f"taskkill /F /IM {clean_p}.exe /T", shell=True)
         elif act in ["LOCK"]:
             if is_win:
                 subprocess.Popen("rundll32.exe user32.dll,LockWorkStation", shell=True)
@@ -1273,7 +1243,6 @@ def execute_power_command(action: str, extra: dict = None):
                 subprocess.Popen("loginctl lock-session || true", shell=True)
     except Exception as e:
         print(f"[!] Error executing action {act}: {e}")
-
 
 def main():
     print("==================================================")
@@ -1379,21 +1348,7 @@ def main():
                                     threading.Thread(target=send_heartbeat, args=(server_base, cfg), daemon=True).start()
                                     threading.Thread(target=send_inventory, args=(server_base, cfg), daemon=True).start()
                                 else:
-                                    extra_info = {}
-                                    if len(parts) >= 6:
-                                        extra_str = ":".join(parts[5:]).strip()
-                                        subparts = extra_str.split("|")
-                                        if len(subparts) >= 3 and subparts[2]:
-                                            try:
-                                                extra_info["pid"] = int(subparts[2].strip())
-                                            except Exception:
-                                                pass
-                                        if len(subparts) >= 1 and subparts[0]:
-                                            extra_info["sessionId"] = subparts[0].strip()
-                                        if len(subparts) >= 2 and subparts[1]:
-                                            extra_info["username"] = subparts[1].strip()
-                                    execute_power_command(cmd_act, extra=extra_info)
-
+                                    execute_power_command(cmd_act)
         except Exception:
             pass
 
@@ -1538,9 +1493,8 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.3"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.4"
                             u_url = cmd.get("updateUrl") or ""
-
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:
                             execute_power_command(c_act, extra=cmd)
