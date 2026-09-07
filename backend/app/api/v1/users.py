@@ -100,6 +100,25 @@ def require_superadmin(request: Request) -> Dict[str, Any]:
         detail="Отказ в доступе: управление учетными записями и ролями разрешено только администраторам системы."
     )
 
+def require_superadmin_or_fleetadmin(request: Request) -> Dict[str, Any]:
+    users = load_users()
+    if not users:
+        return {"role": "Суперадминистратор", "username": "system"}
+    user = get_current_user_from_request(request)
+    if user and can_manage_fleet_groups(user.get("role")):
+        return user
+    raw_role = request.headers.get("X-User-Role")
+    if raw_role:
+        import urllib.parse
+        role_dec = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+        if can_manage_fleet_groups(role_dec):
+            return {"role": role_dec, "username": "admin"}
+    raise HTTPException(
+        status_code=403,
+        detail="Отказ в доступе: управление разрешено только Суперадминистратору и Администратору парка."
+    )
+
+
 def hash_password(password: str, salt: str = None) -> tuple[str, str]:
     if not salt:
         salt = secrets.token_hex(16)
@@ -204,6 +223,7 @@ class UserCreatePayload(BaseModel):
     scope: str = "Все устройства"
     allowedGroups: List[str] = []
     telegramChatId: str = ""
+    telegramReports: Optional[Dict[str, Any]] = None
     enabled: bool = True
 
 class UserUpdatePayload(BaseModel):
@@ -214,8 +234,10 @@ class UserUpdatePayload(BaseModel):
     scope: Optional[str] = None
     allowedGroups: Optional[List[str]] = None
     telegramChatId: Optional[str] = None
+    telegramReports: Optional[Dict[str, Any]] = None
     enabled: Optional[bool] = None
     newPassword: Optional[str] = None
+
 
 class LoginPayload(BaseModel):
     username: str
@@ -275,14 +297,15 @@ async def setup_initial_admin(payload: InitialAdminSetupPayload):
 
 @router.get("")
 async def list_users(request: Request):
-    require_superadmin(request)
+    require_superadmin_or_fleetadmin(request)
     users = load_users()
     return [sanitize_user(u) for u in users]
 
 @router.post("")
 async def create_user(payload: UserCreatePayload, request: Request):
-    require_superadmin(request)
+    require_superadmin_or_fleetadmin(request)
     users = load_users()
+
     
     # Check if username already exists
     clean_username = payload.username.strip().lower()
@@ -306,6 +329,12 @@ async def create_user(payload: UserCreatePayload, request: Request):
         "scope": payload.scope,
         "allowedGroups": payload.allowedGroups or [],
         "telegramChatId": payload.telegramChatId.strip(),
+        "telegramReports": payload.telegramReports or {
+            "enabled": False,
+            "morningReport": {"enabled": True, "time": "08:00"},
+            "eveningReport": {"enabled": True, "time": "20:00"},
+            "days": [0, 1, 2, 3, 4]
+        },
         "enabled": payload.enabled,
         "lastLogin": "Никогда",
         "passwordHash": pwd_hash,
@@ -317,7 +346,7 @@ async def create_user(payload: UserCreatePayload, request: Request):
 
 @router.put("/{user_id}")
 async def update_user(user_id: str, payload: UserUpdatePayload, request: Request):
-    require_superadmin(request)
+    require_superadmin_or_fleetadmin(request)
     users = load_users()
     for u in users:
         if u["id"] == user_id or u.get("username") == user_id:
@@ -346,6 +375,8 @@ async def update_user(user_id: str, payload: UserUpdatePayload, request: Request
                 u["allowedGroups"] = payload.allowedGroups
             if payload.telegramChatId is not None:
                 u["telegramChatId"] = payload.telegramChatId.strip()
+            if payload.telegramReports is not None:
+                u["telegramReports"] = payload.telegramReports
             if payload.enabled is not None:
                 u["enabled"] = payload.enabled
             if payload.newPassword and payload.newPassword.strip():
@@ -355,6 +386,7 @@ async def update_user(user_id: str, payload: UserUpdatePayload, request: Request
             save_users(users)
             return sanitize_user(u)
     raise HTTPException(status_code=404, detail="User not found")
+
 
 @router.delete("/{user_id}")
 async def delete_user(user_id: str, request: Request):

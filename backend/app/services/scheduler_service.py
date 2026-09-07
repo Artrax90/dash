@@ -494,10 +494,39 @@ class SchedulerService:
                                         target_grp=target_grp,
                                         trigger_type="SCHEDULER_CRON"
                                     )
+
+                # ─────────────────────────────────────────────────────────────
+                # Telegram Scheduled Digest / Reports dispatch
+                # ─────────────────────────────────────────────────────────────
+                try:
+                    from backend.app.api.v1.users import load_users
+                    from backend.app.services.report_service import should_send_user_report, send_scheduled_report_to_user
+                    all_users = load_users()
+                    for u in all_users:
+                        if not u.get("enabled", True) or not u.get("telegramChatId"):
+                            continue
+                        u_id = u.get("id") or u.get("username")
+
+                        # Morning check
+                        if should_send_user_report(u, "morning", current_dt=now):
+                            dedup_key = f"tg_rep_m_{u_id}_{current_minute_key}"
+                            if not self._last_executed_step.get(dedup_key):
+                                self._last_executed_step[dedup_key] = current_minute_key
+                                asyncio.create_task(send_scheduled_report_to_user(u, "morning"))
+
+                        # Evening check
+                        if should_send_user_report(u, "evening", current_dt=now):
+                            dedup_key = f"tg_rep_e_{u_id}_{current_minute_key}"
+                            if not self._last_executed_step.get(dedup_key):
+                                self._last_executed_step[dedup_key] = current_minute_key
+                                asyncio.create_task(send_scheduled_report_to_user(u, "evening"))
+                except Exception as rep_err:
+                    print(f"[Scheduler Report Dispatch] Error checking telegram reports: {rep_err}")
                                 
             except Exception as e:
                 print(f"[Scheduler Error] Loop exception: {e}")
                 
             await asyncio.sleep(5)
+
 
 scheduler_service = SchedulerService()

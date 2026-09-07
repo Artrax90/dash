@@ -791,6 +791,7 @@ function App() {
   const deviceFilter = route.deviceFilter || {};
 
   const isSuperAdmin = isSuperAdminRole(currentUser?.role);
+  const isFleetAdmin = isFleetAdminRole(currentUser?.role);
   const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
 
   const rawNavigation: { label: Page; name: string; icon: typeof LayoutDashboard; group?: string; adminOnly?: boolean }[] = [
@@ -802,14 +803,18 @@ function App() {
     { label: 'Alerts', name: t('nav.alerts'), icon: Bell },
     { label: 'Hardware', name: t('nav.hardware') || 'Аппаратный эталон', icon: Cpu },
     { label: 'Agents', name: t('nav.agents'), icon: Server },
-    { label: 'Users', name: t('nav.users'), icon: UsersIcon, group: t('nav.administration'), adminOnly: true },
+    { label: 'Users', name: t('nav.users'), icon: UsersIcon, group: t('nav.administration'), fleetAdminAllowed: true, adminOnly: true },
     { label: 'Roles', name: t('nav.roles'), icon: ShieldCheck, adminOnly: true },
     { label: 'Telegram', name: t('nav.telegram'), icon: Send, adminOnly: true },
     { label: 'Audit Log', name: t('nav.audit'), icon: Terminal, adminOnly: true },
     { label: 'Settings', name: t('nav.settings'), icon: Settings, adminOnly: true },
   ];
 
-  const navigation = isSuperAdmin ? rawNavigation : rawNavigation.filter(item => !item.adminOnly);
+  const navigation = isSuperAdmin 
+    ? rawNavigation 
+    : isFleetAdmin 
+    ? rawNavigation.filter(item => !item.adminOnly || (item as any).fleetAdminAllowed)
+    : rawNavigation.filter(item => !item.adminOnly);
 
   const notify = (message: string, type?: 'success' | 'error' | 'warning' | 'info') => {
     let resolvedType = type || 'success';
@@ -987,7 +992,7 @@ function App() {
             {page === 'Alerts' && <Alerts onDevice={openDevice} notify={notify} />}
             {page === 'Hardware' && <HardwarePage onDevice={openDevice} onNavigate={handleNavigate} notify={notify} />}
             {page === 'Schedules' && <Schedules notify={notify} />}
-            {page === 'Users' && (isSuperAdmin ? <UsersPage notify={notify} currentUser={currentUser} /> : null)}
+            {page === 'Users' && (isSuperAdmin || isFleetAdmin ? <UsersPage notify={notify} currentUser={currentUser} /> : null)}
             {page === 'Roles' && (isSuperAdmin ? <Roles notify={notify} /> : null)}
             {page === 'Agents' && <AgentsDownloads notify={notify} currentUser={currentUser} />}
             {page === 'Telegram' && (isSuperAdmin ? <TelegramPage notify={notify} /> : null)}
@@ -8790,6 +8795,12 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
   const [newScopeType, setNewScopeType] = useState<'ALL' | 'CUSTOM'>('ALL');
   const [newAllowedGroups, setNewAllowedGroups] = useState<string[]>([]);
   const [newTelegramChatId, setNewTelegramChatId] = useState('');
+  const [newTelegramReports, setNewTelegramReports] = useState<UserTelegramReportsConfig>({
+    enabled: false,
+    morningReport: { enabled: true, time: '08:00' },
+    eveningReport: { enabled: true, time: '20:00' },
+    days: [0, 1, 2, 3, 4]
+  });
 
   // Edit User Form state
   const [editFullName, setEditFullName] = useState('');
@@ -8798,6 +8809,12 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
   const [editScopeType, setEditScopeType] = useState<'ALL' | 'CUSTOM'>('ALL');
   const [editAllowedGroups, setEditAllowedGroups] = useState<string[]>([]);
   const [editTelegramChatId, setEditTelegramChatId] = useState('');
+  const [editTelegramReports, setEditTelegramReports] = useState<UserTelegramReportsConfig>({
+    enabled: false,
+    morningReport: { enabled: true, time: '08:00' },
+    eveningReport: { enabled: true, time: '20:00' },
+    days: [0, 1, 2, 3, 4]
+  });
   const [editEnabled, setEditEnabled] = useState(true);
   const [editNewPassword, setEditNewPassword] = useState('');
   const [showEditPassword, setShowEditPassword] = useState(false);
@@ -9136,6 +9153,148 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
     );
   };
 
+  const dayLabels = [
+    { day: 0, label: 'Пн' },
+    { day: 1, label: 'Вт' },
+    { day: 2, label: 'Ср' },
+    { day: 3, label: 'Чт' },
+    { day: 4, label: 'Пт' },
+    { day: 5, label: 'Сб' },
+    { day: 6, label: 'Вс' },
+  ];
+
+  const renderTelegramReportsConfig = (
+    reportsConfig: UserTelegramReportsConfig,
+    setReportsConfig: React.Dispatch<React.SetStateAction<UserTelegramReportsConfig>>,
+    telegramChatId: string
+  ) => {
+    const toggleDay = (dayNum: number) => {
+      setReportsConfig(prev => {
+        const curDays = prev.days || [];
+        const nextDays = curDays.includes(dayNum)
+          ? curDays.filter(d => d !== dayNum)
+          : [...curDays, dayNum].sort((a, b) => a - b);
+        return { ...prev, days: nextDays };
+      });
+    };
+
+    return (
+      <div style={{ background: 'rgba(59, 130, 246, 0.04)', border: '1px solid rgba(59, 130, 246, 0.2)', borderRadius: '8px', padding: '12px', marginTop: '4px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: reportsConfig.enabled ? '12px' : 0 }}>
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 600, display: 'flex', alignItems: 'center', gap: '6px', color: 'var(--blue)' }}>
+              <Send size={14} /> Автоматические Telegram-отчеты (Утро / Вечер)
+            </div>
+            <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>
+              Сводка по включенным/выключенным ПК и статусу выхода онлайн после ночных событий
+            </div>
+          </div>
+          <label className="switch" style={{ margin: 0 }}>
+            <input
+              type="checkbox"
+              checked={reportsConfig.enabled}
+              onChange={e => setReportsConfig(prev => ({ ...prev, enabled: e.target.checked }))}
+            />
+            <span />
+          </label>
+        </div>
+
+        {!telegramChatId.trim() && reportsConfig.enabled && (
+          <div style={{ fontSize: '11px', color: 'var(--yellow)', background: 'rgba(234,179,8,0.1)', padding: '6px 10px', borderRadius: '4px', marginBottom: '10px' }}>
+            ⚠️ Для получения отчетов обязательно укажите <b>Telegram Chat ID</b> выше!
+          </div>
+        )}
+
+        {reportsConfig.enabled && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', borderTop: '1px dashed rgba(255,255,255,0.1)', paddingTop: '10px' }}>
+            {/* Morning report settings */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.02)', padding: '8px 10px', borderRadius: '6px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer', margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={reportsConfig.morningReport?.enabled ?? true}
+                  onChange={e => setReportsConfig(prev => ({
+                    ...prev,
+                    morningReport: { ...prev.morningReport, enabled: e.target.checked }
+                  }))}
+                />
+                <span>🌅 <b>Утренний отчет</b> (ПК онлайн / оффлайн, ночные перезагрузки и сбои)</span>
+              </label>
+              <input
+                type="time"
+                className="text-input mono"
+                style={{ width: '105px', padding: '3px 8px', fontSize: '12px' }}
+                value={reportsConfig.morningReport?.time || '08:00'}
+                disabled={!(reportsConfig.morningReport?.enabled ?? true)}
+                onChange={e => setReportsConfig(prev => ({
+                  ...prev,
+                  morningReport: { ...prev.morningReport, time: e.target.value }
+                }))}
+              />
+            </div>
+
+            {/* Evening report settings */}
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', background: 'rgba(255,255,255,0.02)', padding: '8px 10px', borderRadius: '6px' }}>
+              <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer', margin: 0 }}>
+                <input
+                  type="checkbox"
+                  checked={reportsConfig.eveningReport?.enabled ?? true}
+                  onChange={e => setReportsConfig(prev => ({
+                    ...prev,
+                    eveningReport: { ...prev.eveningReport, enabled: e.target.checked }
+                  }))}
+                />
+                <span>🌆 <b>Вечерний отчет</b> (оставленные включенными ПК, экономия питания)</span>
+              </label>
+              <input
+                type="time"
+                className="text-input mono"
+                style={{ width: '105px', padding: '3px 8px', fontSize: '12px' }}
+                value={reportsConfig.eveningReport?.time || '20:00'}
+                disabled={!(reportsConfig.eveningReport?.enabled ?? true)}
+                onChange={e => setReportsConfig(prev => ({
+                  ...prev,
+                  eveningReport: { ...prev.eveningReport, time: e.target.value }
+                }))}
+              />
+            </div>
+
+            {/* Days of week selector */}
+            <div>
+              <div style={{ fontSize: '11px', color: 'var(--muted)', fontWeight: 600, marginBottom: '6px' }}>
+                📅 Дни отправки отчетов (по времени сервера):
+              </div>
+              <div style={{ display: 'flex', gap: '6px' }}>
+                {dayLabels.map(d => {
+                  const isChecked = (reportsConfig.days || []).includes(d.day);
+                  return (
+                    <button
+                      key={d.day}
+                      type="button"
+                      className={`badge ${isChecked ? 'match' : ''}`}
+                      style={{
+                        cursor: 'pointer',
+                        padding: '4px 10px',
+                        fontSize: '11px',
+                        fontWeight: isChecked ? 600 : 400,
+                        border: isChecked ? '1px solid var(--blue)' : '1px solid var(--border)',
+                        background: isChecked ? 'rgba(59, 130, 246, 0.25)' : 'rgba(255,255,255,0.03)',
+                        color: isChecked ? 'var(--blue)' : 'inherit',
+                      }}
+                      onClick={() => toggleDay(d.day)}
+                    >
+                      {d.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  };
+
   const openAddModal = () => {
     const autoPwd = generatePassword();
     setNewFullName('');
@@ -9147,6 +9306,12 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
     setNewScopeType('ALL');
     setNewAllowedGroups([]);
     setNewTelegramChatId('');
+    setNewTelegramReports({
+      enabled: false,
+      morningReport: { enabled: true, time: '08:00' },
+      eveningReport: { enabled: true, time: '20:00' },
+      days: [0, 1, 2, 3, 4]
+    });
     setShowAddUserModal(true);
   };
 
@@ -9159,6 +9324,12 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
     setEditScopeType(hasCustomGroups ? 'CUSTOM' : 'ALL');
     setEditAllowedGroups(user.allowedGroups || []);
     setEditTelegramChatId(user.telegramChatId || '');
+    setEditTelegramReports(user.telegramReports || {
+      enabled: false,
+      morningReport: { enabled: true, time: '08:00' },
+      eveningReport: { enabled: true, time: '20:00' },
+      days: [0, 1, 2, 3, 4]
+    });
     setEditEnabled(user.enabled);
     setEditNewPassword('');
     setShowEditPassword(false);
@@ -9180,6 +9351,7 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
         scope: scopeStr,
         allowedGroups: newScopeType === 'ALL' ? [] : newAllowedGroups,
         telegramChatId: newTelegramChatId.trim(),
+        telegramReports: newTelegramReports,
         enabled: true,
       });
 
@@ -9211,6 +9383,7 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
         scope: scopeStr,
         allowedGroups: editScopeType === 'ALL' ? [] : editAllowedGroups,
         telegramChatId: editTelegramChatId.trim(),
+        telegramReports: editTelegramReports,
         enabled: editEnabled,
       };
 
@@ -9349,17 +9522,37 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
 
                 <div>
                   {user.telegramChatId ? (
-                    <button
-                      className="badge"
-                      style={{ background: 'rgba(59, 130, 246, 0.12)', color: 'var(--blue)', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', padding: '3px 8px' }}
-                      onClick={() => {
-                        navigator.clipboard.writeText(user.telegramChatId!);
-                        notify(`Telegram ID ${user.telegramChatId} скопирован в буфер`);
-                      }}
-                      title="Кликните, чтобы скопировать Telegram Chat ID"
-                    >
-                      <Send size={11} /> {user.telegramChatId}
-                    </button>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '3px' }}>
+                      <button
+                        className="badge"
+                        style={{ background: 'rgba(59, 130, 246, 0.12)', color: 'var(--blue)', border: 'none', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', padding: '3px 8px' }}
+                        onClick={() => {
+                          navigator.clipboard.writeText(user.telegramChatId!);
+                          notify(`Telegram ID ${user.telegramChatId} скопирован в буфер`);
+                        }}
+                        title="Кликните, чтобы скопировать Telegram Chat ID"
+                      >
+                        <Send size={11} /> {user.telegramChatId}
+                      </button>
+                      {user.telegramReports?.enabled && (
+                        <span
+                          className="badge"
+                          style={{
+                            fontSize: '10px',
+                            padding: '1px 5px',
+                            background: 'rgba(16, 185, 129, 0.12)',
+                            color: 'var(--green)',
+                            display: 'inline-flex',
+                            alignItems: 'center',
+                            gap: '3px',
+                            width: 'fit-content'
+                          }}
+                          title={`Отчеты включены: Утро ${user.telegramReports.morningReport?.time || '08:00'} | Вечер ${user.telegramReports.eveningReport?.time || '20:00'}`}
+                        >
+                          📋 Отчеты: {user.telegramReports.morningReport?.enabled ? `🌅 ${user.telegramReports.morningReport?.time || '08:00'}` : ''} {user.telegramReports.eveningReport?.enabled ? `🌆 ${user.telegramReports.eveningReport?.time || '20:00'}` : ''}
+                        </span>
+                      )}
+                    </div>
                   ) : (
                     <span style={{ fontSize: '11px', color: 'var(--muted)' }}>— TG не привязан</span>
                   )}
@@ -9535,6 +9728,9 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
                   💡 Укажите числовой Chat ID (бот подскажет по команде <code>/id</code>) либо Telegram никнейм (например, <code>@ivanov</code>).
                 </span>
               </div>
+
+              {/* Automated Telegram Reports */}
+              {renderTelegramReportsConfig(newTelegramReports, setNewTelegramReports, newTelegramChatId)}
             </div>
 
             <div className="modal-actions" style={{ marginTop: '20px' }}>
@@ -9678,6 +9874,9 @@ function UsersPage({ notify, currentUser }: { notify: (message: string) => void;
                   💡 Укажите числовой Chat ID (бот подскажет по команде <code>/id</code>) либо Telegram никнейм (например, <code>@ivanov</code>).
                 </span>
               </div>
+
+              {/* Automated Telegram Reports */}
+              {renderTelegramReportsConfig(editTelegramReports, setEditTelegramReports, editTelegramChatId)}
 
               {/* Enabled Switch */}
               <div className="setting-row" style={{ padding: '8px 0', margin: 0 }}>

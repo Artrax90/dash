@@ -348,12 +348,16 @@ def build_main_menu(user_name: str, role: str, scope_desc: str) -> Dict[str, Any
                     {"text": "📊 Сводка сети", "callback_data": "menu:status"}
                 ],
                 [
-                    {"text": "🖥 Все ПК (общий список)", "callback_data": "menu:devices:0"},
-                    {"text": "🔄 Обновить", "callback_data": "menu:main"}
+                    {"text": "📋 Отчеты (Утро/Вечер)", "callback_data": "report:menu"},
+                    {"text": "🖥 Все ПК (общий список)", "callback_data": "menu:devices:0"}
+                ],
+                [
+                    {"text": "🔄 Обновить меню", "callback_data": "menu:main"}
                 ]
             ]
         }
     }
+
 
 def build_hierarchy_buildings_view(user_devices: List[Dict[str, Any]], scope_desc: str) -> Dict[str, Any]:
     bld_map = collections.defaultdict(list)
@@ -664,6 +668,111 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         res = build_status_view(user_devices, scope_desc)
         res["alert"] = "Сводка обновлена"
         return res
+
+    if data == "report:menu":
+        return {
+            "text": (
+                f"📋 <b>Центр отчетов Workstation Manager</b>\n\n"
+                f"👤 Оператор: <b>{user_name}</b>\n"
+                f"🌐 Зона ответственности: <b>{scope_desc}</b>\n\n"
+                f"<i>Выберите тип отчета для мгновенного формирования:</i>"
+            ),
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "🌅 Утренний отчет (сводка за ночь)", "callback_data": "report:morning"}
+                    ],
+                    [
+                        {"text": "🌇 Вечерний отчет (контроль включенных)", "callback_data": "report:evening"}
+                    ],
+                    [
+                        {"text": "⬅️ Главное меню", "callback_data": "menu:main"}
+                    ]
+                ]
+            },
+            "alert": "Меню отчетов"
+        }
+
+    if data == "report:morning":
+        from backend.app.services.report_service import generate_morning_report, format_morning_report_message
+        from backend.app.api.v1.devices import load_device_power_logs
+        power_logs = load_device_power_logs()
+        rep = generate_morning_report(matched_user, user_devices, power_logs)
+        msg_text = format_morning_report_message(rep)
+        
+        keyboard = []
+        if rep.get("unreturned_devices") and role != "Наблюдатель":
+            # Add quick wake button for all unreturned devices
+            keyboard.append([{"text": f"⚡️ Включить проблемные ПК ({len(rep['unreturned_devices'])})", "callback_data": "report:wakeproblems"}])
+        keyboard.append([
+            {"text": "🔄 Обновить отчет", "callback_data": "report:morning"},
+            {"text": "📋 Меню отчетов", "callback_data": "report:menu"}
+        ])
+        keyboard.append([{"text": "🏠 Главное меню", "callback_data": "menu:main"}])
+        return {
+            "text": msg_text,
+            "reply_markup": {"inline_keyboard": keyboard},
+            "alert": "Утренний отчет сформирован"
+        }
+
+    if data == "report:evening":
+        from backend.app.services.report_service import generate_evening_report, format_evening_report_message
+        rep = generate_evening_report(matched_user, user_devices)
+        msg_text = format_evening_report_message(rep)
+        
+        keyboard = []
+        if rep.get("active_devices") and role != "Наблюдатель":
+            keyboard.append([{"text": f"🛑 Выключить оставшиеся ({len(rep['active_devices'])})", "callback_data": "report:shutdownactive"}])
+        keyboard.append([
+            {"text": "🔄 Обновить отчет", "callback_data": "report:evening"},
+            {"text": "📋 Меню отчетов", "callback_data": "report:menu"}
+        ])
+        keyboard.append([{"text": "🏠 Главное меню", "callback_data": "menu:main"}])
+        return {
+            "text": msg_text,
+            "reply_markup": {"inline_keyboard": keyboard},
+            "alert": "Вечерний отчет сформирован"
+        }
+
+    if data == "report:wakeproblems":
+        if role == "Наблюдатель":
+            return {"text": "🚫 Роль «Наблюдатель» имеет доступ только для чтения.", "alert": "Отказ: Наблюдатель"}
+        from backend.app.services.report_service import generate_morning_report
+        from backend.app.api.v1.devices import load_device_power_logs
+        power_logs = load_device_power_logs()
+        rep = generate_morning_report(matched_user, user_devices, power_logs)
+        woken = 0
+        for u_dev in rep.get("unreturned_devices", []):
+            d_match = next((d for d in user_devices if d.get("id") == u_dev.get("id")), None)
+            if d_match and d_match.get("mac"):
+                send_wol_packet(d_match["mac"])
+                woken += 1
+        return {
+            "text": f"⚡️ <b>Сигнал Wake-on-LAN отправлен на {woken} проблемных ПК!</b>",
+            "reply_markup": {"inline_keyboard": [[{"text": "🌅 К утреннему отчету", "callback_data": "report:morning"}]]},
+            "alert": f"WoL на {woken} ПК"
+        }
+
+    if data == "report:shutdownactive":
+        if role == "Наблюдатель":
+            return {"text": "🚫 Роль «Наблюдатель» имеет доступ только для чтения.", "alert": "Отказ: Наблюдатель"}
+        from backend.app.services.report_service import generate_evening_report
+        from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+        rep = generate_evening_report(matched_user, user_devices)
+        shut = 0
+        for a_dev in rep.get("active_devices", []):
+            d_match = next((d for d in user_devices if d.get("id") == a_dev.get("id")), None)
+            if d_match:
+                if d_match.get("ip"):
+                    send_direct_lan_power_signal(ip_address=d_match["ip"], action="SHUTDOWN", device_id=d_match.get("id"), mac_address=d_match.get("mac", ""), hostname=d_match.get("hostname", ""))
+                queue_device_command(d_match.get("id"), "SHUTDOWN", force=True, reason=f"Evening report bulk shutdown by {operator_label}")
+                shut += 1
+        return {
+            "text": f"🛑 <b>Команда выключения отправлена на {shut} работающих ПК!</b>",
+            "reply_markup": {"inline_keyboard": [[{"text": "🌇 К вечернему отчету", "callback_data": "report:evening"}]]},
+            "alert": f"Выключение {shut} ПК"
+        }
+
 
     if data.startswith("do:wakerm:"):
         _, _, bld_name, flr_name, rm_name = data.split(":", 4)
@@ -1183,8 +1292,32 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
     if cmd == "/status":
         return build_status_view(user_devices, scope_desc)
 
+    if cmd in ["/report", "/reports", "/digest"]:
+        return {
+            "text": (
+                f"📋 <b>Центр отчетов Workstation Manager</b>\n\n"
+                f"👤 Оператор: <b>{user_name}</b>\n"
+                f"🌐 Зона ответственности: <b>{scope_desc}</b>\n\n"
+                f"<i>Выберите тип отчета для мгновенного формирования:</i>"
+            ),
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "🌅 Утренний отчет (сводка за ночь)", "callback_data": "report:morning"}
+                    ],
+                    [
+                        {"text": "🌇 Вечерний отчет (контроль включенных)", "callback_data": "report:evening"}
+                    ],
+                    [
+                        {"text": "⬅️ Главное меню", "callback_data": "menu:main"}
+                    ]
+                ]
+            }
+        }
+
     if cmd == "/devices":
         return build_devices_view(user_devices, scope_desc, 0)
+
 
     if cmd in ["/wake", "/shutdown", "/reboot", "/poweroff"]:
         if not arg:

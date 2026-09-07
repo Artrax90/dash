@@ -333,6 +333,19 @@ export interface CustomRole {
   userCount: number;
 }
 
+export interface UserTelegramReportsConfig {
+  enabled: boolean;
+  morningReport: {
+    enabled: boolean;
+    time: string; // HH:MM
+  };
+  eveningReport: {
+    enabled: boolean;
+    time: string; // HH:MM
+  };
+  days: number[]; // 0=Mon, 1=Tue, 2=Wed, 3=Thu, 4=Fri, 5=Sat, 6=Sun
+}
+
 export interface ManagedUser {
   id: string;
   username: string;
@@ -345,7 +358,9 @@ export interface ManagedUser {
   enabled: boolean;
   lastLogin: string;
   telegramChatId?: string;
+  telegramReports?: UserTelegramReportsConfig;
 }
+
 
 export interface BulkOperationRequest {
   action: 'WAKE' | 'SHUTDOWN' | 'REBOOT' | 'LOGOFF_SESSIONS' | 'UPDATE_AGENT' | 'SET_GROUP' | 'SET_ALERT_POLICY';
