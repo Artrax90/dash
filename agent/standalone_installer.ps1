@@ -1,4 +1,4 @@
-﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
 $embeddedServer = "__SERVER_URL__"
 $embeddedToken = "__TOKEN__"
 
@@ -1973,8 +1973,106 @@ while (`$initAttempts -lt 30) {
 
 `$lastHeartbeat = Get-Date
 
+`$script:wsClient = `$null
+`$script:wsSegment = `$null
+`$script:wsBuffer = `$null
+`$script:wsReceiveTask = `$null
+`$script:lastWsAttempt = [datetime]::MinValue
+`$script:lastWsPing = [datetime]::MinValue
+
+function Maintain-WebSocketConnection() {
+    try {
+        if (`$script:wsClient -and `$script:wsClient.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            return `$true
+        }
+        `$now = Get-Date
+        if ((`$now - `$script:lastWsAttempt).TotalSeconds -lt 8) {
+            return `$false
+        }
+        `$script:lastWsAttempt = `$now
+
+        if (`$script:wsClient) {
+            try { `$script:wsClient.Dispose() } catch {}
+            `$script:wsClient = `$null
+            `$script:wsReceiveTask = `$null
+        }
+
+        `$baseWs = (`$ServerUrl -replace '(?i)^http://', 'ws://' -replace '(?i)^https://', 'wss://').TrimEnd('/')
+        `$wsEndpoint = "`$baseWs/api/v1/agents/ws?deviceId=`$DeviceId&hostname=`$env:COMPUTERNAME&mac=`$DeviceMac&token=`$Token"
+        `$newWs = New-Object System.Net.WebSockets.ClientWebSocket
+        `$cts = New-Object System.Threading.CancellationTokenSource
+        `$cts.CancelAfter(4000)
+        `$uri = New-Object System.Uri(`$wsEndpoint)
+        `$connTask = `$newWs.ConnectAsync(`$uri, `$cts.Token)
+        `$connTask.Wait()
+
+        if (`$newWs.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            `$script:wsClient = `$newWs
+            `$script:wsBuffer = New-Object byte[] 65536
+            `$script:wsSegment = New-Object "System.ArraySegment[byte]" (,`$script:wsBuffer)
+            `$script:wsReceiveTask = `$script:wsClient.ReceiveAsync(`$script:wsSegment, [System.Threading.CancellationToken]::None)
+            `$script:lastWsPing = Get-Date
+            return `$true
+        }
+    } catch {}
+    return `$false
+}
+
 try {
     while (`$true) {
+        # 1. Maintain WebSocket Real-time Command Connection
+        Maintain-WebSocketConnection | Out-Null
+        if (`$script:wsClient -and `$script:wsClient.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            try {
+                if (`$script:wsReceiveTask -and `$script:wsReceiveTask.IsCompleted) {
+                    if (-not `$script:wsReceiveTask.IsFaulted -and `$script:wsReceiveTask.Result) {
+                        `$res = `$script:wsReceiveTask.Result
+                        if (`$res.MessageType -eq [System.Net.WebSockets.WebSocketMessageType]::Close) {
+                            try { `$script:wsClient.CloseOutputAsync([System.Net.WebSockets.WebSocketCloseStatus]::NormalClosure, "Closing", [System.Threading.CancellationToken]::None).Wait(500) } catch {}
+                            `$script:wsClient = `$null
+                            `$script:wsReceiveTask = `$null
+                        } elseif (`$res.Count -gt 0) {
+                            `$wsMsgText = [System.Text.Encoding]::UTF8.GetString(`$script:wsBuffer, 0, `$res.Count)
+                            if (`$wsMsgText) {
+                                try {
+                                    `$wsCmd = `$wsMsgText | ConvertFrom-Json
+                                    if (`$wsCmd) {
+                                        `$wsAct = if (`$wsCmd.action) { `$wsCmd.action } elseif (`$wsCmd.type) { `$wsCmd.type } else { "" }
+                                        if (`$wsAct -match '(?i)WELCOME|PONG|ACK|HEARTBEAT_ACK') {
+                                            # Keep-alive or acknowledgment
+                                        } elseif (`$wsAct -match '(?i)UPDATE') {
+                                            Update-AgentService (`$wsCmd.targetVersion)
+                                        } elseif (`$wsAct) {
+                                            Execute-PowerCommand `$wsAct `$true `$wsCmd
+                                        }
+                                    }
+                                } catch {}
+                            }
+                            `$script:wsReceiveTask = `$script:wsClient.ReceiveAsync(`$script:wsSegment, [System.Threading.CancellationToken]::None)
+                        }
+                    } else {
+                        `$script:wsClient = `$null
+                        `$script:wsReceiveTask = `$null
+                    }
+                }
+
+                # Periodic WebSocket Ping (every 25s)
+                `$nowWs = Get-Date
+                if ((`$nowWs - `$script:lastWsPing).TotalSeconds -ge 25) {
+                    `$script:lastWsPing = `$nowWs
+                    try {
+                        `$pingBytes = [System.Text.Encoding]::UTF8.GetBytes('{"type":"PING"}')
+                        `$pingSeg = New-Object "System.ArraySegment[byte]" (,`$pingBytes)
+                        `$script:wsClient.SendAsync(`$pingSeg, [System.Net.WebSockets.WebSocketMessageType]::Text, `$true, [System.Threading.CancellationToken]::None).Wait(1000)
+                    } catch {}
+                }
+            } catch {
+                `$script:wsClient = `$null
+                `$script:wsReceiveTask = `$null
+            }
+        }
+
+        # 2. Check Direct LAN UDP Signal (port 48123)
         if (-not `$udpListener) {
             try {
                 `$udpListener = New-Object System.Net.Sockets.UdpClient 48123

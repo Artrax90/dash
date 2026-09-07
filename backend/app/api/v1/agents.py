@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Depends, Response, Request
+from fastapi import APIRouter, HTTPException, Depends, Response, Request, WebSocket, WebSocketDisconnect
 from typing import Dict, Any, List
+import asyncio
 import secrets
 import os
 import io
@@ -881,6 +882,23 @@ def queue_device_command(device_id: str, action: str, force: bool = True, reason
         pending_device_commands[device_id].append(cmd)
         pending_device_commands[device_id.upper()].append(cmd)
         pending_device_commands[device_id.lower()].append(cmd)
+
+        # Real-time WebSocket push if agent is connected
+        try:
+            if ws_manager.is_agent_connected(device_id):
+                loop = None
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    pass
+                if loop and loop.is_running():
+                    loop.create_task(ws_manager.send_agent_command(device_id, cmd))
+                else:
+                    asyncio.run(ws_manager.send_agent_command(device_id, cmd))
+                print(f"[WebSocket Push] Dispatched {action} to active agent {device_id} ({cmd['id']})")
+        except Exception as e:
+            print(f"[WebSocket Push] Notice: could not push via WS: {e}")
+
     print(f"[Command Queue] Queued {action} for {device_id} ({cmd['id']})")
     return cmd
 
@@ -903,6 +921,72 @@ async def get_pending_commands(device_id: str):
     View pending commands for a specific device.
     """
     return pending_device_commands.get(device_id, [])
+
+@router.websocket("/ws")
+async def agent_websocket_endpoint(
+    websocket: WebSocket,
+    deviceId: str = "",
+    device_id: str = "",
+    token: str = "",
+    hostname: str = "",
+    mac: str = ""
+):
+    target_id = (deviceId or device_id or "").strip()
+    target_host = (hostname or "").strip()
+    await ws_manager.register_agent(target_id, websocket, hostname=target_host)
+    print(f"[Agent WS] Agent connected: deviceId='{target_id}', host='{target_host}'")
+
+    try:
+        await websocket.send_json({
+            "type": "WELCOME",
+            "deviceId": target_id,
+            "status": "connected",
+            "latestVersion": settings.LATEST_AGENT_VERSION
+        })
+        if target_id and target_id in pending_device_commands:
+            cmds = list(pending_device_commands.get(target_id, []))
+            pending_device_commands[target_id] = []
+            pending_device_commands.pop(target_id.upper(), None)
+            pending_device_commands.pop(target_id.lower(), None)
+            if target_host:
+                pending_device_commands.pop(target_host, None)
+                pending_device_commands.pop(target_host.upper(), None)
+            for cmd in cmds:
+                await websocket.send_json(cmd)
+    except Exception as e:
+        print(f"[Agent WS] Welcome error: {e}")
+
+    try:
+        while True:
+            data = await websocket.receive_text()
+            if not data:
+                continue
+            try:
+                msg = json.loads(data)
+            except Exception:
+                msg = {"type": "RAW", "text": data}
+
+            m_type = str(msg.get("type") or msg.get("action") or "").upper()
+            if m_type == "PING":
+                await websocket.send_json({"type": "PONG", "timestamp": time.time()})
+            elif m_type == "HEARTBEAT":
+                await websocket.send_json({
+                    "type": "HEARTBEAT_ACK",
+                    "status": "ok",
+                    "latestVersion": settings.LATEST_AGENT_VERSION
+                })
+            elif m_type in ["CMD_RESULT", "COMMAND_RESULT", "RESULT"]:
+                cmd_id = msg.get("cmdId") or msg.get("id")
+                cmd_status = msg.get("status") or "executed"
+                print(f"[Agent WS] Command {cmd_id} on {target_id}: {cmd_status}")
+                await websocket.send_json({"type": "ACK", "cmdId": cmd_id})
+    except WebSocketDisconnect:
+        ws_manager.unregister_agent(target_id, hostname=target_host)
+        print(f"[Agent WS] Disconnected: {target_id} ({target_host})")
+    except Exception as e:
+        ws_manager.unregister_agent(target_id, hostname=target_host)
+        print(f"[Agent WS] Connection closed: {target_id} ({e})")
+
 
 @router.post("/heartbeat")
 async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)):
