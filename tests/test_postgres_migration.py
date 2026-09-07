@@ -138,4 +138,45 @@ def test_dry_run_flag(tmp_path):
         actual_cnt = conn.execute(text("SELECT count(*) FROM users")).scalar()
         assert actual_cnt == 0
 
+def test_orphaned_foreign_key_handling(tmp_path):
+    src_db_file = str(tmp_path / "orphans_src.db")
+    src_engine = create_engine(f"sqlite:///{src_db_file}")
+    Base.metadata.create_all(src_engine)
+
+    with src_engine.begin() as conn:
+        # Insert 1 real device
+        conn.execute(text("""
+            INSERT INTO devices (id, name, hostname, group_name, ip_address, mac_address)
+            VALUES ('PC-REAL', 'Real PC', 'real-pc', 'Office', '10.0.0.1', '00:11:22:33:44:01')
+        """))
+        # Insert alert for real device
+        conn.execute(text("""
+            INSERT INTO alerts (id, device_id, alert_type, description)
+            VALUES ('ALT-01', 'PC-REAL', 'INFO', 'Real alert')
+        """))
+        # Insert alert for GHOST device (device_id does not exist in devices table)
+        conn.execute(text("""
+            INSERT INTO alerts (id, device_id, alert_type, description)
+            VALUES ('ALT-02', 'PC-GHOST', 'HARDWARE_MISMATCH', 'Ghost alert for deleted PC')
+        """))
+
+    dst_db_file = str(tmp_path / "orphans_dst.db")
+    dst_engine = create_engine(f"sqlite:///{dst_db_file}")
+    Base.metadata.create_all(dst_engine)
+
+    # Enable foreign keys on target SQLite connection to mimic PostgreSQL strictness
+    with dst_engine.begin() as conn:
+        conn.execute(text("PRAGMA foreign_keys = ON;"))
+
+    summary = migrate_data(src_engine, dst_engine, truncate=True)
+    assert summary["alerts"]["src"] == 2
+    assert summary["alerts"]["dst"] == 2
+
+    with dst_engine.connect() as conn:
+        # Verify ALT-02 was preserved (either device_id set to NULL or placeholder created)
+        row = conn.execute(text("SELECT id, device_id FROM alerts WHERE id='ALT-02'")).fetchone()
+        assert row is not None
+        assert row[0] == "ALT-02"
+
+
 

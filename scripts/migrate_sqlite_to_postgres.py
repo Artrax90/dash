@@ -190,6 +190,8 @@ def migrate_data(
                     logger.debug(f"Truncate notice for {table.name}: {e}")
 
     # 2. Migrate each table in dependency order
+    valid_keys_by_table: Dict[str, Set[Any]] = {}
+
     for table in ordered_tables:
         table_name = table.name
         if table_name not in src_tables:
@@ -213,12 +215,70 @@ def migrate_data(
         # Transform rows
         transformed_rows = [transform_row_for_target(table, r) for r in raw_rows]
 
+        # Sanitize foreign keys: check for orphaned records (e.g. alerts from deleted devices)
+        if table.foreign_keys:
+            cleaned_rows = []
+            for r in transformed_rows:
+                skip_row = False
+                for fk in table.foreign_keys:
+                    parent_tbl = fk.column.table.name
+                    child_col = fk.parent.name
+                    val = r.get(child_col)
+                    if val is not None:
+                        if parent_tbl not in valid_keys_by_table:
+                            try:
+                                with dst_engine.connect() as conn:
+                                    pk_n = list(fk.column.table.primary_key.columns)[0].name
+                                    res = conn.execute(text(f"SELECT \"{pk_n}\" FROM \"{parent_tbl}\""))
+                                    valid_keys_by_table[parent_tbl] = {row[0] for row in res.fetchall()}
+                            except Exception:
+                                valid_keys_by_table[parent_tbl] = set()
+
+                        known_pks = valid_keys_by_table[parent_tbl]
+                        if val not in known_pks:
+                            if fk.parent.nullable:
+                                logger.info(f"[{table_name}] Setting orphaned FK {child_col}='{val}' to NULL (parent {parent_tbl} not found).")
+                                r[child_col] = None
+                            else:
+                                if parent_tbl == "devices" and not dry_run:
+                                    placeholder = {
+                                        "id": str(val),
+                                        "name": f"Archived ({val})",
+                                        "hostname": f"archived-{str(val).lower()}",
+                                        "group_name": "Archived",
+                                        "ip_address": "0.0.0.0",
+                                        "mac_address": "00:00:00:00:00:00",
+                                    }
+                                    try:
+                                        with dst_engine.begin() as dst_conn:
+                                            dst_conn.execute(Base.metadata.tables["devices"].insert(), [placeholder])
+                                        known_pks.add(val)
+                                        logger.info(f"Created archived placeholder device for orphaned record: {val}")
+                                    except Exception as ex:
+                                        logger.warning(f"Could not create placeholder device {val}: {ex}. Skipping row.")
+                                        skip_row = True
+                                else:
+                                    logger.warning(f"[{table_name}] Skipping row with non-nullable orphaned FK {child_col}='{val}'.")
+                                    skip_row = True
+                if not skip_row:
+                    cleaned_rows.append(r)
+            transformed_rows = cleaned_rows
+
         # Insert rows into destination in batches
-        if not dry_run:
+        if not dry_run and transformed_rows:
             with dst_engine.begin() as dst_conn:
                 for i in range(0, len(transformed_rows), batch_size):
                     batch = transformed_rows[i:i + batch_size]
                     dst_conn.execute(table.insert(), batch)
+
+        # Update known primary keys for child tables
+        if table.primary_key:
+            pk_col = list(table.primary_key.columns)[0].name
+            if table_name not in valid_keys_by_table:
+                valid_keys_by_table[table_name] = set()
+            for r in transformed_rows:
+                if pk_col in r and r[pk_col] is not None:
+                    valid_keys_by_table[table_name].add(r[pk_col])
 
         # Count destination rows
         if not dry_run:
