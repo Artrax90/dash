@@ -314,6 +314,11 @@ def get_windows_agent_service_ps1(base_url: str, device_id: str = "", mac: str =
             code_part = code_part.replace("`$DeviceMac = '$mac'", f"`$DeviceMac = '{mac}'")
         if base_url:
             code_part = code_part.replace("`$ServerUrl = '$ServerUrl'", f"`$ServerUrl = '{base_url}'")
+        
+        # Clean any literal single-quoted placeholders
+        code_part = code_part.replace("'$InstallDir'", "$InstallDir")
+        code_part = code_part.replace("'$Token'", "''")
+        code_part = code_part.replace("'$osCaption'", "''")
         code_part = code_part.replace("`$", "$")
         return code_part
     return content

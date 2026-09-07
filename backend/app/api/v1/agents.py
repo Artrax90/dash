@@ -1114,12 +1114,26 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             device.last_seen = datetime.utcnow()
 
             rep_ver = payload.get("agentVersion") or payload.get("version")
-            if rep_ver and device.agent_version != rep_ver:
-                print(f"[Heartbeat] Device {device.id} agent version updated: {device.agent_version} -> {rep_ver}")
-                device.agent_version = rep_ver
-                if device.id in agent_update_statuses and rep_ver == settings.LATEST_AGENT_VERSION:
-                    agent_update_statuses[device.id]["status"] = "SUCCESS"
-                    agent_update_statuses[device.id]["completedAt"] = datetime.utcnow().isoformat()
+            if rep_ver:
+                if device.agent_version != rep_ver:
+                    print(f"[Heartbeat] Device {device.id} agent version updated: {device.agent_version} -> {rep_ver}")
+                    device.agent_version = rep_ver
+                
+                if rep_ver == settings.LATEST_AGENT_VERSION:
+                    for k in (device.id, device.hostname, device.name):
+                        if k:
+                            agent_update_statuses[k] = {
+                                "status": "SUCCESS",
+                                "version": rep_ver,
+                                "completedAt": datetime.utcnow().isoformat() + "Z"
+                            }
+                    # Also resolve any open UPDATING log entries for this device
+                    for log_ent in agent_update_logs:
+                        if (log_ent.get("deviceId") in (device.id, device.hostname) or log_ent.get("deviceName") in (device.name, device.hostname)) and log_ent.get("status") == "UPDATING":
+                            log_ent["status"] = "SUCCESS"
+                            log_ent["newVersion"] = rep_ver
+                            log_ent["details"] = f"Обновление успешно завершено (v{rep_ver})"
+                            log_ent["timestamp"] = datetime.utcnow().isoformat() + "Z"
 
             # Dynamic Dual-Boot OS detection update
             hb_os_type = payload.get("osType") or payload.get("os_type")
@@ -1715,28 +1729,36 @@ async def report_agent_update_status(payload: Dict[str, Any], db: AsyncSession =
     device = result.scalar_one_or_none()
 
     dev_name = device.name if device else device_id
+    keys_to_update = {device_id}
+    if device:
+        if device.id: keys_to_update.add(device.id)
+        if device.hostname: keys_to_update.add(device.hostname)
+        if device.name: keys_to_update.add(device.name)
 
     if status == "SUCCESS":
         if device:
             device.agent_version = new_ver or target_ver
             device.agent_status = AgentStatus.CONNECTED
-        agent_update_statuses[device_id] = {
-            "status": "SUCCESS",
-            "version": new_ver or target_ver,
-            "completedAt": datetime.utcnow().isoformat() + "Z"
-        }
+        for k in keys_to_update:
+            agent_update_statuses[k] = {
+                "status": "SUCCESS",
+                "version": new_ver or target_ver,
+                "completedAt": datetime.utcnow().isoformat() + "Z"
+            }
     elif status == "FAILED":
-        agent_update_statuses[device_id] = {
-            "status": "FAILED",
-            "error": error_msg,
-            "failedAt": datetime.utcnow().isoformat() + "Z"
-        }
+        for k in keys_to_update:
+            agent_update_statuses[k] = {
+                "status": "FAILED",
+                "error": error_msg,
+                "failedAt": datetime.utcnow().isoformat() + "Z"
+            }
     else:
-        agent_update_statuses[device_id] = {
-            "status": "UPDATING",
-            "targetVersion": target_ver,
-            "startedAt": datetime.utcnow().isoformat() + "Z"
-        }
+        for k in keys_to_update:
+            agent_update_statuses[k] = {
+                "status": "UPDATING",
+                "targetVersion": target_ver,
+                "startedAt": datetime.utcnow().isoformat() + "Z"
+            }
 
     # Transactional history log record:
     # Update existing in-progress entry for this device or insert new
@@ -1985,17 +2007,26 @@ async def trigger_bulk_agent_update(payload: Dict[str, Any], request: Request, d
 async def get_agent_update_logs():
     """
     Returns recent history of remote agent update operations and statuses.
-    Automatically resolves stale in-progress records.
+    Accurately reflects status based on real device verification.
     """
     now = datetime.utcnow()
     for entry in agent_update_logs:
         if entry.get("status") == "UPDATING":
+            d_id = entry.get("deviceId")
+            target_v = entry.get("targetVersion", settings.LATEST_AGENT_VERSION)
+            upd_info = agent_update_statuses.get(d_id, {})
+            if upd_info.get("status") == "SUCCESS":
+                entry["status"] = "SUCCESS"
+                entry["newVersion"] = upd_info.get("version", target_v)
+                entry["details"] = f"Обновление успешно завершено (v{upd_info.get('version', target_v)})"
+                continue
+
             ts_str = entry.get("timestamp", "")
             try:
                 ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00")).replace(tzinfo=None)
-                if (now - ts).total_seconds() > 30:
-                    entry["status"] = "SUCCESS"
-                    entry["details"] = f"Обновление успешно завершено"
+                if (now - ts).total_seconds() > 180:
+                    entry["status"] = "FAILED"
+                    entry["details"] = "Время ожидания ответа агента истекло (таймаут)"
             except Exception:
-                entry["status"] = "SUCCESS"
+                pass
     return agent_update_logs[:100]

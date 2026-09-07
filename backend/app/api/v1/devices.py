@@ -299,16 +299,20 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     cur_ver = "Agentless" if is_agentless else (d.agent_version or "1.4.2")
     is_outdated = False if is_agentless else (cur_ver != latest_ver)
     
-    upd_info = agent_update_statuses.get(d.id, {})
+    upd_info = (
+        agent_update_statuses.get(d.id, {}) or
+        agent_update_statuses.get(d.hostname, {}) or
+        (agent_update_statuses.get(d.name, {}) if d.name else {})
+    )
     upd_status = "idle" if is_agentless else upd_info.get("status", "idle")
-    if not is_outdated:
+    if not is_outdated or upd_info.get("status") == "SUCCESS":
         upd_status = "idle"
     elif upd_status == "UPDATING":
         started_iso = upd_info.get("startedAt")
         if started_iso:
             try:
                 started_dt = datetime.fromisoformat(started_iso.replace("Z", "+00:00")).replace(tzinfo=None)
-                if (datetime.utcnow() - started_dt).total_seconds() > 60:
+                if (datetime.utcnow() - started_dt).total_seconds() > 90:
                     upd_status = "idle"
             except Exception:
                 upd_status = "idle"

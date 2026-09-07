@@ -758,17 +758,37 @@ if (`$ServerUrl) {
 `$AgentVersion = '2.9.5'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
+if (-not `$osCaption -or `$osCaption -eq '`$osCaption') {
+    try { `$osCaption = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).Caption } catch { `$osCaption = 'Windows' }
+}
 `$script:currentInterval = 10
 
+# Robust runtime determination of agent installation directory
+`$InstallDir = if (`$PSScriptRoot -and (Test-Path `$PSScriptRoot)) {
+    `$PSScriptRoot
+} elseif (Test-Path "C:\Program Files\WorkstationManagerAgent") {
+    "C:\Program Files\WorkstationManagerAgent"
+} elseif (Test-Path (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent")) {
+    Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent"
+} else {
+    "C:\Program Files\WorkstationManagerAgent"
+}
+
+# Non-colliding mutex lock: wait up to 8 seconds for any shutting down instance to close cleanly
 `$mutexName = "Global\WorkstationManagerAgentMutex"
-`$createdNew = `$false
-`$global:agentMutex = New-Object System.Threading.Mutex(`$true, `$mutexName, [ref]`$createdNew)
-if (-not `$createdNew) {
+`$hasMutex = `$false
+try {
+    `$global:agentMutex = New-Object System.Threading.Mutex(`$false, `$mutexName)
+    `$hasMutex = `$global:agentMutex.WaitOne(8000, `$false)
+} catch {
+    `$hasMutex = `$false
+}
+if (-not `$hasMutex) {
     exit
 }
 
 try {
-    `$csPath = Join-Path '$InstallDir' "WtsManager.cs"
+    `$csPath = Join-Path `$InstallDir "WtsManager.cs"
     if (Test-Path `$csPath) {
         Add-Type -Path `$csPath -ErrorAction SilentlyContinue
     }
@@ -816,33 +836,79 @@ function Update-AgentService([string]`$targetVer = "2.9.5") {
             `$astErrs = `$null
             [System.Management.Automation.Language.Parser]::ParseInput(`$newCode, [ref]`$tokens, [ref]`$astErrs) | Out-Null
             if (-not `$astErrs -or `$astErrs.Count -eq 0) {
-                `$servicePath = Join-Path '$InstallDir' "run_service.ps1"
+                # Ensure destination folder exists
+                `$targetFolder = `$InstallDir
+                if (-not (Test-Path `$targetFolder)) {
+                    try { New-Item -ItemType Directory -Path `$targetFolder -Force | Out-Null } catch {}
+                }
+                `$servicePath = Join-Path `$targetFolder "run_service.ps1"
                 [System.IO.File]::WriteAllText(`$servicePath, `$newCode, (New-Object System.Text.UTF8Encoding(`$true)))
 
                 # Release mutex before starting new instance
                 if (`$global:agentMutex) {
                     try { `$global:agentMutex.ReleaseMutex() } catch {}
                     try { `$global:agentMutex.Dispose() } catch {}
+                    `$global:agentMutex = `$null
                 }
 
-                # Start updated service
-                `$launcherVbs = Join-Path '$InstallDir' "launcher.vbs"
-                if (Test-Path `$launcherVbs) {
-                    Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$launcherVbs`"" -WindowStyle Hidden
-                } else {
-                    Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$servicePath`"") -WindowStyle Hidden
-                }
+                # Start updated service via 3-second detached watcher to prevent race conditions
+                `$launcherVbs = Join-Path `$targetFolder "launcher.vbs"
+                `$restartCmd = "Start-Sleep -Seconds 3; if (Test-Path `'$launcherVbs`') { Start-Process -FilePath `"`$env:SystemRoot\System32\wscript.exe`" -ArgumentList `'`"$launcherVbs`"`' -WindowStyle Hidden } else { Start-Process -FilePath powershell.exe -ArgumentList @(`'-NoProfile`', `'-WindowStyle`', `'Hidden`', `'-ExecutionPolicy`', `'Bypass`', `'-File`', `'`"$servicePath`"`') -WindowStyle Hidden }"
+                Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-Command', `$restartCmd) -WindowStyle Hidden
                 exit 0
+            } else {
+                try {
+                    `$failPayload = @{
+                        deviceId = `$DeviceId
+                        status = 'FAILED'
+                        previousVersion = `$AgentVersion
+                        targetVersion = `$targetVer
+                        details = "Ошибка синтаксиса AST в полученном коде обновления"
+                    }
+                    `$fJson = `$failPayload | ConvertTo-Json -Depth 3 -Compress
+                    `$fBytes = [System.Text.Encoding]::UTF8.GetBytes(`$fJson)
+                    `$fReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
+                    `$fReq.Method = 'POST'
+                    `$fReq.ContentType = 'application/json; charset=utf-8'
+                    `$fReq.Timeout = 4000
+                    `$fStream = `$fReq.GetRequestStream()
+                    `$fStream.Write(`$fBytes, 0, `$fBytes.Length)
+                    `$fStream.Close()
+                    `$fResp = `$fReq.GetResponse()
+                    `$fResp.Close()
+                } catch {}
             }
         }
-    } catch {}
+    } catch {
+        try {
+            `$failPayload = @{
+                deviceId = `$DeviceId
+                status = 'FAILED'
+                previousVersion = `$AgentVersion
+                targetVersion = `$targetVer
+                details = ("Ошибка обновления: " + `$_.Exception.Message)
+            }
+            `$fJson = `$failPayload | ConvertTo-Json -Depth 3 -Compress
+            `$fBytes = [System.Text.Encoding]::UTF8.GetBytes(`$fJson)
+            `$fReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
+            `$fReq.Method = 'POST'
+            `$fReq.ContentType = 'application/json; charset=utf-8'
+            `$fReq.Timeout = 4000
+            `$fStream = `$fReq.GetRequestStream()
+            `$fStream.Write(`$fBytes, 0, `$fBytes.Length)
+            `$fStream.Close()
+            `$fResp = `$fReq.GetResponse()
+            `$fResp.Close()
+        } catch {}
+    }
 }
 
 function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false, `$cmdObj = `$null) {
     `$act = `$action.Trim().ToUpper()
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "`$AgentVersion"
+        `$tVer = if (`$cmdObj -and `$cmdObj.targetVersion) { `$cmdObj.targetVersion } else { "2.9.5" }
+        Update-AgentService `$tVer
         return
     }
 
@@ -1944,7 +2010,29 @@ try {
 `$initAttempts = 0
 while (`$initAttempts -lt 30) {
     `$ok = Invoke-Heartbeat `$true
-    if (`$ok) { break }
+    if (`$ok) {
+        try {
+            `$succPayload = @{
+                deviceId = `$DeviceId
+                status = 'SUCCESS'
+                newVersion = `$AgentVersion
+                targetVersion = `$AgentVersion
+                details = "Агент службы v`$AgentVersion успешно запущен и подключен"
+            }
+            `$sJson = `$succPayload | ConvertTo-Json -Compress
+            `$sBytes = [System.Text.Encoding]::UTF8.GetBytes(`$sJson)
+            `$sReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
+            `$sReq.Method = 'POST'
+            `$sReq.ContentType = 'application/json; charset=utf-8'
+            `$sReq.Timeout = 4000
+            `$sStream = `$sReq.GetRequestStream()
+            `$sStream.Write(`$sBytes, 0, `$sBytes.Length)
+            `$sStream.Close()
+            `$sResp = `$sReq.GetResponse()
+            `$sResp.Close()
+        } catch {}
+        break
+    }
     `$initAttempts++
     Start-Sleep -Seconds 2
 }

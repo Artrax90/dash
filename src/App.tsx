@@ -11841,7 +11841,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
                       const targetVer = versionInfo?.currentVersion || dev.latestAgentVersion || '2.8.7';
                       const curVer = dev.agentVersion || '1.4.2';
                       const isTargetVer = curVer === targetVer;
-                      const isUpdating = updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING';
+                      const isUpdating = !isTargetVer && (updatingDeviceIds.includes(dev.id) || dev.updateStatus === 'UPDATING');
                       const devGroups = getDeviceGroups(dev);
                       return (
                         <tr key={dev.id}>
