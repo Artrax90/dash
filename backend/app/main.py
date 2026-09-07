@@ -37,26 +37,41 @@ app.add_middleware(
 
 from backend.app.services.scheduler_service import scheduler_service
 
+def safe_migrate_columns_sync(connection):
+    """Safely and idempotently inspect and add missing columns to existing tables."""
+    from sqlalchemy import inspect, text
+    inspector = inspect(connection)
+    try:
+        tables = inspector.get_table_names()
+    except Exception:
+        tables = []
+    
+    if "devices" in tables:
+        existing_cols = {c["name"] for c in inspector.get_columns("devices")}
+        is_postgres = connection.dialect.name == "postgresql"
+        dt_type = "TIMESTAMP" if is_postgres else "DATETIME"
+        
+        column_defs = [
+            ("boot_time", f"ALTER TABLE devices ADD COLUMN boot_time {dt_type}"),
+            ("uptime_seconds", "ALTER TABLE devices ADD COLUMN uptime_seconds INTEGER DEFAULT 0"),
+            ("building", "ALTER TABLE devices ADD COLUMN building VARCHAR(100) DEFAULT ''"),
+            ("floor", "ALTER TABLE devices ADD COLUMN floor VARCHAR(50) DEFAULT ''"),
+            ("room", "ALTER TABLE devices ADD COLUMN room VARCHAR(100) DEFAULT ''"),
+        ]
+        
+        for col_name, col_sql in column_defs:
+            if col_name not in existing_cols:
+                try:
+                    connection.execute(text(col_sql))
+                except Exception as ex:
+                    logger.debug(f"Column migration notice for {col_name}: {ex}")
+
 @app.on_event("startup")
 async def startup_event():
     # Initialize DB schema
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-        
-        def migrate_columns(connection):
-            from sqlalchemy import text
-            for col_sql in [
-                "ALTER TABLE devices ADD COLUMN boot_time DATETIME",
-                "ALTER TABLE devices ADD COLUMN uptime_seconds INTEGER DEFAULT 0",
-                "ALTER TABLE devices ADD COLUMN building VARCHAR(100) DEFAULT ''",
-                "ALTER TABLE devices ADD COLUMN floor VARCHAR(50) DEFAULT ''",
-                "ALTER TABLE devices ADD COLUMN room VARCHAR(100) DEFAULT ''",
-            ]:
-                try:
-                    connection.execute(text(col_sql))
-                except Exception:
-                    pass
-        await conn.run_sync(migrate_columns)
+        await conn.run_sync(safe_migrate_columns_sync)
     print("Workstation Manager database initialized.")
     # Start automated scheduler and telegram bot background loops
     import asyncio

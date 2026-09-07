@@ -11,12 +11,36 @@ services:
       - HOST=0.0.0.0
       - PORT=${PORT:-2301}
       - SERVER_URL=${SERVER_URL:-}
-      - WOL_BROADCAST_IP=255.255.255.255
-      - WOL_PORT=9
+      - DATABASE_URL=${DATABASE_URL:-sqlite+aiosqlite:///./data/workstation_manager.db}
+      - WOL_BROADCAST_IP=${WOL_BROADCAST_IP:-255.255.255.255}
+      - WOL_PORT=${WOL_PORT:-9}
     volumes:
-      # Persistent storage for SQLite database, SuperAdmin accounts, Telegram config, and tokens
+      # Persistent storage for SQLite database, tokens, and data
       - ./data:/app/data
 
-    # Optional: if you run on Linux and want direct host networking for physical Wake-on-LAN broadcast packets,
-    # uncomment the line below (and comment out 'ports'):
-    # network_mode: host
+  # Optional PostgreSQL database service
+  # Start with: docker compose --profile postgres up -d
+  postgres:
+    image: postgres:16-alpine
+    container_name: workstation-manager-postgres
+    restart: unless-stopped
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    environment:
+      - POSTGRES_DB=${POSTGRES_DB:-workstation_manager}
+      - POSTGRES_USER=${POSTGRES_USER:-postgres}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_pass}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-workstation_manager}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    profiles:
+      - postgres
+      - full
+
+volumes:
+  postgres_data:
+
