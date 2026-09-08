@@ -185,4 +185,78 @@ async def test_agent_heartbeat_updates_device_drives_cache():
     assert len(summary["drives"]) == 2
     assert summary["drives"][1]["volumeName"] == "NVMe-Backup"
 
+@pytest.mark.anyio
+async def test_agent_heartbeat_handles_usb_removable_drives():
+    from backend.app.api.v1.agents import agent_heartbeat
+    from backend.app.api.v1.devices import device_drives_cache, format_device_summary
+    from backend.app.models.device import Device, PowerStatus
+    from unittest.mock import AsyncMock, MagicMock
+
+    mock_db = AsyncMock()
+    dev = Device(
+        id="PC-USB-TEST",
+        hostname="PC-USB-TEST",
+        name="Test USB PC",
+        power_status=PowerStatus.ON,
+        disk_usage=20,
+        last_seen=datetime.utcnow()
+    )
+    mock_res = MagicMock()
+    mock_res.scalars.return_value.first.return_value = dev
+    mock_res.scalar_one_or_none.return_value = dev
+    mock_db.execute.return_value = mock_res
+
+    # Agent reports internal NVMe SSD and a plugged-in USB flash drive
+    payload = {
+        "deviceId": "PC-USB-TEST",
+        "cpu": 10,
+        "ram": 25,
+        "disk": 20,
+        "drives": [
+            {
+                "device": "C:",
+                "volumeName": "Локальный диск",
+                "fileSystem": "NTFS",
+                "sizeGb": 475.4,
+                "usedGb": 93.5,
+                "freeGb": 381.9,
+                "percent": 20,
+                "driveType": "Fixed",
+                "isRemovable": False,
+                "physicalModel": "ADATA SX6000PNP",
+                "busType": "NVMe"
+            },
+            {
+                "device": "G:",
+                "volumeName": "KINGSTON",
+                "fileSystem": "FAT32",
+                "sizeGb": 58.0,
+                "usedGb": 12.4,
+                "freeGb": 45.6,
+                "percent": 21,
+                "driveType": "USB",
+                "isRemovable": True,
+                "physicalModel": "Kingston DataTraveler 3.0 USB Device",
+                "busType": "USB",
+                "serialNumber": "CE877CF15349"
+            }
+        ]
+    }
+
+    resp = await agent_heartbeat(payload=payload, request=MagicMock(), db=mock_db)
+    assert resp["status"] == "ok"
+    assert "PC-USB-TEST" in device_drives_cache
+    cached = device_drives_cache["PC-USB-TEST"]
+    assert len(cached) == 2
+    assert cached[1]["device"] == "G:"
+    assert cached[1]["driveType"] == "USB"
+    assert cached[1]["isRemovable"] is True
+    assert cached[1]["physicalModel"] == "Kingston DataTraveler 3.0 USB Device"
+
+    summary = format_device_summary(dev)
+    assert len(summary["drives"]) == 2
+    assert summary["drives"][1]["driveType"] == "USB"
+    assert summary["drives"][1]["isRemovable"] is True
+
+
 

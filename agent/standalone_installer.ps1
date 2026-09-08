@@ -239,6 +239,7 @@ try {
     if ($diskDrives) {
         foreach ($d in $diskDrives) {
             $sizeGb = [int][math]::Round($d.Size / 1GB, 0)
+            $isUsb = ($d.InterfaceType -match "USB") -or ($d.PNPDeviceID -match "USB")
             $media = if ($d.MediaType) { $d.MediaType } else { "SSD" }
             $isSsd = $d.Model -match "SSD|NVMe" -or $media -match "SSD"
             $disks += @{
@@ -246,7 +247,9 @@ try {
                 name = if ($d.Model) { $d.Model.Trim() } else { "Disk $diskIdx" }
                 model = if ($d.Model) { $d.Model.Trim() } else { "Standard Disk" }
                 serialNumber = if ($d.SerialNumber) { $d.SerialNumber.Trim() } else { "DISK-SN-$diskIdx" }
-                type = if ($isSsd) { "NVMe SSD" } else { "HDD" }
+                type = if ($isUsb) { "USB Flash" } elseif ($isSsd) { "NVMe SSD" } else { "HDD" }
+                busType = if ($isUsb) { "USB" } elseif ($d.InterfaceType) { $d.InterfaceType.Trim() } else { "" }
+                isRemovable = [bool]$isUsb
                 capacityGb = $sizeGb
                 health = "Good"
                 temperatureC = 38
@@ -410,7 +413,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.5"
+    agentVersion = "2.9.6"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -754,7 +757,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.5'
+`$AgentVersion = '2.9.6'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
@@ -773,9 +776,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.5") {
+function Update-AgentService([string]`$targetVer = "2.9.6") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.5"
+        `$targetVer = "2.9.6"
     }
     try {
         # 1. Report update in progress
@@ -1546,17 +1549,19 @@ function Get-LiveHardwareSpec() {
         if (`$pDisks) {
             foreach (`$d in `$pDisks) {
                 `$dSizeGb = [int][math]::Round(`$d.Size / 1GB, 0)
+                `$isUsb = (`$d.InterfaceType -match "USB") -or (`$d.PNPDeviceID -match "USB")
                 `$liveDisks += @{
                     id = "disk-" + `$dIdx
                     name = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIdx" }
                     model = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIdx" }
                     serialNumber = if (`$d.SerialNumber) { `$d.SerialNumber.Trim() } else { "DISK-SN-`$dIdx" }
                     capacityGb = `$dSizeGb
-                    type = if (`$d.Model -match "SSD|NVMe") { "NVMe SSD" } else { "HDD" }
-                    busType = if (`$d.InterfaceType) { `$d.InterfaceType.Trim() } else { if (`$d.PNPDeviceID -match "USB") { "USB" } else { "" } }
+                    type = if (`$isUsb) { "USB Flash" } elseif (`$d.Model -match "SSD|NVMe") { "NVMe SSD" } else { "HDD" }
+                    busType = if (`$isUsb) { "USB" } elseif (`$d.InterfaceType) { `$d.InterfaceType.Trim() } else { "" }
                     interfaceType = if (`$d.InterfaceType) { `$d.InterfaceType.Trim() } else { "" }
                     mediaType = if (`$d.MediaType) { `$d.MediaType.Trim() } else { "" }
                     pnpDeviceId = if (`$d.PNPDeviceID) { `$d.PNPDeviceID.Trim() } else { "" }
+                    isRemovable = [bool]`$isUsb
                 }
                 `$dIdx++
             }
@@ -1728,18 +1733,45 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             `$ram = [int][math]::Round((`$usedKb / `$os.TotalVisibleMemorySize) * 100, 0)
         }
 
+        `$disksMap = @{}
+        try {
+            `$allD = Get-Disk -ErrorAction SilentlyContinue
+            `$allP = Get-Partition -ErrorAction SilentlyContinue
+            if (`$allD -and `$allP) {
+                foreach (`$p in `$allP) {
+                    if (`$p.DriveLetter) {
+                        `$dl = "`$(`$p.DriveLetter):"
+                        `$matchD = `$allD | Where-Object { `$_.Number -eq `$p.DiskNumber } | Select-Object -First 1
+                        if (`$matchD) {
+                            `$isU = (`$matchD.BusType -eq 'USB') -or (`$matchD.FriendlyName -match 'USB')
+                            `$disksMap[`$dl] = @{
+                                diskNumber = `$matchD.Number
+                                physicalModel = if (`$matchD.FriendlyName) { `$matchD.FriendlyName.Trim() } else { "" }
+                                busType = if (`$matchD.BusType) { `$matchD.BusType.ToString() } else { if (`$isU) { "USB" } else { "" } }
+                                healthStatus = if (`$matchD.HealthStatus) { `$matchD.HealthStatus.ToString() } else { "Healthy" }
+                                isRemovable = [bool]`$isU
+                                serialNumber = if (`$matchD.SerialNumber) { `$matchD.SerialNumber.Trim() } else { "" }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch {}
+
         `$logicalDisks = @()
         `$disk = 40
         try {
-            `$wDisks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
+            `$wDisks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2 or DriveType=3" -ErrorAction SilentlyContinue
             if (`$wDisks) {
                 foreach (`$d in `$wDisks) {
                     `$dSize = if (`$d.Size) { [math]::Round(`$d.Size / 1GB, 1) } else { 0.0 }
                     `$dFree = if (`$d.FreeSpace) { [math]::Round(`$d.FreeSpace / 1GB, 1) } else { 0.0 }
                     `$dUsed = [math]::Max(0.0, [math]::Round(`$dSize - `$dFree, 1))
                     `$dPct = if (`$dSize -gt 0) { [int][math]::Round((`$dUsed / `$dSize) * 100, 0) } else { 0 }
-                    `$volName = if (`$d.VolumeName) { `$d.VolumeName } else { "Локальный диск" }
-                    `$fs = if (`$d.FileSystem) { `$d.FileSystem } else { "NTFS" }
+                    `$isUsbDrive = (`$d.DriveType -eq 2)
+                    `$volName = if (`$d.VolumeName) { `$d.VolumeName } elseif (`$isUsbDrive) { "USB-накопитель" } else { "Локальный диск" }
+                    `$fs = if (`$d.FileSystem) { `$d.FileSystem } else { if (`$isUsbDrive) { "FAT32" } else { "NTFS" } }
+                    `$phy = if (`$disksMap.ContainsKey(`$d.DeviceID)) { `$disksMap[`$d.DeviceID] } else { `$null }
                     `$logicalDisks += @{
                         device = `$d.DeviceID
                         volumeName = `$volName
@@ -1748,6 +1780,13 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                         usedGb = `$dUsed
                         freeGb = `$dFree
                         percent = `$dPct
+                        driveType = if (`$isUsbDrive -or (`$phy -and `$phy.isRemovable)) { "USB" } else { "Fixed" }
+                        isRemovable = [bool](`$isUsbDrive -or (`$phy -and `$phy.isRemovable))
+                        physicalModel = if (`$phy -and `$phy.physicalModel) { `$phy.physicalModel } elseif (`$isUsbDrive) { "USB Flash Drive" } else { "" }
+                        busType = if (`$phy -and `$phy.busType) { `$phy.busType } elseif (`$isUsbDrive) { "USB" } else { "" }
+                        diskNumber = if (`$phy -and `$phy.diskNumber -ne `$null) { `$phy.diskNumber } else { -1 }
+                        serialNumber = if (`$phy -and `$phy.serialNumber) { `$phy.serialNumber } else { "" }
+                        healthStatus = if (`$phy -and `$phy.healthStatus) { `$phy.healthStatus } else { "Healthy" }
                     }
                     if (`$d.DeviceID -eq 'C:') {
                         `$disk = `$dPct
@@ -2388,18 +2427,45 @@ try {
         $usedKb = $os.TotalVisibleMemorySize - $os.FreePhysicalMemory
         $initRam = [int][math]::Round(($usedKb / $os.TotalVisibleMemorySize) * 100, 0)
     }
+    $disksMap = @{}
+    try {
+        $allD = Get-Disk -ErrorAction SilentlyContinue
+        $allP = Get-Partition -ErrorAction SilentlyContinue
+        if ($allD -and $allP) {
+            foreach ($p in $allP) {
+                if ($p.DriveLetter) {
+                    $dl = "$($p.DriveLetter):"
+                    $matchD = $allD | Where-Object { $_.Number -eq $p.DiskNumber } | Select-Object -First 1
+                    if ($matchD) {
+                        $isU = ($matchD.BusType -eq 'USB') -or ($matchD.FriendlyName -match 'USB')
+                        $disksMap[$dl] = @{
+                            diskNumber = $matchD.Number
+                            physicalModel = if ($matchD.FriendlyName) { $matchD.FriendlyName.Trim() } else { "" }
+                            busType = if ($matchD.BusType) { $matchD.BusType.ToString() } else { if ($isU) { "USB" } else { "" } }
+                            healthStatus = if ($matchD.HealthStatus) { $matchD.HealthStatus.ToString() } else { "Healthy" }
+                            isRemovable = [bool]$isU
+                            serialNumber = if ($matchD.SerialNumber) { $matchD.SerialNumber.Trim() } else { "" }
+                        }
+                    }
+                }
+            }
+        }
+    } catch {}
+
     $initLogicalDisks = @()
     $initDisk = 40
     try {
-        $wDisks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
+        $wDisks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2 or DriveType=3" -ErrorAction SilentlyContinue
         if ($wDisks) {
             foreach ($d in $wDisks) {
                 $dSize = if ($d.Size) { [math]::Round($d.Size / 1GB, 1) } else { 0.0 }
                 $dFree = if ($d.FreeSpace) { [math]::Round($d.FreeSpace / 1GB, 1) } else { 0.0 }
                 $dUsed = [math]::Max(0.0, [math]::Round($dSize - $dFree, 1))
                 $dPct = if ($dSize -gt 0) { [int][math]::Round(($dUsed / $dSize) * 100, 0) } else { 0 }
-                $volName = if ($d.VolumeName) { $d.VolumeName } else { "Локальный диск" }
-                $fs = if ($d.FileSystem) { $d.FileSystem } else { "NTFS" }
+                $isUsbDrive = ($d.DriveType -eq 2)
+                $volName = if ($d.VolumeName) { $d.VolumeName } elseif ($isUsbDrive) { "USB-накопитель" } else { "Локальный диск" }
+                $fs = if ($d.FileSystem) { $d.FileSystem } else { if ($isUsbDrive) { "FAT32" } else { "NTFS" } }
+                $phy = if ($disksMap.ContainsKey($d.DeviceID)) { $disksMap[$d.DeviceID] } else { $null }
                 $initLogicalDisks += @{
                     device = $d.DeviceID
                     volumeName = $volName
@@ -2408,6 +2474,13 @@ try {
                     usedGb = $dUsed
                     freeGb = $dFree
                     percent = $dPct
+                    driveType = if ($isUsbDrive -or ($phy -and $phy.isRemovable)) { "USB" } else { "Fixed" }
+                    isRemovable = [bool]($isUsbDrive -or ($phy -and $phy.isRemovable))
+                    physicalModel = if ($phy -and $phy.physicalModel) { $phy.physicalModel } elseif ($isUsbDrive) { "USB Flash Drive" } else { "" }
+                    busType = if ($phy -and $phy.busType) { $phy.busType } elseif ($isUsbDrive) { "USB" } else { "" }
+                    diskNumber = if ($phy -and $phy.diskNumber -ne $null) { $phy.diskNumber } else { -1 }
+                    serialNumber = if ($phy -and $phy.serialNumber) { $phy.serialNumber } else { "" }
+                    healthStatus = if ($phy -and $phy.healthStatus) { $phy.healthStatus } else { "Healthy" }
                 }
                 if ($d.DeviceID -eq 'C:') {
                     $initDisk = $dPct
@@ -2554,7 +2627,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.5"
+    agentVersion = "2.9.6"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

@@ -569,7 +569,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.9.5</span>
+            <span>v2.9.6</span>
           </div>
         </div>
       </div>
@@ -643,7 +643,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.9.5</span>
+          <span style={{ color: '#475569' }}>v2.9.6</span>
         </div>
       </div>
     </div>
@@ -4181,6 +4181,128 @@ function DeviceMonitoringTab({
 
   const physicalStorage: any[] = (spec?.storage && Array.isArray(spec.storage)) ? spec.storage : [];
 
+  const storageUnits = useMemo(() => {
+    const units: Array<{
+      id: string;
+      model: string;
+      isUsb: boolean;
+      busType: string;
+      type: string;
+      serialNumber?: string;
+      capacityGb?: number;
+      healthPercent?: number;
+      temperatureC?: number;
+      partitions: any[];
+    }> = [];
+    const assignedDriveLetters = new Set<string>();
+
+    // 1. Map physical storage devices from hardware spec
+    physicalStorage.forEach((ps, idx) => {
+      const psModel = (ps.model || ps.name || `Диск #${idx + 1}`).trim();
+      const isUsb = Boolean(
+        (ps.type && ps.type.toLowerCase().includes('usb')) ||
+        (ps.busType && ps.busType.toLowerCase().includes('usb')) ||
+        psModel.toLowerCase().includes('usb') ||
+        ps.isRemovable
+      );
+      const busType = ps.busType || (isUsb ? 'USB' : (ps.type && ps.type.includes('NVMe') ? 'NVMe' : 'SATA'));
+      const driveType = isUsb ? 'USB Flash' : (ps.type || (psModel.match(/SSD|NVMe/i) ? 'NVMe SSD' : 'HDD'));
+
+      // Find partitions belonging to this physical drive
+      const matchingPartitions = deviceDrives.filter(drv => {
+        if (assignedDriveLetters.has(drv.device)) return false;
+        if (drv.physicalModel && (
+          drv.physicalModel.toLowerCase() === psModel.toLowerCase() ||
+          drv.physicalModel.toLowerCase().includes(psModel.toLowerCase()) ||
+          psModel.toLowerCase().includes(drv.physicalModel.toLowerCase())
+        )) {
+          return true;
+        }
+        if (drv.serialNumber && ps.serialNumber && drv.serialNumber.trim() === ps.serialNumber.trim()) {
+          return true;
+        }
+        if (typeof drv.diskNumber === 'number' && drv.diskNumber === idx) {
+          return true;
+        }
+        if (isUsb && (drv.driveType === 'USB' || drv.isRemovable || (drv.volumeName && drv.volumeName.toLowerCase().includes('usb')))) {
+          return true;
+        }
+        return false;
+      });
+
+      matchingPartitions.forEach(p => assignedDriveLetters.add(p.device));
+
+      units.push({
+        id: ps.id || `disk-${idx}`,
+        model: psModel,
+        isUsb,
+        busType,
+        type: driveType,
+        serialNumber: ps.serialNumber,
+        capacityGb: ps.capacityGb,
+        healthPercent: ps.healthPercent ?? 100,
+        temperatureC: ps.temperatureC,
+        partitions: matchingPartitions
+      });
+    });
+
+    // 2. Any remaining logical drives in deviceDrives not claimed by physicalStorage
+    const unclaimedDrives = deviceDrives.filter(drv => !assignedDriveLetters.has(drv.device));
+    const unclaimedGroups: { [key: string]: any[] } = {};
+    unclaimedDrives.forEach(drv => {
+      const isUsb = Boolean(
+        drv.driveType === 'USB' ||
+        drv.isRemovable ||
+        (drv.physicalModel && drv.physicalModel.toLowerCase().includes('usb')) ||
+        (drv.busType && drv.busType.toLowerCase().includes('usb')) ||
+        (drv.volumeName && drv.volumeName.toLowerCase().includes('usb'))
+      );
+      const key = drv.physicalModel || (isUsb ? `USB-${drv.device}` : `Drive-${drv.device}`);
+      if (!unclaimedGroups[key]) unclaimedGroups[key] = [];
+      unclaimedGroups[key].push(drv);
+    });
+
+    Object.entries(unclaimedGroups).forEach(([_, partList], gIdx) => {
+      const first = partList[0];
+      const isUsb = Boolean(
+        first.driveType === 'USB' ||
+        first.isRemovable ||
+        (first.physicalModel && first.physicalModel.toLowerCase().includes('usb')) ||
+        (first.busType && first.busType.toLowerCase().includes('usb')) ||
+        (first.volumeName && first.volumeName.toLowerCase().includes('usb'))
+      );
+      const totalCap = partList.reduce((acc, p) => acc + (p.sizeGb || 0), 0);
+      units.push({
+        id: `unclaimed-${gIdx}`,
+        model: first.physicalModel || (isUsb ? `Съемный USB-накопитель (${first.device})` : `Локальный накопитель (${first.device})`),
+        isUsb,
+        busType: first.busType || (isUsb ? 'USB' : 'Fixed'),
+        type: isUsb ? 'USB Flash' : (first.device === 'C:' ? 'Системный SSD' : 'Локальный диск'),
+        serialNumber: first.serialNumber,
+        capacityGb: Math.round(totalCap) || first.sizeGb,
+        healthPercent: first.healthStatus === 'Warning' ? 80 : 100,
+        temperatureC: undefined,
+        partitions: partList
+      });
+    });
+
+    if (units.length === 0) {
+      units.push({
+        id: 'disk-fallback-0',
+        model: diskModel,
+        isUsb: false,
+        busType: 'NVMe/SATA',
+        type: 'SSD',
+        capacityGb: diskTotalGb,
+        healthPercent: diskHealth,
+        temperatureC: diskTemp,
+        partitions: deviceDrives
+      });
+    }
+
+    return units;
+  }, [physicalStorage, deviceDrives, diskModel, diskTotalGb, diskHealth, diskTemp]);
+
   const gpuPrimary = spec?.gpus?.[0];
   const gpuModel = gpuPrimary?.model || 'Интегрированное / дискретное видеоядро';
   const gpuVram = gpuPrimary?.vramGb || 4;
@@ -4808,126 +4930,186 @@ function DeviceMonitoringTab({
         </div>
       </div>
 
-      {/* Detailed Drives & Storage Volumes Panel */}
+      {/* Detailed Drives & Storage Volumes Panel - Dedicated Tabular Layout per Drive / USB Flash */}
       <section className="panel storage-panel">
         <div className="panel-heading table-heading" style={{ padding: '13px 20px' }}>
           <div>
             <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13.5px', margin: 0 }}>
               <HardDrive size={16} style={{ color: 'var(--pro-chart-disk)' }} />
-              Логические диски и накопители ({deviceDrives.length})
+              Накопители и съемные носители ({storageUnits.length})
             </h2>
             <p style={{ margin: '3px 0 0', fontSize: '11px', color: 'var(--muted)' }}>
-              Файловые разделы и накопители рабочей станции {device.name}
+              Табличный мониторинг локальных дисков и подключенных USB-накопителей рабочей станции {device.name}
             </p>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            {storageUnits.some(u => u.isUsb) && (
+              <span className="drive-badge-usb">
+                <Usb size={11} /> USB Flash подключен
+              </span>
+            )}
             <span className="badge" style={{ fontFamily: 'DM Mono', fontSize: '11px', color: 'var(--ink)' }}>
               Свободно на C: {diskFreeGb} ГБ ({100 - dynamicDisk}%)
             </span>
           </div>
         </div>
 
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th style={{ width: '65px' }}>Том</th>
-                <th>Метка тома</th>
-                <th>ФС</th>
-                <th style={{ width: '220px' }}>Использование</th>
-                <th>Занято</th>
-                <th>Свободно</th>
-                <th>Всего</th>
-                <th style={{ textAlign: 'right' }}>Статус</th>
-              </tr>
-            </thead>
-            <tbody>
-              {deviceDrives.map((drv: any, dIdx: number) => {
-                const isWarn = drv.percent >= 80;
-                const isCrit = drv.percent >= 90;
-                return (
-                  <tr key={dIdx}>
-                    <td>
-                      <span className="drive-letter-badge">{drv.device}</span>
-                    </td>
-                    <td>
-                      <strong style={{ color: 'var(--ink)', fontSize: '11.5px' }}>
-                        {drv.volumeName || 'Локальный диск'}
-                      </strong>
-                    </td>
-                    <td className="mono" style={{ color: 'var(--muted)' }}>
-                      {drv.fileSystem || 'NTFS'}
-                    </td>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                        <div className="telemetry-progress-track" style={{ flex: 1, height: '6px', margin: 0 }}>
-                          <div
-                            className={`telemetry-progress-fill ${isCrit ? 'critical' : isWarn ? 'warning' : 'normal'}`}
-                            style={{ width: `${Math.min(100, Math.max(0, drv.percent))}%` }}
-                          />
-                        </div>
-                        <span
-                          className="mono"
-                          style={{
-                            width: '38px',
-                            textAlign: 'right',
-                            fontWeight: 600,
-                            color: isCrit ? 'var(--red)' : isWarn ? 'var(--orange)' : 'var(--ink)'
-                          }}
-                        >
-                          {drv.percent}%
-                        </span>
-                      </div>
-                    </td>
-                    <td className="mono">{drv.usedGb} ГБ</td>
-                    <td className="mono" style={{ color: isCrit ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
-                      {drv.freeGb} ГБ
-                    </td>
-                    <td className="mono" style={{ color: 'var(--muted)' }}>
-                      {drv.sizeGb} ГБ
-                    </td>
-                    <td style={{ textAlign: 'right' }}>
-                      <span className={`status-pill ${isCrit ? 'critical' : isWarn ? 'warning' : 'healthy'}`}>
-                        {isCrit ? 'Критично' : isWarn ? 'Мало места' : 'В норме'}
-                      </span>
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        </div>
+        <div className="storage-units-stack">
+          {storageUnits.map((unit) => {
+            const totalUsed = unit.partitions.reduce((acc, p) => acc + (p.usedGb || 0), 0);
+            const totalFree = unit.partitions.reduce((acc, p) => acc + (p.freeGb || 0), 0);
 
-        {/* Physical Storage Drives Specification Footer */}
-        {physicalStorage.length > 0 && (
-          <div className="storage-footer-bar">
-            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
-              <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: '11px' }}>
-                Физические накопители ({physicalStorage.length}):
-              </span>
-              {physicalStorage.map((ps: any, psIdx: number) => (
-                <div key={psIdx} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
-                  <HardDrive size={13} style={{ color: 'var(--pro-chart-disk)' }} />
-                  <span style={{ fontWeight: 600, color: 'var(--ink)' }}>{ps.model || `Диск #${psIdx + 1}`}</span>
-                  <span className="mono" style={{ color: 'var(--muted)' }}>
-                    ({ps.type || 'SSD'} · {ps.capacityGb ? `${ps.capacityGb} ГБ` : '500 ГБ'}{ps.serialNumber ? ` · S/N: ${ps.serialNumber}` : ''})
-                  </span>
-                  <span
-                    className={`status-pill ${ps.healthPercent >= 90 ? 'healthy' : 'warning'}`}
-                    style={{ fontSize: '9.5px', padding: '2px 6px' }}
-                  >
-                    SMART: {ps.healthPercent ?? 100}%
-                  </span>
-                  {ps.temperatureC !== undefined && (
-                    <span className="mono" style={{ fontSize: '10.5px', color: 'var(--muted)' }}>
-                      🌡 {ps.temperatureC}°C
+            return (
+              <div
+                key={unit.id}
+                className={`storage-drive-card ${unit.isUsb ? 'usb-drive-card' : ''}`}
+              >
+                {/* Dedicated Drive Header */}
+                <div className="storage-card-header">
+                  <div className="storage-card-title-group">
+                    <div className={`storage-card-icon-box ${unit.isUsb ? 'usb' : 'fixed'}`}>
+                      {unit.isUsb ? <Usb size={18} /> : <HardDrive size={18} />}
+                    </div>
+                    <div>
+                      <div className="storage-card-title-row">
+                        <span className="storage-card-title">
+                          {unit.isUsb ? 'Съемный USB-накопитель' : 'Локальный накопитель'} — {unit.model}
+                        </span>
+                        {unit.isUsb ? (
+                          <span className="drive-badge-usb">
+                            <Usb size={11} /> USB Flash
+                          </span>
+                        ) : (
+                          <span className="drive-badge-fixed">
+                            <HardDrive size={11} /> {unit.type || 'NVMe SSD'}
+                          </span>
+                        )}
+                        {unit.busType && (
+                          <span className="badge mono" style={{ fontSize: '10px' }}>
+                            {unit.busType}
+                          </span>
+                        )}
+                      </div>
+                      <div className="storage-card-meta-row">
+                        {unit.serialNumber && (
+                          <span>S/N: <strong className="mono">{unit.serialNumber}</strong></span>
+                        )}
+                        {unit.capacityGb !== undefined && unit.capacityGb > 0 && (
+                          <span>Емкость: <strong className="mono">{unit.capacityGb} ГБ</strong></span>
+                        )}
+                        {unit.healthPercent !== undefined && (
+                          <span className={`status-pill ${unit.healthPercent >= 90 ? 'healthy' : 'warning'}`} style={{ fontSize: '10px', padding: '1px 6px' }}>
+                            SMART: {unit.healthPercent}%
+                          </span>
+                        )}
+                        {unit.temperatureC !== undefined && (
+                          <span className="mono">🌡 {unit.temperatureC}°C</span>
+                        )}
+                        {unit.partitions.length > 0 && (
+                          <span>
+                            Разделы: <strong className="mono">{unit.partitions.map(p => p.device).join(', ')}</strong>
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <span className="badge" style={{ fontFamily: 'DM Mono', fontSize: '11px', color: 'var(--ink)' }}>
+                      Занято: {totalUsed.toFixed(1)} ГБ · Свободно: {totalFree.toFixed(1)} ГБ
                     </span>
-                  )}
+                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        )}
+
+                {/* Dedicated Table for THIS Drive / Flash Drive */}
+                <div className="table-wrap">
+                  <table>
+                    <thead>
+                      <tr>
+                        <th style={{ width: '70px' }}>Раздел</th>
+                        <th>Метка тома</th>
+                        <th>Файловая система</th>
+                        <th>Шина / Интерфейс</th>
+                        <th style={{ width: '220px' }}>Использование</th>
+                        <th>Занято</th>
+                        <th>Свободно</th>
+                        <th>Всего</th>
+                        <th style={{ textAlign: 'right' }}>Статус</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {unit.partitions.length > 0 ? (
+                        unit.partitions.map((drv: any, dIdx: number) => {
+                          const isWarn = drv.percent >= 80;
+                          const isCrit = drv.percent >= 90;
+                          return (
+                            <tr key={dIdx}>
+                              <td>
+                                <span className={`drive-letter-badge ${unit.isUsb ? 'usb' : ''}`}>
+                                  {drv.device}
+                                </span>
+                              </td>
+                              <td>
+                                <strong style={{ color: 'var(--ink)', fontSize: '12px' }}>
+                                  {drv.volumeName || (unit.isUsb ? 'USB-накопитель' : 'Локальный диск')}
+                                </strong>
+                              </td>
+                              <td className="mono" style={{ color: 'var(--muted)' }}>
+                                {drv.fileSystem || (unit.isUsb ? 'FAT32' : 'NTFS')}
+                              </td>
+                              <td className="mono" style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                                {drv.busType || unit.busType || (unit.isUsb ? 'USB' : 'PCIe/SATA')}
+                              </td>
+                              <td>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                  <div className="telemetry-progress-track" style={{ flex: 1, height: '6px', margin: 0 }}>
+                                    <div
+                                      className={`telemetry-progress-fill ${isCrit ? 'critical' : isWarn ? 'warning' : 'normal'}`}
+                                      style={{ width: `${Math.min(100, Math.max(0, drv.percent))}%` }}
+                                    />
+                                  </div>
+                                  <span
+                                    className="mono"
+                                    style={{
+                                      width: '38px',
+                                      textAlign: 'right',
+                                      fontWeight: 600,
+                                      color: isCrit ? 'var(--red)' : isWarn ? 'var(--orange)' : 'var(--ink)'
+                                    }}
+                                  >
+                                    {drv.percent}%
+                                  </span>
+                                </div>
+                              </td>
+                              <td className="mono">{drv.usedGb} ГБ</td>
+                              <td className="mono" style={{ color: isCrit ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
+                                {drv.freeGb} ГБ
+                              </td>
+                              <td className="mono" style={{ color: 'var(--muted)' }}>
+                                {drv.sizeGb} ГБ
+                              </td>
+                              <td style={{ textAlign: 'right' }}>
+                                <span className={`status-pill ${isCrit ? 'critical' : isWarn ? 'warning' : 'healthy'}`}>
+                                  {isCrit ? 'Критично' : isWarn ? 'Мало места' : 'В норме'}
+                                </span>
+                              </td>
+                            </tr>
+                          );
+                        })
+                      ) : (
+                        <tr>
+                          <td colSpan={9} style={{ textAlign: 'center', color: 'var(--muted)', padding: '14px', fontSize: '11.5px' }}>
+                            Физический накопитель подключен (буква диска не смонтирована или не отформатирован)
+                          </td>
+                        </tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })}
+        </div>
       </section>
 
       {/* Live RDP Sessions Panel in Device Monitoring Tab */}
@@ -15672,7 +15854,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.9.5 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.9.6 · © 2026 Сергей Ерёмин
               </span>
 
             </div>

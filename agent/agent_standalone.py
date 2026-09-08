@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.9.5"
+AGENT_VERSION = "2.9.6"
 
 def execute_power_command(action: str, extra: dict = None):
     act = str(action).upper().strip()
@@ -21,7 +21,7 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.9.5")
+        execute_agent_update(server_base, cfg, "2.9.6")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
@@ -249,7 +249,7 @@ def get_logical_drives():
     drives = []
     try:
         if platform.system() == "Windows":
-            ps_cmd = 'Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue | Select-Object DeviceID, VolumeName, FileSystem, Size, FreeSpace | ConvertTo-Json'
+            ps_cmd = 'Get-CimInstance Win32_LogicalDisk -Filter "DriveType=2 or DriveType=3" -ErrorAction SilentlyContinue | Select-Object DeviceID, VolumeName, FileSystem, Size, FreeSpace, DriveType | ConvertTo-Json'
             raw = run_ps_json(ps_cmd)
             for item in normalize_list(raw):
                 dev = item.get("DeviceID") or ""
@@ -260,14 +260,17 @@ def get_logical_drives():
                     free_gb = round(free_b / (1024**3), 1)
                     used_gb = max(0.0, round(size_gb - free_gb, 1))
                     pct = int(round((used_gb / size_gb) * 100)) if size_gb > 0 else 0
+                    is_usb = item.get("DriveType") == 2
                     drives.append({
                         "device": dev,
-                        "volumeName": item.get("VolumeName") or "Локальный диск",
-                        "fileSystem": item.get("FileSystem") or "NTFS",
+                        "volumeName": item.get("VolumeName") or ("USB-накопитель" if is_usb else "Локальный диск"),
+                        "fileSystem": item.get("FileSystem") or ("FAT32" if is_usb else "NTFS"),
                         "sizeGb": size_gb,
                         "usedGb": used_gb,
                         "freeGb": free_gb,
-                        "percent": pct
+                        "percent": pct,
+                        "driveType": "USB" if is_usb else "Fixed",
+                        "isRemovable": is_usb
                     })
         else:
             out = subprocess.check_output("df -P -k 2>/dev/null || true", shell=True, text=True, timeout=3)
@@ -1600,7 +1603,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.5"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.6"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:

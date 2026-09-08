@@ -3547,4 +3547,202 @@
   white-space: nowrap;
 }
 
+/* Multi-Drive & USB Dedicated Tabular Layouts */
+.storage-units-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 16px 20px 20px;
+}
+
+.storage-drive-card {
+  background: var(--card-bg, #ffffff);
+  border: 1px solid var(--border-color, #e2e8f0);
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.04);
+  transition: all 0.2s ease;
+}
+
+.storage-drive-card:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.app.dark .storage-drive-card {
+  background: rgba(30, 41, 59, 0.7);
+  border-color: rgba(255, 255, 255, 0.08);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+}
+
+/* Special highlight for USB drives */
+.storage-drive-card.usb-drive-card {
+  border-color: rgba(14, 165, 233, 0.45);
+  background: linear-gradient(180deg, rgba(14, 165, 233, 0.03) 0%, var(--card-bg, #ffffff) 100%);
+  box-shadow: 0 2px 10px rgba(14, 165, 233, 0.06);
+}
+
+.app.dark .storage-drive-card.usb-drive-card {
+  border-color: rgba(56, 189, 248, 0.35);
+  background: linear-gradient(180deg, rgba(14, 165, 233, 0.08) 0%, rgba(30, 41, 59, 0.75) 100%);
+  box-shadow: 0 4px 16px rgba(14, 165, 233, 0.08);
+}
+
+.storage-card-header {
+  padding: 13px 18px;
+  background: var(--table-header-bg, rgba(248, 250, 252, 0.7));
+  border-bottom: 1px solid var(--border-color, #e2e8f0);
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.app.dark .storage-card-header {
+  background: rgba(15, 23, 42, 0.5);
+  border-bottom-color: rgba(255, 255, 255, 0.07);
+}
+
+.storage-card-title-group {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.storage-card-icon-box {
+  width: 36px;
+  height: 36px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.storage-card-icon-box.fixed {
+  background: rgba(249, 115, 22, 0.12);
+  color: #ea580c;
+}
+
+.app.dark .storage-card-icon-box.fixed {
+  background: rgba(249, 115, 22, 0.2);
+  color: #fb923c;
+}
+
+.storage-card-icon-box.usb {
+  background: rgba(14, 165, 233, 0.15);
+  color: #0284c7;
+  box-shadow: 0 0 10px rgba(14, 165, 233, 0.2);
+}
+
+.app.dark .storage-card-icon-box.usb {
+  background: rgba(56, 189, 248, 0.2);
+  color: #38bdf8;
+  box-shadow: 0 0 12px rgba(56, 189, 248, 0.25);
+}
+
+.storage-card-title-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.storage-card-title {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--ink, #0f172a);
+}
+
+.app.dark .storage-card-title {
+  color: #f1f5f9;
+}
+
+.storage-card-meta-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--muted, #64748b);
+  flex-wrap: wrap;
+}
+
+.storage-card-meta-row .mono {
+  font-family: 'DM Mono', monospace;
+}
+
+.drive-badge-usb {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+  border: 1px solid rgba(14, 165, 233, 0.3);
+}
+
+.app.dark .drive-badge-usb {
+  background: rgba(14, 165, 233, 0.2);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+.drive-badge-fixed {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-size: 10px;
+  font-weight: 600;
+  background: rgba(100, 116, 139, 0.1);
+  color: #475569;
+  border: 1px solid rgba(100, 116, 139, 0.2);
+}
+
+.app.dark .drive-badge-fixed {
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+  border-color: rgba(148, 163, 184, 0.2);
+}
+
+.drive-letter-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'DM Mono', monospace;
+  font-size: 11.5px;
+  font-weight: 700;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: rgba(249, 115, 22, 0.1);
+  color: #ea580c;
+  border: 1px solid rgba(249, 115, 22, 0.25);
+}
+
+.drive-letter-badge.usb {
+  background: rgba(14, 165, 233, 0.12);
+  color: #0284c7;
+  border-color: rgba(14, 165, 233, 0.3);
+}
+
+.app.dark .drive-letter-badge {
+  background: rgba(249, 115, 22, 0.15);
+  color: #fb923c;
+  border-color: rgba(249, 115, 22, 0.3);
+}
+
+.app.dark .drive-letter-badge.usb {
+  background: rgba(56, 189, 248, 0.18);
+  color: #38bdf8;
+  border-color: rgba(56, 189, 248, 0.35);
+}
+
+
 
