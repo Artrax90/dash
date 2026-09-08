@@ -487,6 +487,9 @@ async def login(payload: LoginPayload):
     save_users(users)
 
     # Check if there is an existing active session for this user
+    file_sessions = _load_sessions()
+    if file_sessions:
+        user_active_sessions.update(file_sessions)
     old_session = user_active_sessions.get(clean_username)
     old_token = old_session.get("token") if old_session else None
     session_token = register_user_session(clean_username)
@@ -556,13 +559,24 @@ async def validate_session_endpoint(request: Request):
         token = auth_header[7:].strip()
     x_username = request.headers.get("X-Username", "").strip().lower()
 
-    if not x_username or not token:
-        # If no active user is set yet, session is neutral
-        return {"valid": True, "active": False}
+    if not x_username:
+        return {"valid": False, "active": False, "reason": "Пользователь не указан"}
+
+    file_sessions = _load_sessions()
+    if file_sessions:
+        user_active_sessions.update(file_sessions)
 
     active_sess = user_active_sessions.get(x_username)
+
+    if not token:
+        return {
+            "valid": False,
+            "active": False,
+            "reason": "Токен сессии отсутствует или устарел"
+        }
+
     if not active_sess:
-        # If no session registered yet in memory (e.g. server restart), register current token
+        # If no session registered yet on server (e.g. initial start), register this token
         register_user_session(x_username, token)
         return {"valid": True, "active": True}
 
@@ -570,7 +584,7 @@ async def validate_session_endpoint(request: Request):
         return {
             "valid": False,
             "active": False,
-            "reason": "Вход выполнен с другого устройства или сессия завершена"
+            "reason": "Сессия завершена: выполнен вход с другого устройства или вкладки"
         }
 
     return {"valid": True, "active": True}

@@ -1,4 +1,4 @@
-﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
 $embeddedServer = "__SERVER_URL__"
 $embeddedToken = "__TOKEN__"
 
@@ -1860,22 +1860,31 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
 
         `$procList = @()
         try {
-            `$topProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 4 } | Sort-Object CPU -Descending | Select-Object -First 15
-            foreach (`$p in `$topProcs) {
-                `$pCpu = 0.0
-                if (`$p.CPU) { `$pCpu = [math]::Round((`$p.CPU % 100), 1) }
-                `$pRamMb = 0
-                if (`$p.WorkingSet64) { `$pRamMb = [int][math]::Round(`$p.WorkingSet64 / 1MB, 0) }
-                `$pName = `$p.ProcessName
-                if (-not `$pName.EndsWith(".exe")) { `$pName = `$pName + ".exe" }
-                `$procList += @{
-                    pid = `$p.Id
-                    name = `$pName
-                    cpu = "`$pCpu"
-                    ram = `$pRamMb
-                    diskIo = "0.1 MB/s"
-                    user = `$user
-                    status = "Running"
+            `$allProcs = @()
+            try {
+                `$allProcs = Get-Process -IncludeUserName -ErrorAction Stop | Where-Object { `$_.Id -gt 0 }
+            } catch {
+                `$allProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 0 }
+            }
+            if (`$allProcs) {
+                `$allProcs = `$allProcs | Sort-Object @{Expression={ if (`$_.CPU) { `$_.CPU } else { 0 } }; Descending=`$true}, @{Expression={ if (`$_.WorkingSet64) { `$_.WorkingSet64 } else { 0 } }; Descending=`$true}
+                foreach (`$p in `$allProcs) {
+                    `$pCpu = 0.0
+                    if (`$p.CPU) { `$pCpu = [math]::Round((`$p.CPU % 100), 1) }
+                    `$pRamMb = 0
+                    if (`$p.WorkingSet64) { `$pRamMb = [int][math]::Round(`$p.WorkingSet64 / 1MB, 0) }
+                    `$pName = `$p.ProcessName
+                    if (-not `$pName.EndsWith(".exe")) { `$pName = `$pName + ".exe" }
+                    `$pUser = if (`$p.UserName) { (`$p.UserName -split '\\')[-1] } else { if (`$p.SessionId -eq 0) { "SYSTEM" } else { if (`$user) { `$user } else { "User" } } }
+                    `$procList += @{
+                        pid = `$p.Id
+                        name = `$pName
+                        cpu = "`$pCpu"
+                        ram = `$pRamMb
+                        diskIo = "0.1 MB/s"
+                        user = `$pUser
+                        status = "Running"
+                    }
                 }
             }
         } catch {}

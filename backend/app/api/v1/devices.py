@@ -362,6 +362,14 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
             "percent": d_pct
         }]
 
+    # Look up live reported processes from agent
+    live_procs = None
+    for k in (d.id, (d.id.upper() if d.id else None), (d.id.lower() if d.id else None),
+              d.hostname, (d.hostname.upper() if d.hostname else None), (d.hostname.lower() if d.hostname else None)):
+        if k and k in device_live_processes and device_live_processes[k]:
+            live_procs = device_live_processes[k]
+            break
+
     return {
         "id": d.id,
         "name": d.name,
@@ -389,6 +397,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "ram": d.ram_usage if is_online else 0,
         "disk": d.disk_usage or 0,
         "drives": drives_list,
+        "processes": live_procs if live_procs is not None else [],
         "uptime": calculated_uptime if is_online else "—",
         "uptimeSeconds": uptime_sec if is_online else 0,
         "bootTime": boot_time.strftime("%H:%M:%S") if (boot_time and is_online) else "—",

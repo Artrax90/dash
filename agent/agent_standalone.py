@@ -327,11 +327,13 @@ def get_top_processes():
     # 1. Try psutil
     try:
         import psutil
-        for p in sorted(psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'memory_info', 'username', 'status']), key=lambda x: (x.info.get('cpu_percent') or 0, x.info.get('memory_percent') or 0), reverse=True)[:15]:
+        for p in sorted(psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_percent', 'memory_info', 'username', 'status']), key=lambda x: (x.info.get('cpu_percent') or 0, x.info.get('memory_percent') or 0), reverse=True):
             try:
                 info = p.info
-                name = info.get('name') or 'unknown'
                 pid = info.get('pid') or 0
+                if pid == 0:
+                    continue
+                name = info.get('name') or 'unknown'
                 cpu = info.get('cpu_percent') or 0.0
                 mem_info = info.get('memory_info')
                 ram_mb = round(mem_info.rss / (1024 * 1024)) if mem_info else int(info.get('memory_percent') or 0) * 10
@@ -353,7 +355,7 @@ def get_top_processes():
     # 2. Linux ps command fallback
     if not procs and platform.system() == "Linux":
         try:
-            out = subprocess.check_output("ps -eo pid,comm,%cpu,%mem,user --sort=-%cpu | head -n 16", shell=True, text=True)
+            out = subprocess.check_output("ps -eo pid,comm,%cpu,%mem,user --sort=-%cpu", shell=True, text=True)
             lines = [l.strip() for l in out.splitlines() if l.strip()]
             for line in lines[1:]:
                 parts = line.split(None, 4)
@@ -374,7 +376,7 @@ def get_top_processes():
     # 3. Windows PowerShell Get-Process fallback
     if not procs and platform.system() == "Windows":
         try:
-            ps_cmd = 'Get-Process | Sort-Object CPU -Descending | Select-Object -First 12 Id, ProcessName, CPU, WorkingSet64 | ConvertTo-Json'
+            ps_cmd = 'Get-Process | Where-Object { $_.Id -gt 0 } | Sort-Object CPU -Descending | Select-Object Id, ProcessName, CPU, WorkingSet64 | ConvertTo-Json'
             raw = run_ps_json(ps_cmd)
             for item in normalize_list(raw):
                 if item.get("ProcessName"):

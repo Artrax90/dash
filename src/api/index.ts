@@ -367,6 +367,15 @@ export const devicesApi = {
     } catch {}
     return true;
   },
+  getProcesses: async (deviceId: string): Promise<any[]> => {
+    try {
+      const res = await fetch(`${API_BASE}/devices/${encodeURIComponent(deviceId)}/processes`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return [];
+  },
   killProcess: async (deviceId: string, pid: number, processName: string): Promise<{ success: boolean; message: string }> => {
     const res = await fetch(`${API_BASE}/devices/${deviceId}/processes/${pid}/kill`, {
       method: 'POST',

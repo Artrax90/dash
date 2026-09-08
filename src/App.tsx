@@ -769,8 +769,8 @@ function App() {
         const targetUsername = evt?.username?.trim().toLowerCase();
 
         if (myUsername && targetUsername && myUsername === targetUsername) {
-          // If my active token differs from the newly issued token, kick out immediately!
-          if (myToken && evt.newToken && myToken !== evt.newToken) {
+          // If my active token is missing, or differs from the newly issued token: kick out immediately!
+          if (!myToken || (evt.newToken && myToken !== evt.newToken)) {
             localStorage.removeItem('wm_user_session');
             localStorage.removeItem('wm_token');
             setCurrentUser(null);
@@ -783,12 +783,11 @@ function App() {
       } catch {}
     });
 
-    // Periodic check (every 5s) to guarantee single session integrity even if WebSocket was temporarily disconnected
-    const sessionCheckInterval = setInterval(async () => {
+    // High-frequency verification (every 2.5s, window focus, visibility change) to guarantee single session integrity
+    const checkSessionNow = async () => {
       try {
-        const myToken = localStorage.getItem('wm_token');
         const savedSession = localStorage.getItem('wm_user_session');
-        if (myToken && savedSession) {
+        if (savedSession) {
           const res = await authApi.validateSession();
           if (res && res.valid === false) {
             localStorage.removeItem('wm_user_session');
@@ -801,11 +800,22 @@ function App() {
           }
         }
       } catch {}
-    }, 5000);
+    };
+
+    const sessionCheckInterval = setInterval(checkSessionNow, 2500);
+    window.addEventListener('focus', checkSessionNow);
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        checkSessionNow();
+      }
+    };
+    document.addEventListener('visibilitychange', handleVisibilityChange);
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
       window.removeEventListener('hashchange', handlePopState);
+      window.removeEventListener('focus', checkSessionNow);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
       unsubAlert();
       unsubHw();
       unsubResolved();
@@ -4804,6 +4814,20 @@ function DeviceMonitoringTab({
 
   const [hoveredIdx, setHoveredIdx] = useState<number | null>(null);
   const [deviceEvents, setDeviceEvents] = useState<any[]>([]);
+  const [liveProcesses, setLiveProcesses] = useState<any[]>(() => {
+    return ((device as any).processes && Array.isArray((device as any).processes))
+      ? (device as any).processes
+      : [];
+  });
+
+  const loadProcesses = useCallback(async () => {
+    try {
+      const procs = await devicesApi.getProcesses(device.id);
+      if (Array.isArray(procs) && procs.length > 0) {
+        setLiveProcesses(procs);
+      }
+    } catch {}
+  }, [device.id]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -4823,15 +4847,38 @@ function DeviceMonitoringTab({
 
   useEffect(() => {
     loadHistory();
-    const interval = setInterval(loadHistory, 15000);
-    return () => clearInterval(interval);
-  }, [loadHistory]);
+    loadProcesses();
+    const interval = setInterval(() => {
+      loadHistory();
+      loadProcesses();
+    }, 10000);
+
+    const unsubProcKilled = wsClient.on('device.process.killed', (evt: any) => {
+      if (evt && (evt.deviceId === device.id || evt.deviceName === device.name)) {
+        if (evt.pid) {
+          setLiveProcesses(prev => prev.filter(p => p.pid !== evt.pid));
+          setTerminatedPids(prev => [...prev, evt.pid]);
+        }
+      }
+    });
+
+    return () => {
+      clearInterval(interval);
+      unsubProcKilled();
+    };
+  }, [loadHistory, loadProcesses, device.id, device.name]);
+
+  useEffect(() => {
+    if ((device as any).processes && Array.isArray((device as any).processes) && (device as any).processes.length > 0) {
+      setLiveProcesses((device as any).processes);
+    }
+  }, [device]);
 
   const handleManualRefresh = () => {
     setRefreshing(true);
-    loadHistory().finally(() => {
+    Promise.all([loadHistory(), loadProcesses()]).finally(() => {
       setRefreshing(false);
-      notify?.(`Телеметрия станции ${device.name} обновлена`);
+      notify?.(`Телеметрия и процессы станции ${device.name} обновлены`);
     });
   };
 
@@ -5009,9 +5056,9 @@ function DeviceMonitoringTab({
   const netMac = netPrimary?.mac || device.mac;
 
   // Real agent reported processes
-  const baseProcesses: any[] = ((device as any).processes && Array.isArray((device as any).processes))
-    ? (device as any).processes
-    : [];
+  const baseProcesses: any[] = liveProcesses.length > 0
+    ? liveProcesses
+    : (((device as any).processes && Array.isArray((device as any).processes)) ? (device as any).processes : []);
 
   const activeProcesses = baseProcesses.filter(p => !terminatedPids.includes(p.pid));
   const filteredProcesses = activeProcesses.filter(p =>
@@ -16459,7 +16506,10 @@ function SettingsPage({
   const handleDownloadBackup = async () => {
     setIsDownloadingBackup(true);
     try {
-      await systemApi.downloadBackup();
+      const data = await systemApi.downloadBackup();
+      const dateStr = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+      const filename = `workstation_manager_backup_${dateStr}.json`;
+      downloadTextFile(filename, JSON.stringify(data, null, 2));
       notify('Полная резервная копия базы данных и конфигурации успешно сохранена!');
     } catch (err: any) {
       notify(`Ошибка скачивания бэкапа: ${err?.message || 'Сбой сервера'}`);
