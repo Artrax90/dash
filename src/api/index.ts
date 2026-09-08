@@ -307,11 +307,38 @@ export const devicesApi = {
   getAlertPolicy: async (deviceId: string): Promise<any> => {
     try {
       const res = await fetch(`${API_BASE}/devices/${deviceId}/alert-policy`);
-      if (res.ok) return await res.json();
+      if (res.ok) {
+        const data = await res.json();
+        try {
+          if (typeof localStorage !== 'undefined') {
+            const jsonStr = JSON.stringify(data);
+            localStorage.setItem(`wm_alert_policy_${deviceId}`, jsonStr);
+            localStorage.setItem(`wm_alert_policy_${deviceId.toLowerCase()}`, jsonStr);
+            localStorage.setItem(`wm_alert_policy_${deviceId.toUpperCase()}`, jsonStr);
+          }
+        } catch {}
+        return data;
+      }
+    } catch {}
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const cached = localStorage.getItem(`wm_alert_policy_${deviceId}`) ||
+          localStorage.getItem(`wm_alert_policy_${deviceId.toLowerCase()}`) ||
+          localStorage.getItem(`wm_alert_policy_${deviceId.toUpperCase()}`);
+        if (cached) return JSON.parse(cached);
+      }
     } catch {}
     return null;
   },
   saveAlertPolicy: async (deviceId: string, policy: any): Promise<boolean> => {
+    try {
+      if (typeof localStorage !== 'undefined') {
+        const jsonStr = JSON.stringify(policy);
+        localStorage.setItem(`wm_alert_policy_${deviceId}`, jsonStr);
+        localStorage.setItem(`wm_alert_policy_${deviceId.toLowerCase()}`, jsonStr);
+        localStorage.setItem(`wm_alert_policy_${deviceId.toUpperCase()}`, jsonStr);
+      }
+    } catch {}
     try {
       const res = await fetch(`${API_BASE}/devices/${deviceId}/alert-policy`, {
         method: 'POST',

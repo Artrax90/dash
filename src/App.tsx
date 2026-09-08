@@ -1995,6 +1995,28 @@ function Dashboard({
   );
 }
 
+const getDeviceUptimeValue = (d: Device): number => {
+  if (d.powerStatus !== 'On') return -1;
+  if (typeof d.uptimeSeconds === 'number' && d.uptimeSeconds > 0) return d.uptimeSeconds;
+  if (d.bootTimeIso) {
+    const t = new Date(d.bootTimeIso).getTime();
+    if (!isNaN(t) && t > 0) return Date.now() - t;
+  }
+  if (d.uptime) {
+    let totalSeconds = 0;
+    const dMatch = d.uptime.match(/(\d+)\s*д/i);
+    const hMatch = d.uptime.match(/(\d+)\s*ч/i);
+    const mMatch = d.uptime.match(/(\d+)\s*м/i);
+    if (dMatch) totalSeconds += parseInt(dMatch[1], 10) * 86400;
+    if (hMatch) totalSeconds += parseInt(hMatch[1], 10) * 3600;
+    if (mMatch) totalSeconds += parseInt(mMatch[1], 10) * 60;
+    if (totalSeconds > 0) return totalSeconds;
+  }
+  return 0;
+};
+
+type DeviceSortField = 'status' | 'name' | 'group' | 'ip' | 'user' | 'rdp' | 'cpu' | 'ram' | 'uptime' | 'lastSeen';
+
 // ----------------------------------------------------
 // 2. DEVICE TABLE & ACTIONS MENU
 // ----------------------------------------------------
@@ -2024,18 +2046,77 @@ function DeviceTable({
   const { t } = useLanguage();
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
+  const [sortField, setSortField] = useState<DeviceSortField | null>(null);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
-  const totalPages = Math.max(1, Math.ceil(devices.length / pageSize));
+  const handleSort = (field: DeviceSortField) => {
+    if (sortField === field) {
+      setSortOrder(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      if (field === 'cpu' || field === 'ram' || field === 'uptime' || field === 'lastSeen') {
+        setSortOrder('desc');
+      } else {
+        setSortOrder('asc');
+      }
+    }
+  };
+
+  const sortedDevices = useMemo(() => {
+    if (!sortField) return devices;
+    return [...devices].sort((a, b) => {
+      let cmp = 0;
+      if (sortField === 'status') {
+        const score = (d: Device) => (d.powerStatus === 'On' ? 3 : d.powerStatus === 'Standby' ? 2 : 1);
+        cmp = score(a) - score(b);
+      } else if (sortField === 'name') {
+        cmp = (a.name || '').localeCompare(b.name || '', 'ru');
+      } else if (sortField === 'group') {
+        const gA = getDeviceGroups(a)[0] || a.group || '';
+        const gB = getDeviceGroups(b)[0] || b.group || '';
+        cmp = gA.localeCompare(gB, 'ru');
+      } else if (sortField === 'ip') {
+        const numA = (a.ip || '').split('.').map(n => parseInt(n, 10) || 0);
+        const numB = (b.ip || '').split('.').map(n => parseInt(n, 10) || 0);
+        for (let i = 0; i < 4; i++) {
+          if ((numA[i] || 0) !== (numB[i] || 0)) {
+            cmp = (numA[i] || 0) - (numB[i] || 0);
+            break;
+          }
+        }
+        if (cmp === 0) cmp = (a.ip || '').localeCompare(b.ip || '');
+      } else if (sortField === 'user') {
+        const uA = (a.currentUser || '').trim() || (a.rdpSessions?.[0]?.username || '');
+        const uB = (b.currentUser || '').trim() || (b.rdpSessions?.[0]?.username || '');
+        cmp = uA.localeCompare(uB, 'ru');
+      } else if (sortField === 'rdp') {
+        cmp = (a.rdpStatus || '').localeCompare(b.rdpStatus || '', 'ru');
+      } else if (sortField === 'cpu') {
+        cmp = (a.cpu || 0) - (b.cpu || 0);
+      } else if (sortField === 'ram') {
+        cmp = (a.ram || 0) - (b.ram || 0);
+      } else if (sortField === 'uptime') {
+        cmp = getDeviceUptimeValue(a) - getDeviceUptimeValue(b);
+      } else if (sortField === 'lastSeen') {
+        const tA = a.lastSeenIso ? new Date(a.lastSeenIso).getTime() : (a.lastSeen ? new Date(a.lastSeen).getTime() : 0);
+        const tB = b.lastSeenIso ? new Date(b.lastSeenIso).getTime() : (b.lastSeen ? new Date(b.lastSeen).getTime() : 0);
+        cmp = tA - tB;
+      }
+      return sortOrder === 'asc' ? cmp : -cmp;
+    });
+  }, [devices, sortField, sortOrder]);
+
+  const totalPages = Math.max(1, Math.ceil(sortedDevices.length / pageSize));
 
   useEffect(() => {
     if (currentPage > totalPages) {
       setCurrentPage(1);
     }
-  }, [devices.length, totalPages, currentPage]);
+  }, [sortedDevices.length, totalPages, currentPage]);
 
   const startIndex = (currentPage - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, devices.length);
-  const pagedDevices = compact ? devices : devices.slice(startIndex, endIndex);
+  const endIndex = Math.min(startIndex + pageSize, sortedDevices.length);
+  const pagedDevices = compact ? sortedDevices : sortedDevices.slice(startIndex, endIndex);
 
   const allSelected = pagedDevices.length > 0 && pagedDevices.every(d => selectedIds.includes(d.id));
 
@@ -2046,22 +2127,72 @@ function DeviceTable({
     return () => window.removeEventListener('click', handleWindowClick);
   }, []);
 
+  const renderSortHeader = (title: string, field: DeviceSortField, customStyle?: React.CSSProperties) => {
+    const isActive = sortField === field;
+    return (
+      <th
+        key={field}
+        style={{ cursor: 'pointer', userSelect: 'none', ...customStyle }}
+        onClick={() => handleSort(field)}
+        className={`sortable-th ${isActive ? 'active-sort' : ''}`}
+        title={`Сортировать по столбцу «${title}» (${isActive ? (sortOrder === 'asc' ? 'сейчас: по возрастанию ▲' : 'сейчас: по убыванию ▼') : 'нажмите для сортировки'})`}
+      >
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', width: '100%', justifyContent: 'space-between' }}>
+          <span>{title}</span>
+          <span
+            className={`sort-arrows-btn ${isActive ? 'active' : ''}`}
+            style={{
+              display: 'inline-flex',
+              flexDirection: 'column',
+              gap: '1px',
+              padding: '1px 3px',
+              borderRadius: '3px',
+              background: isActive ? 'var(--blue-soft)' : 'transparent',
+              transition: 'all 0.15s ease'
+            }}
+          >
+            <ArrowUp
+              size={9}
+              strokeWidth={isActive && sortOrder === 'asc' ? 3 : 2}
+              style={{
+                color: isActive && sortOrder === 'asc' ? 'var(--blue)' : 'var(--muted)',
+                opacity: isActive && sortOrder === 'asc' ? 1 : 0.35,
+                transform: isActive && sortOrder === 'asc' ? 'scale(1.2)' : 'none',
+                transition: 'all 0.15s ease'
+              }}
+            />
+            <ArrowDown
+              size={9}
+              strokeWidth={isActive && sortOrder === 'desc' ? 3 : 2}
+              style={{
+                color: isActive && sortOrder === 'desc' ? 'var(--blue)' : 'var(--muted)',
+                opacity: isActive && sortOrder === 'desc' ? 1 : 0.35,
+                transform: isActive && sortOrder === 'desc' ? 'scale(1.2)' : 'none',
+                transition: 'all 0.15s ease'
+              }}
+            />
+          </span>
+        </div>
+      </th>
+    );
+  };
+
   return (
     <div className="table-wrap">
       <table>
         <thead>
           <tr>
             <th><input type="checkbox" checked={allSelected} onChange={onSelectAll} /></th>
-            <th>{t('common.status')}</th>
-            <th>{t('common.device')}</th>
-            <th>{t('common.group')}</th>
-            <th>{t('common.ipAddress')}</th>
-            <th>{t('common.currentUser')}</th>
-            <th>{t('common.rdp')}</th>
-            <th>CPU</th>
-            <th>RAM</th>
-            <th>{t('common.uptime')}</th>
-            <th>{t('common.lastSeen')}</th>
+            {renderSortHeader(t('common.status'), 'status')}
+            {renderSortHeader(t('common.device'), 'name')}
+            {renderSortHeader(t('common.group'), 'group')}
+            {renderSortHeader(t('common.ipAddress'), 'ip')}
+            {renderSortHeader(t('common.currentUser'), 'user')}
+            {renderSortHeader(t('common.rdp'), 'rdp')}
+            {renderSortHeader('CPU', 'cpu')}
+            {renderSortHeader('RAM', 'ram')}
+            {renderSortHeader(t('common.uptime'), 'uptime')}
+            {renderSortHeader(t('common.lastSeen'), 'lastSeen')}
             <th />
           </tr>
         </thead>
@@ -8196,8 +8327,10 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
           if (policy.thresholds.rdpIdleMinutes !== undefined) setRdpIdleLimit(policy.thresholds.rdpIdleMinutes);
         }
         const ch = policy.notifyChannels || policy.notify_channels || {};
-        if (ch.webUi !== undefined) setWebUiChannel(ch.webUi);
-        if (ch.telegram !== undefined) setTelegramChannel(ch.telegram);
+        const webVal = ch.webUi !== undefined ? ch.webUi : (ch.web_ui !== undefined ? ch.web_ui : undefined);
+        const tgVal = ch.telegram !== undefined ? ch.telegram : (ch.tg !== undefined ? ch.tg : undefined);
+        if (webVal !== undefined) setWebUiChannel(Boolean(webVal));
+        if (tgVal !== undefined) setTelegramChannel(Boolean(tgVal));
       }
     });
   }, [deviceId]);

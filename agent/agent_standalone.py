@@ -373,22 +373,69 @@ def get_top_processes():
         except Exception:
             pass
 
-    # 3. Windows PowerShell Get-Process fallback
+    # 3. Windows PowerShell Get-Process fallback (with accurate delta calculation)
     if not procs and platform.system() == "Windows":
         try:
-            ps_cmd = 'Get-Process | Where-Object { $_.Id -gt 0 } | Sort-Object CPU -Descending | Select-Object Id, ProcessName, CPU, WorkingSet64 | ConvertTo-Json'
+            import time
+            global _prev_win_procs, _prev_win_time
+            if "_prev_win_procs" not in globals():
+                _prev_win_procs = {}
+                _prev_win_time = 0.0
+
+            ps_cmd = 'Get-Process | Where-Object { $_.Id -gt 0 } | Select-Object Id, ProcessName, CPU, WorkingSet64 | ConvertTo-Json'
             raw = run_ps_json(ps_cmd)
+            now_ts = time.time()
+            cores = os.cpu_count() or 4
+
+            if not _prev_win_procs or (_prev_win_time <= 0):
+                # First run: seed previous snapshot and take a 250ms interval sample
+                for item in normalize_list(raw):
+                    pid = item.get("Id", 0)
+                    c = float(item.get("CPU") or 0.0)
+                    if pid and c > 0:
+                        _prev_win_procs[pid] = c
+                _prev_win_time = now_ts
+                time.sleep(0.25)
+                raw = run_ps_json(ps_cmd)
+                now_ts = time.time()
+
+            dt_sec = max(0.2, now_ts - _prev_win_time)
+            new_win_procs = {}
+            calc_procs = []
+
             for item in normalize_list(raw):
-                if item.get("ProcessName"):
-                    procs.append({
-                        "pid": item.get("Id", 0),
-                        "name": f"{item.get('ProcessName')}.exe",
-                        "cpu": f"{round(float(item.get('CPU') or 0) % 100, 1)}",
-                        "ram": round((item.get("WorkingSet64") or 0) / (1024*1024)),
-                        "diskIo": "0.2 MB/s",
-                        "user": get_current_user() or "SYSTEM",
-                        "status": "Running"
-                    })
+                p_name = item.get("ProcessName")
+                if not p_name:
+                    continue
+                pid = item.get("Id", 0)
+                cur_cpu = float(item.get("CPU") or 0.0)
+                if pid and cur_cpu > 0:
+                    new_win_procs[pid] = cur_cpu
+
+                p_cpu_pct = 0.0
+                if pid in _prev_win_procs and cur_cpu > 0:
+                    prev_c = _prev_win_procs[pid]
+                    delta_c = cur_cpu - prev_c
+                    if delta_c > 0:
+                        raw_pct = (delta_c / (dt_sec * cores)) * 100.0
+                        p_cpu_pct = round(min(100.0, max(0.0, raw_pct)), 1)
+
+                calc_procs.append({
+                    "pid": pid,
+                    "name": f"{p_name}.exe" if not str(p_name).endswith(".exe") else p_name,
+                    "cpu": f"{p_cpu_pct:.1f}",
+                    "cpu_val": p_cpu_pct,
+                    "ram": round((item.get("WorkingSet64") or 0) / (1024 * 1024)),
+                    "diskIo": "0.1 MB/s",
+                    "user": get_current_user() or "SYSTEM",
+                    "status": "Running"
+                })
+
+            _prev_win_procs = new_win_procs
+            _prev_win_time = now_ts
+
+            calc_procs.sort(key=lambda x: (x["cpu_val"], x["ram"]), reverse=True)
+            procs = [{k: v for k, v in p.items() if k != "cpu_val"} for p in calc_procs]
         except Exception:
             pass
 

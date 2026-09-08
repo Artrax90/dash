@@ -1309,11 +1309,26 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                     if isinstance(p, dict):
                         p_copy = dict(p)
                         try:
-                            c_val = float(p_copy.get("cpu", 0))
+                            c_val = float(str(p_copy.get("cpu", 0)).replace("%", "").strip())
                             p_copy["cpu"] = str(round(min(100.0, max(0.0, c_val)), 1))
                         except Exception:
                             p_copy["cpu"] = "0.0"
                         procs.append(p_copy)
+
+                # Anomaly guard: if total process CPU exceeds 100% or heavily contradicts system CPU,
+                # legacy agent sent modulo/cumulative values; scale them proportionally to real system CPU.
+                total_proc_cpu = sum(float(p.get("cpu", 0)) for p in procs)
+                sys_cpu = float(payload.get("cpu") or payload.get("cpuPercent") or device.cpu_usage or 10.0)
+                if total_proc_cpu > 100.0 or (sys_cpu > 0 and total_proc_cpu > max(sys_cpu * 2.5, 95.0)):
+                    target_budget = max(1.0, min(sys_cpu * 0.9, 85.0))
+                    scale = target_budget / max(total_proc_cpu, 1.0)
+                    for p in procs:
+                        try:
+                            scaled_c = round(float(p.get("cpu", 0)) * scale, 1)
+                            p["cpu"] = str(scaled_c)
+                        except Exception:
+                            pass
+
                 for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None), device_id, (device_id.upper() if device_id else None)):
                     if k:
                         device_live_processes[k] = procs

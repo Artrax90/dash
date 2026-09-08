@@ -1,6 +1,7 @@
 import pytest
 import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
+from sqlalchemy import select
 from fastapi.testclient import TestClient
 from backend.app.main import app
 from backend.app.services.alert_engine import AlertEngine
@@ -140,4 +141,75 @@ def test_offline_alert_suppression_when_channels_disabled():
             assert len(alert_created_calls) == 0, "alert.created must not be broadcast when webUi channel is False"
 
     asyncio.run(_run())
+
+def test_alert_policy_persistence_toggle_and_reload():
+    """Verify that unchecking both webUi and telegram persists across subsequent GET calls."""
+    dev_id = "test-policy-persist-toggle-pc"
+    payload = {
+        "mode": "Custom",
+        "events": {"highCpuUsage": False},
+        "thresholds": {"cpuPercent": 80},
+        "notifyChannels": {
+            "webUi": False,
+            "telegram": False
+        }
+    }
+    post_res = client.post(f"/api/v1/devices/{dev_id}/alert-policy", json=payload)
+    assert post_res.status_code == 200
+
+    # First reload check
+    get_res1 = client.get(f"/api/v1/devices/{dev_id}/alert-policy")
+    assert get_res1.status_code == 200
+    ch1 = get_res1.json().get("notifyChannels", {})
+    assert ch1.get("webUi") is False
+    assert ch1.get("web_ui") is False
+    assert ch1.get("telegram") is False
+    assert ch1.get("tg") is False
+
+    # Upper case ID check
+    get_res_upper = client.get(f"/api/v1/devices/{dev_id.upper()}/alert-policy")
+    assert get_res_upper.status_code == 200
+    ch_upper = get_res_upper.json().get("notifyChannels", {})
+    assert ch_upper.get("webUi") is False
+    assert ch_upper.get("telegram") is False
+
+def test_process_cpu_anomaly_guard_scales_legacy_percentages():
+    """Ensure that when a legacy agent reports modulo-based numbers (e.g. sum=388%), they are scaled to match actual system CPU."""
+    from backend.app.api.v1.devices import device_live_processes
+
+    test_id = "PC-ANOMALY-CPU"
+    # Emulate the exact values from the user's screenshot
+    hb_payload = {
+        "deviceId": test_id,
+        "hostname": test_id,
+        "ip": "192.168.1.99",
+        "cpu": 12,  # Actual system CPU is 12%
+        "ram": 45,
+        "disk": 50,
+        "processes": [
+            {"pid": 4228, "name": "MsMpEng.exe", "cpu": "86.8", "ram": 283, "user": "SYSTEM"},
+            {"pid": 3480, "name": "chrome.exe", "cpu": "82.1", "ram": 137, "user": "User"},
+            {"pid": 1808, "name": "chrome.exe", "cpu": "66.6", "ram": 105, "user": "User"},
+            {"pid": 5780, "name": "dwm.exe", "cpu": "42.6", "ram": 62, "user": "DWM-2"},
+            {"pid": 4, "name": "System.exe", "cpu": "30.6", "ram": 2, "user": "SYSTEM"},
+            {"pid": 4044, "name": "svchost.exe", "cpu": "25.9", "ram": 23, "user": "СИСТЕМА"},
+            {"pid": 4004, "name": "WmiPrvSE.exe", "cpu": "25.7", "ram": 27, "user": "NETWORK SERVICE"},
+        ]
+    }
+
+    resp = client.post("/api/v1/agents/heartbeat", json=hb_payload)
+    assert resp.status_code == 200
+
+    procs = device_live_processes.get(test_id)
+    assert procs is not None
+    assert len(procs) == 7
+
+    total_proc_cpu = sum(float(p.get("cpu", 0)) for p in procs)
+    # Total sum of process CPU should now be scaled to <= system CPU (12%)
+    assert total_proc_cpu <= 12.0
+    # Top process (MsMpEng) should now be ~2-3%, definitely NOT 86.8%!
+    msmpeng = next(p for p in procs if "MsMpEng" in p["name"])
+    assert float(msmpeng["cpu"]) < 5.0
+
+
 

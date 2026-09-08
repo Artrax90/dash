@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.responses import Response, StreamingResponse
 from typing import List, Optional, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import select, func, delete, or_, and_
 from backend.app.db.session import get_db, engine, is_postgres_url
 from backend.app.models.device import Device, PowerStatus, HealthStatus, AgentStatus
@@ -1705,63 +1706,110 @@ async def delete_device(device_id: str, request: Request, db: AsyncSession = Dep
 
 @router.post("/{device_id}/alert-policy")
 async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(AlertPolicyModel).where(
-            (AlertPolicyModel.device_id == device_id) |
-            (AlertPolicyModel.device_id == func.lower(device_id))
-        )
-    )
-    policy = result.scalar_one_or_none()
-    
     mode = payload.get("mode", "Full")
     events = payload.get("events", {})
     thresholds = payload.get("thresholds", {})
-    channels = payload.get("notifyChannels", {}) or payload.get("notify_channels", {})
+
+    raw_channels = payload.get("notifyChannels")
+    if raw_channels is None:
+        raw_channels = payload.get("notify_channels")
+    if not isinstance(raw_channels, dict):
+        raw_channels = {}
+
+    # Explicit boolean resolution for Web and Telegram
+    web_val = raw_channels.get("webUi")
+    if web_val is None:
+        web_val = raw_channels.get("web_ui")
+    if web_val is None:
+        web_val = True
+    web_enabled = bool(web_val)
+
+    tg_val = raw_channels.get("telegram")
+    if tg_val is None:
+        tg_val = raw_channels.get("tg")
+    if tg_val is None:
+        tg_val = True
+    tg_enabled = bool(tg_val)
+
+    canonical_channels = {
+        "webUi": web_enabled,
+        "web_ui": web_enabled,
+        "telegram": tg_enabled,
+        "tg": tg_enabled,
+    }
 
     dev_res = await db.execute(
         select(Device).where(
             (Device.id == device_id) | (Device.id == device_id.upper()) | (Device.id == device_id.lower()) |
-            (Device.hostname == device_id) | (Device.hostname == (device_id.upper() if device_id else ""))
+            (Device.hostname == device_id) | (Device.hostname == (device_id.upper() if device_id else "")) |
+            (Device.hostname == (device_id.lower() if device_id else ""))
         )
     )
     dev = dev_res.scalar_one_or_none()
 
-    if not policy:
-        policy = AlertPolicyModel(
-            device_id=device_id,
-            mode=mode,
-            events_config=events,
-            thresholds=thresholds,
-            notify_channels=channels
-        )
-        db.add(policy)
-    else:
-        policy.mode = mode
-        policy.events_config = events
-        policy.thresholds = thresholds
-        policy.notify_channels = channels
-
+    target_ids = {device_id}
     if dev:
-        other_ids = {dev.id, dev.hostname} - {device_id, None, ""}
-        for oid in other_ids:
-            res_alt = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == oid))
-            alt_pol = res_alt.scalar_one_or_none()
-            if not alt_pol:
-                alt_pol = AlertPolicyModel(
-                    device_id=oid,
-                    mode=mode,
-                    events_config=events,
-                    thresholds=thresholds,
-                    notify_channels=channels
-                )
-                db.add(alt_pol)
-            else:
-                alt_pol.mode = mode
-                alt_pol.events_config = events
-                alt_pol.thresholds = thresholds
-                alt_pol.notify_channels = channels
+        if dev.id:
+            target_ids.add(dev.id)
+        if dev.hostname:
+            target_ids.add(dev.hostname)
 
-    await db.commit()
+    for tid in target_ids:
+        try:
+            result = await db.execute(
+                select(AlertPolicyModel).where(
+                    (AlertPolicyModel.device_id == tid) |
+                    (AlertPolicyModel.device_id == func.lower(tid)) |
+                    (AlertPolicyModel.device_id == func.upper(tid))
+                )
+            )
+            policy = result.scalar_one_or_none()
+            if not policy:
+                policy = AlertPolicyModel(
+                    device_id=tid,
+                    mode=mode,
+                    events_config=dict(events),
+                    thresholds=dict(thresholds),
+                    notify_channels=dict(canonical_channels)
+                )
+                db.add(policy)
+            else:
+                policy.mode = mode
+                policy.events_config = dict(events)
+                policy.thresholds = dict(thresholds)
+                policy.notify_channels = dict(canonical_channels)
+                flag_modified(policy, "events_config")
+                flag_modified(policy, "thresholds")
+                flag_modified(policy, "notify_channels")
+        except Exception:
+            pass
+
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        try:
+            primary_id = (dev.id if dev else None) or device_id
+            res_p = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == primary_id))
+            pol_p = res_p.scalar_one_or_none()
+            if not pol_p:
+                pol_p = AlertPolicyModel(
+                    device_id=primary_id,
+                    mode=mode,
+                    events_config=dict(events),
+                    thresholds=dict(thresholds),
+                    notify_channels=dict(canonical_channels)
+                )
+                db.add(pol_p)
+            else:
+                pol_p.mode = mode
+                pol_p.events_config = dict(events)
+                pol_p.thresholds = dict(thresholds)
+                pol_p.notify_channels = dict(canonical_channels)
+                flag_modified(pol_p, "notify_channels")
+            await db.commit()
+        except Exception:
+            await db.rollback()
 
     # Also persist to DEVICE_CONFIGS_FILE for redundancy
     try:
@@ -1772,12 +1820,12 @@ async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSe
             "mode": mode,
             "events": events,
             "thresholds": thresholds,
-            "notifyChannels": channels
+            "notifyChannels": canonical_channels
         }
-        cfgs["policies"][device_id] = pol_entry
-        if dev:
-            if dev.id: cfgs["policies"][dev.id] = pol_entry
-            if dev.hostname: cfgs["policies"][dev.hostname] = pol_entry
+        for tid in target_ids:
+            cfgs["policies"][tid] = pol_entry
+            cfgs["policies"][tid.lower()] = pol_entry
+            cfgs["policies"][tid.upper()] = pol_entry
         save_device_configs(cfgs)
     except Exception:
         pass
@@ -1786,25 +1834,62 @@ async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSe
 
 @router.get("/{device_id}/alert-policy")
 async def get_alert_policy(device_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(
-        select(AlertPolicyModel).where(
-            (AlertPolicyModel.device_id == device_id) |
-            (AlertPolicyModel.device_id == func.lower(device_id))
+    dev_res = await db.execute(
+        select(Device).where(
+            (Device.id == device_id) | (Device.id == device_id.upper()) | (Device.id == device_id.lower()) |
+            (Device.hostname == device_id) | (Device.hostname == (device_id.upper() if device_id else "")) |
+            (Device.hostname == (device_id.lower() if device_id else ""))
         )
     )
-    policy = result.scalar_one_or_none()
-    if policy:
-        return {
-            "mode": policy.mode,
-            "events": policy.events_config or {},
-            "thresholds": policy.thresholds or {},
-            "notifyChannels": policy.notify_channels or {}
-        }
+    dev = dev_res.scalar_one_or_none()
+    target_ids = [device_id, device_id.lower(), device_id.upper()]
+    if dev:
+        if dev.id:
+            target_ids.extend([dev.id, dev.id.lower(), dev.id.upper()])
+        if dev.hostname:
+            target_ids.extend([dev.hostname, dev.hostname.lower(), dev.hostname.upper()])
+
+    for tid in target_ids:
+        result = await db.execute(
+            select(AlertPolicyModel).where(
+                (AlertPolicyModel.device_id == tid) |
+                (AlertPolicyModel.device_id == func.lower(tid)) |
+                (AlertPolicyModel.device_id == func.upper(tid))
+            )
+        )
+        policy = result.scalar_one_or_none()
+        if policy:
+            channels = policy.notify_channels or {}
+            w = channels.get("webUi") if channels.get("webUi") is not None else channels.get("web_ui", True)
+            tg = channels.get("telegram") if channels.get("telegram") is not None else channels.get("tg", True)
+            return {
+                "mode": policy.mode,
+                "events": policy.events_config or {},
+                "thresholds": policy.thresholds or {},
+                "notifyChannels": {
+                    "webUi": bool(w),
+                    "web_ui": bool(w),
+                    "telegram": bool(tg),
+                    "tg": bool(tg)
+                }
+            }
     
     # Fallback to DEVICE_CONFIGS_FILE
     cfgs = load_device_configs()
-    if device_id in cfgs.get("policies", {}):
-        return cfgs["policies"][device_id]
+    policies_cfg = cfgs.get("policies", {})
+    for tid in target_ids:
+        if tid in policies_cfg:
+            entry = dict(policies_cfg[tid])
+            channels = entry.get("notifyChannels") or entry.get("notify_channels") or {}
+            w = channels.get("webUi") if channels.get("webUi") is not None else channels.get("web_ui", True)
+            tg = channels.get("telegram") if channels.get("telegram") is not None else channels.get("tg", True)
+            entry["notifyChannels"] = {
+                "webUi": bool(w),
+                "web_ui": bool(w),
+                "telegram": bool(tg),
+                "tg": bool(tg)
+            }
+            return entry
         
     return {
         "mode": "Full",
@@ -1828,7 +1913,9 @@ async def get_alert_policy(device_id: str, db: AsyncSession = Depends(get_db)):
         },
         "notifyChannels": {
             "webUi": True,
-            "telegram": True
+            "web_ui": True,
+            "telegram": True,
+            "tg": True
         }
     }
 
