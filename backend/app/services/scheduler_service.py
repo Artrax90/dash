@@ -157,9 +157,11 @@ class SchedulerService:
                 from backend.app.models.device import Device
                 from sqlalchemy import select
                 
-                now = datetime.now()
+                from backend.app.core.time_utils import get_local_now
+                now = get_local_now()
                 current_time_str = now.strftime("%H:%M")
                 current_minute_key = now.strftime("%Y-%m-%d %H:%M")
+
                 weekday_idx = now.weekday() # 0=ПН, ..., 5=СБ, 6=ВС
                 day_names_ru = ["ПН", "ВТ", "СР", "ЧТ", "ПТ", "СБ", "ВС"]
                 day_names_en = ["MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN"]

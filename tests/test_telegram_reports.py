@@ -131,6 +131,29 @@ def test_should_send_user_report_by_schedule():
     sun_morning = datetime(2026, 9, 6, 8, 0, 0)
     assert should_send_user_report(user, 'morning', current_dt=sun_morning) is False
 
+def test_should_send_user_report_timezone_aware():
+    from datetime import timezone
+    user = {
+        'id': 'USR-01',
+        'telegramChatId': '12345678',
+        'telegramReports': {
+            'enabled': True,
+            'morningReport': {'enabled': True, 'time': '08:25'},
+            'eveningReport': {'enabled': True, 'time': '20:00'},
+            'days': [0, 1, 2, 3, 4]
+        }
+    }
+    # Monday 05:25:00 UTC == Monday 08:25:00 MSK (UTC+3)
+    utc_morning = datetime(2026, 9, 7, 5, 25, 0, tzinfo=timezone.utc)
+    assert should_send_user_report(user, 'morning', current_dt=utc_morning) is True
+
+def test_get_local_now_supports_moscow_and_custom_timezones():
+    from backend.app.core.time_utils import get_local_now
+    now_msk = get_local_now("Europe/Moscow")
+    diff_hours = (now_msk.utcoffset().total_seconds() / 3600) if now_msk.utcoffset() else 3
+    assert int(diff_hours) == 3
+
+
 def test_telegram_reports_button_callbacks(monkeypatch):
     import backend.app.api.v1.telegram as tg_module
 

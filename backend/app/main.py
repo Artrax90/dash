@@ -1,14 +1,28 @@
 import os
+import time
+from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
 from fastapi.responses import PlainTextResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.core.config import settings
+
+# Configure process timezone for consistent logging and system datetime
+tz_env = os.getenv("TZ") or getattr(settings, "TIMEZONE", "Europe/Moscow") or "Europe/Moscow"
+os.environ["TZ"] = tz_env
+if hasattr(time, "tzset"):
+    try:
+        time.tzset()
+    except Exception:
+        pass
+
 import logging
 from backend.app.db.session import engine, Base, AsyncSessionLocal, is_postgres_url
+from backend.app.core.time_utils import get_local_now
 
 logger = logging.getLogger("workstation_manager")
 if not logger.handlers:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+
 
 import backend.app.models  # Register all models for SQLAlchemy
 from backend.app.ws.manager import ws_manager
@@ -90,11 +104,13 @@ async def startup_event():
     else:
         conn_str = str(engine.url.database if engine.url else "./data/workstation_manager.db")
 
-    logger.info(f"Workstation Manager database initialized. Engine: {db_type} [{conn_str}]")
+    local_now_str = get_local_now().strftime("%Y-%m-%d %H:%M:%S")
+    logger.info(f"Workstation Manager database initialized. Engine: {db_type} [{conn_str}], Timezone: {tz_env} ({local_now_str})")
     print("=" * 60)
     print("  🚀 Workstation Manager Server Online")
     print(f"  🗄️  Active Database Engine: {db_type}")
     print(f"  📍 Connection Target:      {conn_str}")
+    print(f"  🕒 System Timezone:        {tz_env} ({local_now_str})")
     print("=" * 60)
 
     # Start automated scheduler and telegram bot background loops
@@ -123,7 +139,7 @@ from starlette.staticfiles import StaticFiles
 @app.get("/api/v1/system/status")
 @app.get("/api/v1/status")
 async def get_system_status():
-    """Return health status and active database engine details."""
+    """Return health status, active database engine, and timezone details."""
     is_pg = is_postgres_url(str(engine.url))
     dialect = engine.dialect.name
 
@@ -153,6 +169,8 @@ async def get_system_status():
     return {
         "status": "online",
         "version": settings.VERSION,
+        "timezone": tz_env,
+        "serverTime": get_local_now().strftime("%Y-%m-%d %H:%M:%S"),
         "database": db_info,
     }
 

@@ -24,13 +24,18 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies (wakeonlan for magic packets, ping, curl, sqlite3)
+# Install system dependencies (tzdata for exact local time, wakeonlan, ping, curl, sqlite3)
 RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
     wakeonlan \
     curl \
     iputils-ping \
     sqlite3 \
     && rm -rf /var/lib/apt/lists/*
+
+ENV TZ=Europe/Moscow
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 
 # Install Python dependencies
 COPY requirements.txt .

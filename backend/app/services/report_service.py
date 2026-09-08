@@ -1,3 +1,4 @@
+import os
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timezone, timedelta
 import collections
@@ -186,14 +187,21 @@ def should_send_user_report(user: Dict[str, Any], report_type: str, current_dt: 
     if not rep_cfg or not rep_cfg.get("enabled", False):
         return False
 
+    from backend.app.core.time_utils import get_local_now, to_local_datetime
+    tz_name = rep_cfg.get("timezone") or user.get("timezone") or os.getenv("TZ") or "Europe/Moscow"
+
     if current_dt is None:
-        current_dt = datetime.now()
+        local_dt = get_local_now(tz_name)
+    elif current_dt.tzinfo is not None:
+        local_dt = to_local_datetime(current_dt, tz_name)
+    else:
+        local_dt = current_dt
 
     days = rep_cfg.get("days", [0, 1, 2, 3, 4])
-    if current_dt.weekday() not in days:
+    if local_dt.weekday() not in days:
         return False
 
-    curr_time_str = current_dt.strftime("%H:%M")
+    curr_time_str = local_dt.strftime("%H:%M")
 
     if report_type == "morning":
         m_cfg = rep_cfg.get("morningReport", {})

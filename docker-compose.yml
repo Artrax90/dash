@@ -8,6 +8,7 @@ services:
     ports:
       - "${PORT:-2301}:${PORT:-2301}"
     environment:
+      - TZ=${TZ:-Europe/Moscow}
       - HOST=0.0.0.0
       - PORT=${PORT:-2301}
       - SERVER_URL=${SERVER_URL:-}
@@ -18,6 +19,7 @@ services:
       # Persistent storage for fallback SQLite, tokens, and data
       - ./data:/app/data
       - ./scripts:/app/scripts:ro
+      - /etc/localtime:/etc/localtime:ro
     depends_on:
       postgres:
         condition: service_healthy
@@ -30,16 +32,19 @@ services:
     ports:
       - "${POSTGRES_PORT:-5432}:5432"
     environment:
+      - TZ=${TZ:-Europe/Moscow}
       - POSTGRES_DB=${POSTGRES_DB:-workstation_manager}
       - POSTGRES_USER=${POSTGRES_USER:-postgres}
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-postgres_pass}
     volumes:
       - postgres_data:/var/lib/postgresql/data
+      - /etc/localtime:/etc/localtime:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-postgres} -d $${POSTGRES_DB:-workstation_manager}"]
       interval: 3s
       timeout: 3s
       retries: 5
+
 
 
 volumes:

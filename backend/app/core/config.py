@@ -32,7 +32,9 @@ class Settings(BaseSettings):
     # Agent Management
     LATEST_AGENT_VERSION: str = os.getenv("LATEST_AGENT_VERSION", "2.9.4")
 
-    
+    # Timezone & Localization
+    TIMEZONE: str = os.getenv("TZ", os.getenv("TIMEZONE", "Europe/Moscow"))
+
     # CORS
     CORS_ORIGINS: List[str] = ["*"]
 
