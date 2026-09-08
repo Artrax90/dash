@@ -1996,7 +1996,8 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             osType = "Windows"
             osVersion = `$osCaption
             rdpSessions = `$liveRdp
-            processes = `$procList
+            processes = @(`$procList)
+            topProcesses = @(`$procList)
             netNeighbors = @(try {
                 Get-NetNeighbor -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object {
                     `$_.LinkLayerAddress -and 

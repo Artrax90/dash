@@ -64,7 +64,7 @@ DEVICE_PROCESSES_FILE = os.path.join(settings.DATA_DIR, "device_processes.json")
 def load_device_processes() -> Dict[str, List[Dict[str, Any]]]:
     if os.path.exists(DEVICE_PROCESSES_FILE):
         try:
-            with open(DEVICE_PROCESSES_FILE, "r", encoding="utf-8") as f:
+            with open(DEVICE_PROCESSES_FILE, "r", encoding="utf-8", errors="replace") as f:
                 data = json.load(f)
                 if isinstance(data, dict):
                     res = {}
@@ -95,6 +95,73 @@ def save_device_processes(procs: Dict[str, List[Dict[str, Any]]]):
 device_live_processes: Dict[str, List[Dict[str, Any]]] = load_device_processes()
 # In-memory storage of live reported logical drives per device
 device_drives_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+def is_local_machine(dev: Optional[Any] = None, dev_dict: Optional[Dict[str, Any]] = None, identifier: str = "") -> bool:
+    """Check if the given device, dict, or identifier corresponds to this local host machine."""
+    try:
+        local_host = socket.gethostname().lower()
+        local_ips = {'127.0.0.1', '::1'}
+        try:
+            local_ips.add(socket.gethostbyname(socket.gethostname()))
+            for info in socket.gethostbyname_ex(socket.gethostname())[2]:
+                local_ips.add(info)
+        except Exception:
+            pass
+
+        check_vals = [identifier]
+        if dev:
+            for attr in ['id', 'name', 'hostname', 'ip_address']:
+                check_vals.append(getattr(dev, attr, None))
+        if dev_dict:
+            for k in ['id', 'name', 'hostname', 'ip', 'ip_address']:
+                check_vals.append(dev_dict.get(k))
+
+        for v in check_vals:
+            if not v:
+                continue
+            s = str(v).strip().lower()
+            if s in ["localhost", "127.0.0.1", "::1"]:
+                return True
+            if s == local_host:
+                return True
+            if s in local_ips:
+                return True
+    except Exception:
+        pass
+    return False
+
+def get_local_live_processes(limit: int = 150) -> List[Dict[str, Any]]:
+    """Sample real live running processes directly from the local host operating system."""
+    procs = []
+    try:
+        import psutil
+        for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'username', 'status']):
+            try:
+                info = p.info
+                pid = info.get('pid') or 0
+                if pid <= 0:
+                    continue
+                name = info.get('name') or 'unknown'
+                cpu = round(float(info.get('cpu_percent') or 0.0), 1)
+                mem_info = info.get('memory_info')
+                ram_mb = round(mem_info.rss / (1024 * 1024)) if mem_info else 0
+                user = (info.get('username') or 'SYSTEM').split('\\')[-1]
+                procs.append({
+                    "pid": pid,
+                    "name": name,
+                    "cpu": str(cpu),
+                    "ram": ram_mb,
+                    "diskIo": "0.1 MB/s",
+                    "user": user,
+                    "status": "Running"
+                })
+            except Exception:
+                continue
+        procs.sort(key=lambda x: (float(x["cpu"]), x["ram"]), reverse=True)
+        return procs[:limit]
+    except Exception as e:
+        print(f"Error collecting local live processes: {e}")
+        return []
 
 async def find_device_resilient(db: AsyncSession, identifier: str) -> Tuple[Optional[Device], Optional[Dict[str, Any]]]:
     """
@@ -447,13 +514,27 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
             "percent": d_pct
         }]
 
-    # Look up live reported processes from agent
+    # Look up live reported processes from agent across all aliases
     live_procs = None
-    for k in (d.id, (d.id.upper() if d.id else None), (d.id.lower() if d.id else None),
-              d.hostname, (d.hostname.upper() if d.hostname else None), (d.hostname.lower() if d.hostname else None)):
+    search_keys = [
+        d.id, (d.id.upper() if d.id else None), (d.id.lower() if d.id else None),
+        d.hostname, (d.hostname.upper() if d.hostname else None), (d.hostname.lower() if d.hostname else None),
+        d.name, (d.name.upper() if d.name else None), (d.name.lower() if d.name else None),
+        d.ip_address, (d.ip_address.lower() if d.ip_address else None),
+        d.mac_address, (d.mac_address.upper() if d.mac_address else None), (d.mac_address.lower() if d.mac_address else None)
+    ]
+    for k in search_keys:
         if k and k in device_live_processes and device_live_processes[k]:
             live_procs = device_live_processes[k]
             break
+
+    if not live_procs and is_online and is_local_machine(dev=d):
+        live_procs = get_local_live_processes()
+        if live_procs:
+            for k in search_keys:
+                if k:
+                    device_live_processes[k] = live_procs
+            save_device_processes(device_live_processes)
 
     return {
         "id": d.id,
@@ -1597,18 +1678,29 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
             "notifyChannels": {"webUi": True, "telegram": True}
         }
 
-    # Fetch live reported processes
+    # Fetch live reported processes across all aliases
     reported_procs = None
     keys_to_search = [
-        device.id, device.id.upper(), device.id.lower(),
+        device.id, (device.id.upper() if device.id else None), (device.id.lower() if device.id else None),
         device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None),
         device.name, (device.name.upper() if device.name else None), (device.name.lower() if device.name else None),
+        device.ip_address, (device.ip_address.lower() if device.ip_address else None),
+        device.mac_address, (device.mac_address.upper() if device.mac_address else None),
         device_id, device_id.upper(), device_id.lower()
     ]
     for k in keys_to_search:
         if k and k in device_live_processes and device_live_processes[k]:
             reported_procs = device_live_processes[k]
             break
+
+    if not reported_procs and (device.power_status == PowerStatus.ON or is_local_machine(dev=device, identifier=device_id)):
+        if is_local_machine(dev=device, identifier=device_id):
+            reported_procs = get_local_live_processes()
+            if reported_procs:
+                for k in keys_to_search:
+                    if k:
+                        device_live_processes[k] = reported_procs
+                save_device_processes(device_live_processes)
 
     data["processes"] = reported_procs if reported_procs else []
     return data
@@ -1617,18 +1709,23 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
 async def get_device_processes(device_id: str, db: AsyncSession = Depends(get_db)):
     device, dev_dict = await find_device_resilient(db, device_id)
     if not device and not dev_dict:
+        if is_local_machine(identifier=device_id):
+            local_procs = get_local_live_processes()
+            return local_procs
         raise HTTPException(status_code=404, detail="Device not found")
     
     reported_procs = None
     keys_to_search = [device_id, device_id.upper(), device_id.lower()]
     if device:
         keys_to_search.extend([
-            device.id, device.id.upper(), device.id.lower(),
+            device.id, (device.id.upper() if device.id else None), (device.id.lower() if device.id else None),
             device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None),
-            device.name, (device.name.upper() if device.name else None), (device.name.lower() if device.name else None)
+            device.name, (device.name.upper() if device.name else None), (device.name.lower() if device.name else None),
+            device.ip_address, (device.ip_address.lower() if device.ip_address else None),
+            device.mac_address, (device.mac_address.upper() if device.mac_address else None)
         ])
     if dev_dict:
-        for k in ["id", "hostname", "name"]:
+        for k in ["id", "hostname", "name", "ip", "mac"]:
             val = dev_dict.get(k)
             if val:
                 keys_to_search.extend([val, str(val).upper(), str(val).lower()])
@@ -1637,6 +1734,15 @@ async def get_device_processes(device_id: str, db: AsyncSession = Depends(get_db
         if k and k in device_live_processes and device_live_processes[k]:
             reported_procs = device_live_processes[k]
             break
+
+    if not reported_procs:
+        if is_local_machine(dev=device, dev_dict=dev_dict, identifier=device_id):
+            reported_procs = get_local_live_processes()
+            if reported_procs:
+                for k in keys_to_search:
+                    if k:
+                        device_live_processes[k] = reported_procs
+                save_device_processes(device_live_processes)
 
     return reported_procs if reported_procs else []
 

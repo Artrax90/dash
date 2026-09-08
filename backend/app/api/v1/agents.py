@@ -1302,10 +1302,28 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 print(f"[Heartbeat] Device {device.id} OS Version updated: {device.os_version} -> {hb_os_ver}")
                 device.os_version = hb_os_ver
 
-            if "processes" in payload and isinstance(payload["processes"], list) and len(payload["processes"]) > 0:
+            # Resilient process extraction across agent versions and naming conventions
+            raw_procs = (
+                payload.get("processes") or
+                payload.get("topProcesses") or
+                payload.get("processList") or
+                (payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}).get("processes") or
+                (payload.get("metrics") if isinstance(payload.get("metrics"), dict) else {}).get("topProcesses")
+            )
+            if isinstance(raw_procs, str):
+                try:
+                    raw_procs = json.loads(raw_procs)
+                except Exception:
+                    raw_procs = []
+            if isinstance(raw_procs, dict):
+                raw_procs = [raw_procs]
+            if not isinstance(raw_procs, list):
+                raw_procs = []
+
+            if raw_procs and len(raw_procs) > 0:
                 from backend.app.api.v1.devices import device_live_processes, save_device_processes
                 procs = []
-                for p in payload["processes"]:
+                for p in raw_procs:
                     if isinstance(p, dict):
                         p_copy = dict(p)
                         try:
@@ -1313,6 +1331,17 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                             p_copy["cpu"] = str(round(min(100.0, max(0.0, c_val)), 1))
                         except Exception:
                             p_copy["cpu"] = "0.0"
+
+                        try:
+                            r_val = p_copy.get("ram", 0)
+                            p_copy["ram"] = int(float(str(r_val).replace("MB", "").replace("МБ", "").strip()))
+                        except Exception:
+                            p_copy["ram"] = 0
+
+                        p_copy["name"] = str(p_copy.get("name") or "unknown")
+                        p_copy["user"] = str(p_copy.get("user") or "SYSTEM").split("\\")[-1]
+                        p_copy["status"] = str(p_copy.get("status") or "Running")
+                        p_copy["diskIo"] = str(p_copy.get("diskIo") or "0.1 MB/s")
                         procs.append(p_copy)
 
                 # Anomaly guard: if total process CPU exceeds 100% or heavily contradicts system CPU,
@@ -1329,14 +1358,29 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         except Exception:
                             pass
 
-                idx_keys = {
-                    device.id, (device.id.upper() if device.id else None), (device.id.lower() if device.id else None),
-                    device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None),
-                    device.name, (device.name.upper() if device.name else None), (device.name.lower() if device.name else None),
-                    device_id, (device_id.upper() if device_id else None), (device_id.lower() if device_id else None),
-                    payload.get("hostname"), (payload.get("hostname").upper() if payload.get("hostname") else None), (payload.get("hostname").lower() if payload.get("hostname") else None),
-                    payload.get("name"), (payload.get("name").upper() if payload.get("name") else None), (payload.get("name").lower() if payload.get("name") else None)
-                }
+                idx_keys = set()
+                for entity in [device, payload]:
+                    if not entity:
+                        continue
+                    if isinstance(entity, dict):
+                        for fld in ["id", "deviceId", "hostname", "name", "ip", "ipAddress", "mac", "macAddress"]:
+                            val = entity.get(fld)
+                            if val:
+                                s = str(val).strip()
+                                idx_keys.update([s, s.upper(), s.lower()])
+                    else:
+                        for fld in ["id", "hostname", "name", "ip_address", "mac_address"]:
+                            val = getattr(entity, fld, None)
+                            if val:
+                                s = str(val).strip()
+                                idx_keys.update([s, s.upper(), s.lower()])
+                if device_id:
+                    s = str(device_id).strip()
+                    idx_keys.update([s, s.upper(), s.lower()])
+                if client_ip:
+                    s = str(client_ip).strip()
+                    idx_keys.update([s, s.upper(), s.lower()])
+
                 for k in idx_keys:
                     if k:
                         device_live_processes[k] = procs

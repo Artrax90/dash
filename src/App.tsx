@@ -5146,12 +5146,23 @@ function DeviceMonitoringTab({
 
   const loadProcesses = useCallback(async () => {
     try {
-      const procs = await devicesApi.getProcesses(device.id);
+      let procs = await devicesApi.getProcesses(device.id);
+      if ((!procs || procs.length === 0) && device.name && device.name !== device.id) {
+        procs = await devicesApi.getProcesses(device.name);
+      }
+      if ((!procs || procs.length === 0) && device.hostname && device.hostname !== device.id && device.hostname !== device.name) {
+        procs = await devicesApi.getProcesses(device.hostname);
+      }
+      if ((!procs || procs.length === 0) && (device as any).ip) {
+        procs = await devicesApi.getProcesses((device as any).ip);
+      }
       if (Array.isArray(procs) && procs.length > 0) {
         setLiveProcesses(procs);
       }
-    } catch {}
-  }, [device.id]);
+    } catch (err) {
+      console.error('Failed to load processes:', err);
+    }
+  }, [device.id, device.name, device.hostname, (device as any).ip]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -6200,7 +6211,22 @@ function DeviceMonitoringTab({
       <section className="panel table-panel">
         <div className="panel-heading table-heading">
           <div>
-            <h2>Активные процессы и потребители ресурсов ({sortedProcesses.length})</h2>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <h2>Активные процессы и потребители ресурсов ({sortedProcesses.length})</h2>
+              <button
+                type="button"
+                className="btn btn-secondary btn-sm"
+                style={{ padding: '2px 8px', fontSize: '11px', height: '24px', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
+                title="Обновить список процессов"
+                onClick={() => {
+                  loadProcesses();
+                  notify?.(`Запрос процессов рабочей станции ${device.name} отправлен`);
+                }}
+              >
+                <RefreshCw size={12} className={refreshing ? 'spin' : ''} />
+                Обновить
+              </button>
+            </div>
             <p>Диспетчер процессов рабочей станции {device.name} через системный агент</p>
           </div>
 
@@ -6243,9 +6269,30 @@ function DeviceMonitoringTab({
               {sortedProcesses.length === 0 ? (
                 <tr>
                   <td colSpan={8} style={{ textAlign: 'center', padding: '36px', color: 'var(--muted)' }}>
-                    {device.powerStatus === 'On'
-                      ? 'Ожидание сбора списка процессов агентом...'
-                      : 'Рабочая станция выключена (офлайн)'}
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '8px' }}>
+                      {device.powerStatus === 'On' ? (
+                        <>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', fontWeight: 500, color: 'var(--ink)' }}>
+                            <span className="pulse-dot" style={{ background: 'var(--primary)' }} />
+                            Ожидание передачи списка процессов агентом рабочей станции...
+                          </div>
+                          <span style={{ fontSize: '12px' }}>
+                            Телеметрия процессов передается системным агентом в цикле опроса.
+                          </span>
+                          <button
+                            type="button"
+                            className="btn btn-secondary btn-sm"
+                            style={{ marginTop: '8px' }}
+                            onClick={() => loadProcesses()}
+                          >
+                            <RefreshCw size={12} style={{ marginRight: '6px' }} />
+                            Запросить процессы сейчас
+                          </button>
+                        </>
+                      ) : (
+                        <div>Рабочая станция выключена (офлайн)</div>
+                      )}
+                    </div>
                   </td>
                 </tr>
               ) : (
