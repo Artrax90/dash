@@ -1728,12 +1728,33 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             `$ram = [int][math]::Round((`$usedKb / `$os.TotalVisibleMemorySize) * 100, 0)
         }
 
+        `$logicalDisks = @()
         `$disk = 40
-        `$systemDrive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue | Select-Object -First 1
-        if (`$systemDrive -and `$systemDrive.Size -and `$systemDrive.FreeSpace) {
-            `$used = `$systemDrive.Size - `$systemDrive.FreeSpace
-            `$disk = [int][math]::Round((`$used / `$systemDrive.Size) * 100, 0)
-        }
+        try {
+            `$wDisks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
+            if (`$wDisks) {
+                foreach (`$d in `$wDisks) {
+                    `$dSize = if (`$d.Size) { [math]::Round(`$d.Size / 1GB, 1) } else { 0.0 }
+                    `$dFree = if (`$d.FreeSpace) { [math]::Round(`$d.FreeSpace / 1GB, 1) } else { 0.0 }
+                    `$dUsed = [math]::Max(0.0, [math]::Round(`$dSize - `$dFree, 1))
+                    `$dPct = if (`$dSize -gt 0) { [int][math]::Round((`$dUsed / `$dSize) * 100, 0) } else { 0 }
+                    `$volName = if (`$d.VolumeName) { `$d.VolumeName } else { "Локальный диск" }
+                    `$fs = if (`$d.FileSystem) { `$d.FileSystem } else { "NTFS" }
+                    `$logicalDisks += @{
+                        device = `$d.DeviceID
+                        volumeName = `$volName
+                        fileSystem = `$fs
+                        sizeGb = `$dSize
+                        usedGb = `$dUsed
+                        freeGb = `$dFree
+                        percent = `$dPct
+                    }
+                    if (`$d.DeviceID -eq 'C:') {
+                        `$disk = `$dPct
+                    }
+                }
+            }
+        } catch {}
 
         `$user = `$env:USERNAME
         try {
@@ -1849,6 +1870,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
             gpus = `$hwLive.gpus
             storage = `$hwLive.storage
             network = `$hwLive.network
+            drives = `$logicalDisks
             metrics = @{
                 cpu = `$cpu
                 ram = `$ram
@@ -2366,11 +2388,33 @@ try {
         $usedKb = $os.TotalVisibleMemorySize - $os.FreePhysicalMemory
         $initRam = [int][math]::Round(($usedKb / $os.TotalVisibleMemorySize) * 100, 0)
     }
-    $sysDrive = Get-CimInstance Win32_LogicalDisk -Filter "DeviceID='C:'" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($sysDrive -and $sysDrive.Size -and $sysDrive.FreeSpace) {
-        $used = $sysDrive.Size - $sysDrive.FreeSpace
-        $initDisk = [int][math]::Round(($used / $sysDrive.Size) * 100, 0)
-    }
+    $initLogicalDisks = @()
+    $initDisk = 40
+    try {
+        $wDisks = Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue
+        if ($wDisks) {
+            foreach ($d in $wDisks) {
+                $dSize = if ($d.Size) { [math]::Round($d.Size / 1GB, 1) } else { 0.0 }
+                $dFree = if ($d.FreeSpace) { [math]::Round($d.FreeSpace / 1GB, 1) } else { 0.0 }
+                $dUsed = [math]::Max(0.0, [math]::Round($dSize - $dFree, 1))
+                $dPct = if ($dSize -gt 0) { [int][math]::Round(($dUsed / $dSize) * 100, 0) } else { 0 }
+                $volName = if ($d.VolumeName) { $d.VolumeName } else { "Локальный диск" }
+                $fs = if ($d.FileSystem) { $d.FileSystem } else { "NTFS" }
+                $initLogicalDisks += @{
+                    device = $d.DeviceID
+                    volumeName = $volName
+                    fileSystem = $fs
+                    sizeGb = $dSize
+                    usedGb = $dUsed
+                    freeGb = $dFree
+                    percent = $dPct
+                }
+                if ($d.DeviceID -eq 'C:') {
+                    $initDisk = $dPct
+                }
+            }
+        }
+    } catch {}
     $initUptimeSec = 0
     $initBootTimeIso = ""
     $bootTime = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).LastBootUpTime
@@ -2514,6 +2558,7 @@ $heartbeatPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
+    drives = $initLogicalDisks
     metrics = @{
         cpu = $initCpu
         ram = $initRam

@@ -4100,7 +4100,7 @@ function DeviceMonitoringTab({
 }) {
   const { t } = useLanguage();
   const [timeRange, setTimeRange] = useState<'1h' | '6h' | '24h' | '7d'>('1h');
-  const [metricTab, setMetricTab] = useState<'all' | 'cpu' | 'ram'>('all');
+  const [metricTab, setMetricTab] = useState<'all' | 'cpu' | 'ram' | 'disk'>('all');
   const [liveProcessQuery, setLiveProcessQuery] = useState('');
   const [terminatedPids, setTerminatedPids] = useState<number[]>([]);
   const [refreshing, setRefreshing] = useState(false);
@@ -4165,6 +4165,22 @@ function DeviceMonitoringTab({
   const diskHealth = storagePrimary?.healthPercent ?? 100;
   const diskTemp = storagePrimary?.temperatureC ?? 35;
 
+  const deviceDrives: any[] = ((device as any).drives && Array.isArray((device as any).drives) && (device as any).drives.length > 0)
+    ? (device as any).drives
+    : [
+        {
+          device: 'C:',
+          volumeName: 'Локальный диск (C:)',
+          fileSystem: 'NTFS',
+          sizeGb: diskTotalGb,
+          usedGb: diskUsedGb,
+          freeGb: diskFreeGb,
+          percent: dynamicDisk
+        }
+      ];
+
+  const physicalStorage: any[] = (spec?.storage && Array.isArray(spec.storage)) ? spec.storage : [];
+
   const gpuPrimary = spec?.gpus?.[0];
   const gpuModel = gpuPrimary?.model || 'Интегрированное / дискретное видеоядро';
   const gpuVram = gpuPrimary?.vramGb || 4;
@@ -4228,11 +4244,14 @@ function DeviceMonitoringTab({
 
   const cpuPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.cpu || 0) })), [chartPoints]);
   const ramPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.ram || 0) })), [chartPoints]);
+  const diskPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.disk || 0) })), [chartPoints]);
 
   const cpuLinePath = useMemo(() => generateSmoothPath(cpuPoints), [cpuPoints]);
   const cpuAreaPath = useMemo(() => generateSmoothArea(cpuPoints, svgHeight), [cpuPoints]);
   const ramLinePath = useMemo(() => generateSmoothPath(ramPoints), [ramPoints]);
   const ramAreaPath = useMemo(() => generateSmoothArea(ramPoints, svgHeight), [ramPoints]);
+  const diskLinePath = useMemo(() => generateSmoothPath(diskPoints), [diskPoints]);
+  const diskAreaPath = useMemo(() => generateSmoothArea(diskPoints, svgHeight), [diskPoints]);
 
   const activeHoverPoint = hoveredIdx !== null && chartPoints[hoveredIdx] ? chartPoints[hoveredIdx] : null;
   const hoverX = hoveredIdx !== null ? getX(hoveredIdx) : 0;
@@ -4508,6 +4527,13 @@ function DeviceMonitoringTab({
               <span className="pro-chip-dot-ram" />
               RAM ({dynamicRam}%)
             </div>
+            <div
+              className={`pro-chip ${metricTab === 'disk' ? 'active-disk' : ''}`}
+              onClick={() => setMetricTab('disk')}
+            >
+              <span className="pro-chip-dot-disk" />
+              Диск ({dynamicDisk}%)
+            </div>
 
             <div className="scope-selector pro-chart-scope">
               <button className={timeRange === '1h' ? 'selected' : ''} onClick={() => setTimeRange('1h')}>1h</button>
@@ -4548,6 +4574,10 @@ function DeviceMonitoringTab({
                   <stop offset="0%" stopColor="var(--pro-chart-ram-grad-start)" stopOpacity="var(--pro-chart-ram-grad-opacity)" />
                   <stop offset="100%" stopColor="var(--pro-chart-ram-grad-start)" stopOpacity="0.0" />
                 </linearGradient>
+                <linearGradient id={`pcDiskGradPro_${device.id}`} x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--pro-chart-disk-grad-start)" stopOpacity="var(--pro-chart-disk-grad-opacity)" />
+                  <stop offset="100%" stopColor="var(--pro-chart-disk-grad-start)" stopOpacity="0.0" />
+                </linearGradient>
               </defs>
 
               {/* Grid lines across chart */}
@@ -4584,6 +4614,17 @@ function DeviceMonitoringTab({
                 </>
               )}
 
+              {/* Disk Area & Smooth Spline */}
+              {(metricTab === 'all' || metricTab === 'disk') && (
+                <>
+                  <path d={diskAreaPath} fill={`url(#pcDiskGradPro_${device.id})`} />
+                  <path
+                    d={diskLinePath}
+                    className="pro-chart-line-disk"
+                  />
+                </>
+              )}
+
               {/* Interactive Crosshair Guideline & Highlight Dots */}
               {hoveredIdx !== null && activeHoverPoint && (
                 <>
@@ -4608,6 +4649,14 @@ function DeviceMonitoringTab({
                       cy={getY(activeHoverPoint.ram || 0)}
                       r={4.5}
                       className="pro-chart-dot-ram"
+                    />
+                  )}
+                  {(metricTab === 'all' || metricTab === 'disk') && (
+                    <circle
+                      cx={hoverX}
+                      cy={getY(activeHoverPoint.disk || 0)}
+                      r={4.5}
+                      className="pro-chart-dot-disk"
                     />
                   )}
                 </>
@@ -4639,6 +4688,17 @@ function DeviceMonitoringTab({
                     {activeHoverPoint.ram}% RAM
                   </div>
                 )}
+                {(metricTab === 'all' || metricTab === 'disk') && (
+                  <div
+                    className="pro-chart-pin-disk"
+                    style={{
+                      left: `${(hoverX / svgWidth) * 100}%`,
+                      top: `${(getY(activeHoverPoint.disk || 0) / svgHeight) * 100}%`
+                    }}
+                  >
+                    {activeHoverPoint.disk}% Диск
+                  </div>
+                )}
               </>
             )}
 
@@ -4652,7 +4712,7 @@ function DeviceMonitoringTab({
               >
                 <div className="pro-chart-popover-header">
                   <span className="pro-chart-popover-time">
-                    ⏱ {activeHoverPoint.timeStr || activeHoverPoint.label} · {activeHoverPoint.cpu}% CPU, {activeHoverPoint.ram}% RAM
+                    ⏱ {activeHoverPoint.timeStr || activeHoverPoint.label} · {activeHoverPoint.cpu}% CPU, {activeHoverPoint.ram}% RAM, {activeHoverPoint.disk ?? dynamicDisk}% Диск
                   </span>
                   <span style={{ fontSize: '10px', color: activeHoverPoint.isOnline ? '#34d399' : '#94a3b8' }}>
                     {activeHoverPoint.isOnline ? '● В сети' : '○ Офлайн'}
@@ -4747,6 +4807,108 @@ function DeviceMonitoringTab({
           </div>
         </div>
       </div>
+
+      {/* Detailed Drives & Storage Volumes Panel */}
+      <section className="panel storage-panel">
+        <div className="panel-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <div>
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              <HardDrive size={18} style={{ color: 'var(--pro-chart-disk)' }} />
+              Логические диски и накопители ({deviceDrives.length})
+            </h2>
+            <p>Статус разделов файловой системы и физических накопителей рабочей станции {device.name}</p>
+          </div>
+          <span className="badge" style={{ fontFamily: 'DM Mono', fontSize: '11px', color: 'var(--ink)' }}>
+            Свободно на C: {diskFreeGb} ГБ ({100 - dynamicDisk}%)
+          </span>
+        </div>
+
+        {/* Logical Partitions Cards Grid */}
+        <div className="drives-grid">
+          {deviceDrives.map((drv: any, dIdx: number) => {
+            const isWarn = drv.percent >= 80;
+            const isCrit = drv.percent >= 90;
+            return (
+              <div key={dIdx} className={`drive-volume-card ${isCrit ? 'alert-critical' : ''}`}>
+                <div className="drive-volume-header">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <span className="drive-letter-badge">{drv.device}</span>
+                    <strong style={{ fontSize: '13px', color: 'var(--ink)' }}>
+                      {drv.volumeName || 'Локальный диск'}
+                    </strong>
+                  </div>
+                  <span style={{ fontSize: '11px', color: 'var(--muted)', fontFamily: 'DM Mono' }}>
+                    {drv.fileSystem || 'NTFS'}
+                  </span>
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '8px 0 4px 0' }}>
+                  <span style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'DM Mono', color: isCrit ? 'var(--red)' : isWarn ? 'var(--orange)' : 'var(--ink)' }}>
+                    {drv.percent}%
+                  </span>
+                  <span style={{ fontSize: '12px', color: 'var(--muted)', fontFamily: 'DM Mono' }}>
+                    {drv.usedGb} ГБ из {drv.sizeGb} ГБ
+                  </span>
+                </div>
+
+                <div className="telemetry-progress-track" style={{ height: '7px', margin: '6px 0 10px 0' }}>
+                  <div
+                    className={`telemetry-progress-fill ${isCrit ? 'critical' : isWarn ? 'warning' : 'normal'}`}
+                    style={{ width: `${Math.min(100, Math.max(0, drv.percent))}%` }}
+                  />
+                </div>
+
+                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--muted)' }}>
+                  <span>Свободно: <strong style={{ color: isCrit ? 'var(--red)' : 'var(--green)', fontFamily: 'DM Mono' }}>{drv.freeGb} ГБ</strong></span>
+                  {isCrit ? (
+                    <span style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ Место заканчивается</span>
+                  ) : isWarn ? (
+                    <span style={{ color: 'var(--orange)', fontWeight: 500 }}>Мало места</span>
+                  ) : (
+                    <span style={{ color: 'var(--green)' }}>✓ В норме</span>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Physical Storage Drives Specification */}
+        {physicalStorage.length > 0 && (
+          <div style={{ marginTop: '16px', borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
+            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
+              Физические накопители и SMART-телеметрия ({physicalStorage.length})
+            </div>
+            <div className="physical-drives-list">
+              {physicalStorage.map((ps: any, psIdx: number) => (
+                <div key={psIdx} className="physical-drive-item">
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                    <HardDrive size={16} style={{ color: 'var(--pro-chart-disk)' }} />
+                    <div>
+                      <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
+                        {ps.model || `Диск #${psIdx + 1}`}
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'var(--muted)', fontFamily: 'DM Mono' }}>
+                        {ps.type || 'SSD'} · {ps.capacityGb ? `${ps.capacityGb} ГБ` : '500 ГБ'} {ps.serialNumber ? `· S/N: ${ps.serialNumber}` : ''}
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                    {ps.temperatureC !== undefined && (
+                      <span className="badge" style={{ fontSize: '11px', fontFamily: 'DM Mono' }}>
+                        🌡 {ps.temperatureC}°C
+                      </span>
+                    )}
+                    <span className={`badge ${ps.healthPercent >= 90 ? 'match' : 'mismatch'}`} style={{ fontSize: '11px', fontWeight: 600 }}>
+                      SMART: {ps.healthPercent ?? 100}%
+                    </span>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* Live RDP Sessions Panel in Device Monitoring Tab */}
       <section className="panel rdp-panel">
@@ -4933,7 +5095,7 @@ function Monitoring({
   const [searchQuery, setSearchQuery] = useState('');
   const [stressOnly, setStressOnly] = useState(false);
   const [sortBy, setSortBy] = useState<'stress' | 'cpu' | 'ram' | 'disk' | 'name'>('stress');
-  const [metricTab, setMetricTab] = useState<'all' | 'cpu' | 'ram'>('all');
+  const [metricTab, setMetricTab] = useState<'all' | 'cpu' | 'ram' | 'disk'>('all');
   const [refreshing, setRefreshing] = useState(false);
   const [telemetryHistory, setTelemetryHistory] = useState<any[]>([]);
   const [hasTelemetryData, setHasTelemetryData] = useState(false);
@@ -5190,11 +5352,14 @@ function Monitoring({
 
   const cpuPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.cpu || 0) })), [chartPoints]);
   const ramPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.ram || 0) })), [chartPoints]);
+  const diskPoints = useMemo(() => chartPoints.map((p, i) => ({ x: getX(i), y: getY(p.disk || 0) })), [chartPoints]);
 
   const cpuLinePath = useMemo(() => generateSmoothPath(cpuPoints), [cpuPoints]);
   const cpuAreaPath = useMemo(() => generateSmoothArea(cpuPoints, svgHeight), [cpuPoints]);
   const ramLinePath = useMemo(() => generateSmoothPath(ramPoints), [ramPoints]);
   const ramAreaPath = useMemo(() => generateSmoothArea(ramPoints, svgHeight), [ramPoints]);
+  const diskLinePath = useMemo(() => generateSmoothPath(diskPoints), [diskPoints]);
+  const diskAreaPath = useMemo(() => generateSmoothArea(diskPoints, svgHeight), [diskPoints]);
 
   const activeHoverPoint = hoveredIdx !== null && chartPoints[hoveredIdx] ? chartPoints[hoveredIdx] : null;
   const hoverX = hoveredIdx !== null ? getX(hoveredIdx) : 0;
@@ -5480,6 +5645,13 @@ function Monitoring({
               <span className="pro-chip-dot-ram" />
               RAM avg ({avgRam}%)
             </div>
+            <div
+              className={`pro-chip ${metricTab === 'disk' ? 'active-disk' : ''}`}
+              onClick={() => setMetricTab('disk')}
+            >
+              <span className="pro-chip-dot-disk" />
+              Диск avg ({avgDisk}%)
+            </div>
 
             <div className="scope-selector pro-chart-scope">
               <button className={timeRange === '1h' ? 'selected' : ''} onClick={() => setTimeRange('1h')}>1h</button>
@@ -5520,6 +5692,10 @@ function Monitoring({
                   <stop offset="0%" stopColor="var(--pro-chart-ram-grad-start)" stopOpacity="var(--pro-chart-ram-grad-opacity)" />
                   <stop offset="100%" stopColor="var(--pro-chart-ram-grad-start)" stopOpacity="0.0" />
                 </linearGradient>
+                <linearGradient id="fleetDiskGradPro" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="0%" stopColor="var(--pro-chart-disk-grad-start)" stopOpacity="var(--pro-chart-disk-grad-opacity)" />
+                  <stop offset="100%" stopColor="var(--pro-chart-disk-grad-start)" stopOpacity="0.0" />
+                </linearGradient>
               </defs>
 
               {/* Grid lines across chart */}
@@ -5556,6 +5732,17 @@ function Monitoring({
                 </>
               )}
 
+              {/* Disk Area & Smooth Spline */}
+              {(metricTab === 'all' || metricTab === 'disk') && (
+                <>
+                  <path d={diskAreaPath} fill="url(#fleetDiskGradPro)" />
+                  <path
+                    d={diskLinePath}
+                    className="pro-chart-line-disk"
+                  />
+                </>
+              )}
+
               {/* Interactive Crosshair Guideline & Highlight Dots */}
               {hoveredIdx !== null && activeHoverPoint && (
                 <>
@@ -5580,6 +5767,14 @@ function Monitoring({
                       cy={getY(activeHoverPoint.ram || 0)}
                       r={4.5}
                       className="pro-chart-dot-ram"
+                    />
+                  )}
+                  {(metricTab === 'all' || metricTab === 'disk') && (
+                    <circle
+                      cx={hoverX}
+                      cy={getY(activeHoverPoint.disk || 0)}
+                      r={4.5}
+                      className="pro-chart-dot-disk"
                     />
                   )}
                 </>
@@ -5611,6 +5806,17 @@ function Monitoring({
                     {activeHoverPoint.ram}% RAM avg
                   </div>
                 )}
+                {(metricTab === 'all' || metricTab === 'disk') && (
+                  <div
+                    className="pro-chart-pin-disk"
+                    style={{
+                      left: `${(hoverX / svgWidth) * 100}%`,
+                      top: `${(getY(activeHoverPoint.disk || 0) / svgHeight) * 100}%`
+                    }}
+                  >
+                    {activeHoverPoint.disk}% Диск avg
+                  </div>
+                )}
               </>
             )}
 
@@ -5624,7 +5830,7 @@ function Monitoring({
               >
                 <div className="pro-chart-popover-header">
                   <span className="pro-chart-popover-time">
-                    ⏱ {activeHoverPoint.timeStr || activeHoverPoint.label} · CPU: {activeHoverPoint.cpu}%, RAM: {activeHoverPoint.ram}%
+                    ⏱ {activeHoverPoint.timeStr || activeHoverPoint.label} · CPU: {activeHoverPoint.cpu}%, RAM: {activeHoverPoint.ram}%, Диск: {activeHoverPoint.disk}%
                   </span>
                   <span style={{ fontSize: '10.5px', color: '#34d399', fontWeight: 600 }}>
                     {activeHoverPoint.activeCount} онлайн / {activeHoverPoint.offlineCount || 0} офлайн

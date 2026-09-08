@@ -245,6 +245,80 @@ def get_disk_info():
     except Exception:
         return 40
 
+def get_logical_drives():
+    drives = []
+    try:
+        if platform.system() == "Windows":
+            ps_cmd = 'Get-CimInstance Win32_LogicalDisk -Filter "DriveType=3" -ErrorAction SilentlyContinue | Select-Object DeviceID, VolumeName, FileSystem, Size, FreeSpace | ConvertTo-Json'
+            raw = run_ps_json(ps_cmd)
+            for item in normalize_list(raw):
+                dev = item.get("DeviceID") or ""
+                if dev:
+                    size_b = item.get("Size") or 0
+                    free_b = item.get("FreeSpace") or 0
+                    size_gb = round(size_b / (1024**3), 1)
+                    free_gb = round(free_b / (1024**3), 1)
+                    used_gb = max(0.0, round(size_gb - free_gb, 1))
+                    pct = int(round((used_gb / size_gb) * 100)) if size_gb > 0 else 0
+                    drives.append({
+                        "device": dev,
+                        "volumeName": item.get("VolumeName") or "Локальный диск",
+                        "fileSystem": item.get("FileSystem") or "NTFS",
+                        "sizeGb": size_gb,
+                        "usedGb": used_gb,
+                        "freeGb": free_gb,
+                        "percent": pct
+                    })
+        else:
+            out = subprocess.check_output("df -P -k 2>/dev/null || true", shell=True, text=True, timeout=3)
+            lines = [l.strip() for l in out.splitlines() if l.strip()]
+            for line in lines[1:]:
+                parts = line.split()
+                if len(parts) >= 6 and (parts[0].startswith("/dev/") or parts[5] == "/"):
+                    fs_dev, total_kb, used_kb, avail_kb, cap_str, mnt = parts[0], parts[1], parts[2], parts[3], parts[4], parts[5]
+                    try:
+                        tot_gb = round(int(total_kb) / (1024 * 1024), 1)
+                        used_gb = round(int(used_kb) / (1024 * 1024), 1)
+                        free_gb = round(int(avail_kb) / (1024 * 1024), 1)
+                        pct = int(cap_str.replace("%", "").strip() or 0)
+                        drives.append({
+                            "device": mnt,
+                            "volumeName": fs_dev.split("/")[-1],
+                            "fileSystem": "ext4",
+                            "sizeGb": tot_gb,
+                            "usedGb": used_gb,
+                            "freeGb": free_gb,
+                            "percent": pct
+                        })
+                    except Exception:
+                        pass
+    except Exception:
+        pass
+    if not drives:
+        try:
+            import psutil
+            for part in psutil.disk_partitions(all=False):
+                try:
+                    usage = psutil.disk_usage(part.mountpoint)
+                    tot_gb = round(usage.total / (1024**3), 1)
+                    used_gb = round(usage.used / (1024**3), 1)
+                    free_gb = round(usage.free / (1024**3), 1)
+                    drives.append({
+                        "device": part.mountpoint,
+                        "volumeName": "Диск",
+                        "fileSystem": part.fstype,
+                        "sizeGb": tot_gb,
+                        "usedGb": used_gb,
+                        "freeGb": free_gb,
+                        "percent": int(usage.percent)
+                    })
+                except Exception:
+                    pass
+        except Exception:
+            pass
+    return drives
+
+
 def get_top_processes():
     procs = []
     # 1. Try psutil
@@ -1506,6 +1580,7 @@ def main():
                 "isStartup": is_startup,
                 "rdpSessions": get_rdp_sessions(),
                 "processes": get_top_processes(),
+                "drives": get_logical_drives(),
                 "netNeighbors": net_neighbors
             })
             print(f"[Heartbeat] CPU: {cpu_percent}% | RAM: {ram_percent}% ({total_ram_gb} GB, {len(ram_slots)} slots) | PCI: {len(pci_devs)} | User: {user} | v{AGENT_VERSION}")

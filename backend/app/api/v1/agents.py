@@ -1124,7 +1124,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             prev_status = device.power_status
             prev_last_seen = device.last_seen
             now_utc = datetime.utcnow()
-            sec_since_last_seen = (now_utc - prev_last_seen).total_seconds() if prev_last_seen else 999999
+            sec_since_last_seen = (now_utc - prev_last_seen).total_seconds() if isinstance(prev_last_seen, datetime) else 999999
             is_startup = payload.get("isStartup", False) or payload.get("isBoot", False)
 
             if (prev_status == PowerStatus.OFF or sec_since_last_seen > 120 or is_startup):
@@ -1247,6 +1247,16 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None), device_id, (device_id.upper() if device_id else None)):
                     if k:
                         device_live_processes[k] = procs
+
+            # Live reported logical drives / partitions
+            raw_drives = payload.get("drives") or payload.get("logicalDrives") or payload.get("partitions")
+            if raw_drives is not None:
+                from backend.app.api.v1.devices import device_drives_cache
+                drives_list = [raw_drives] if isinstance(raw_drives, dict) else (raw_drives if isinstance(raw_drives, list) else [])
+                if drives_list:
+                    for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None), device_id, (device_id.upper() if device_id else None)):
+                        if k:
+                            device_drives_cache[k] = drives_list
 
             raw_rdp = payload.get("rdpSessions") if "rdpSessions" in payload else (payload.get("rdp_sessions") or payload.get("sessions"))
             has_rdp_key = "rdpSessions" in payload or "rdp_sessions" in payload or "sessions" in payload

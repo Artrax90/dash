@@ -59,6 +59,8 @@ def save_device_power_logs(logs: Dict[str, List[Dict[str, Any]]]):
 device_power_logs: Dict[str, List[Dict[str, Any]]] = load_device_power_logs()
 # In-memory storage of live reported processes per device
 device_live_processes: Dict[str, List[Dict[str, Any]]] = {}
+# In-memory storage of live reported logical drives per device
+device_drives_cache: Dict[str, List[Dict[str, Any]]] = {}
 # In-memory storage of fleet telemetry points
 fleet_telemetry_history: List[Dict[str, Any]] = []
 # In-memory storage of per-device telemetry points
@@ -341,6 +343,25 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         elif len(parts) == 2:
             b_val, r_val = parts[0], parts[1]
 
+    # Look up logical drives reported by agent or synthesized fallback
+    drives_list = None
+    for k in (d.id, (d.id.upper() if d.id else None), (d.id.lower() if d.id else None),
+              d.hostname, (d.hostname.upper() if d.hostname else None), (d.hostname.lower() if d.hostname else None)):
+        if k and k in device_drives_cache and device_drives_cache[k]:
+            drives_list = device_drives_cache[k]
+            break
+    if not drives_list:
+        d_pct = d.disk_usage or 0
+        drives_list = [{
+            "device": "C:",
+            "volumeName": "Локальный диск (C:)",
+            "fileSystem": "NTFS",
+            "sizeGb": 500.0,
+            "usedGb": round(500.0 * d_pct / 100.0, 1),
+            "freeGb": max(0.0, round(500.0 * (100.0 - d_pct) / 100.0, 1)),
+            "percent": d_pct
+        }]
+
     return {
         "id": d.id,
         "name": d.name,
@@ -367,6 +388,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "cpu": d.cpu_usage if is_online else 0,
         "ram": d.ram_usage if is_online else 0,
         "disk": d.disk_usage or 0,
+        "drives": drives_list,
         "uptime": calculated_uptime if is_online else "—",
         "uptimeSeconds": uptime_sec if is_online else 0,
         "bootTime": boot_time.strftime("%H:%M:%S") if (boot_time and is_online) else "—",

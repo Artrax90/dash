@@ -2848,12 +2848,16 @@
   /* Chart Accent Colors (High Contrast in Light) */
   --pro-chart-cpu: #0284c7;
   --pro-chart-ram: #9333ea;
+  --pro-chart-disk: #d97706;
   --pro-chart-cpu-grad-start: #0284c7;
   --pro-chart-cpu-grad-opacity: 0.18;
   --pro-chart-ram-grad-start: #9333ea;
   --pro-chart-ram-grad-opacity: 0.14;
+  --pro-chart-disk-grad-start: #f59e0b;
+  --pro-chart-disk-grad-opacity: 0.18;
   --pro-chart-cpu-glow: drop-shadow(0 2px 4px rgba(2, 132, 199, 0.25));
   --pro-chart-ram-glow: drop-shadow(0 2px 4px rgba(147, 51, 234, 0.25));
+  --pro-chart-disk-glow: drop-shadow(0 2px 4px rgba(217, 119, 6, 0.25));
   --pro-chart-crosshair: rgba(15, 23, 42, 0.4);
 
   /* Chips */
@@ -2872,6 +2876,10 @@
   --pro-chip-active-ram-border: rgba(147, 51, 234, 0.45);
   --pro-chip-active-ram-color: #9333ea;
   --pro-chip-active-ram-shadow: none;
+  --pro-chip-active-disk-bg: rgba(217, 119, 6, 0.1);
+  --pro-chip-active-disk-border: rgba(217, 119, 6, 0.45);
+  --pro-chip-active-disk-color: #d97706;
+  --pro-chip-active-disk-shadow: none;
 
   /* Pins */
   --pro-pin-cpu-bg: #e0f2fe;
@@ -2880,6 +2888,9 @@
   --pro-pin-ram-bg: #f3e8ff;
   --pro-pin-ram-border: #d8b4fe;
   --pro-pin-ram-color: #7e22ce;
+  --pro-pin-disk-bg: #fef3c7;
+  --pro-pin-disk-border: #fcd34d;
+  --pro-pin-disk-color: #b45309;
   --pro-pin-shadow: 0 4px 12px rgba(15, 23, 42, 0.12);
 
   /* Popover */
@@ -2921,12 +2932,16 @@
   /* Chart Accent Colors (Neon Glow in Dark) */
   --pro-chart-cpu: #22d3ee;
   --pro-chart-ram: #c084fc;
+  --pro-chart-disk: #fbbf24;
   --pro-chart-cpu-grad-start: #22d3ee;
   --pro-chart-cpu-grad-opacity: 0.36;
   --pro-chart-ram-grad-start: #c084fc;
   --pro-chart-ram-grad-opacity: 0.28;
+  --pro-chart-disk-grad-start: #f59e0b;
+  --pro-chart-disk-grad-opacity: 0.28;
   --pro-chart-cpu-glow: drop-shadow(0 0 6px rgba(34, 211, 238, 0.75));
   --pro-chart-ram-glow: drop-shadow(0 0 6px rgba(192, 132, 252, 0.7));
+  --pro-chart-disk-glow: drop-shadow(0 0 6px rgba(245, 158, 11, 0.75));
   --pro-chart-crosshair: rgba(255, 255, 255, 0.45);
 
   /* Chips */
@@ -2945,6 +2960,10 @@
   --pro-chip-active-ram-border: rgba(192, 132, 252, 0.45);
   --pro-chip-active-ram-color: #c084fc;
   --pro-chip-active-ram-shadow: 0 0 12px rgba(168, 85, 247, 0.25);
+  --pro-chip-active-disk-bg: rgba(245, 158, 11, 0.16);
+  --pro-chip-active-disk-border: rgba(251, 191, 36, 0.45);
+  --pro-chip-active-disk-color: #fbbf24;
+  --pro-chip-active-disk-shadow: 0 0 12px rgba(245, 158, 11, 0.25);
 
   /* Pins */
   --pro-pin-cpu-bg: #082132;
@@ -2953,6 +2972,9 @@
   --pro-pin-ram-bg: #2b113b;
   --pro-pin-ram-border: rgba(232, 121, 249, 0.6);
   --pro-pin-ram-color: #e879f9;
+  --pro-pin-disk-bg: #311e05;
+  --pro-pin-disk-border: rgba(251, 191, 36, 0.6);
+  --pro-pin-disk-color: #fbbf24;
   --pro-pin-shadow: 0 3px 10px rgba(0, 0, 0, 0.7);
 
   /* Popover */
@@ -3060,6 +3082,13 @@
   box-shadow: var(--pro-chip-active-ram-shadow);
 }
 
+.pro-chip.active-disk {
+  background: var(--pro-chip-active-disk-bg);
+  border-color: var(--pro-chip-active-disk-border);
+  color: var(--pro-chip-active-disk-color);
+  box-shadow: var(--pro-chip-active-disk-shadow);
+}
+
 .pro-chip.active-all {
   background: var(--pro-chip-active-all-bg);
   border-color: var(--pro-chip-active-all-border);
@@ -3082,6 +3111,15 @@
   border-radius: 50%;
   background: var(--pro-chart-ram);
   box-shadow: 0 0 6px var(--pro-chart-ram);
+}
+
+.pro-chip-dot-disk {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--pro-chart-disk);
+  box-shadow: 0 0 6px var(--pro-chart-disk);
 }
 
 .pro-chart-scope {
@@ -3146,6 +3184,14 @@
   filter: var(--pro-chart-ram-glow);
 }
 
+.pro-chart-line-disk {
+  fill: none;
+  stroke: var(--pro-chart-disk);
+  stroke-width: 2.2;
+  stroke-linecap: round;
+  filter: var(--pro-chart-disk-glow);
+}
+
 .pro-chart-x-axis {
   position: absolute;
   bottom: 0;
@@ -3184,6 +3230,14 @@
   pointer-events: none;
 }
 
+.pro-chart-dot-disk {
+  fill: var(--pro-chart-disk);
+  stroke: #ffffff;
+  stroke-width: 2.5;
+  filter: drop-shadow(0 0 5px var(--pro-chart-disk));
+  pointer-events: none;
+}
+
 .pro-chart-pin-cpu {
   position: absolute;
   font-family: 'DM Mono', monospace;
@@ -3216,6 +3270,84 @@
   white-space: nowrap;
   box-shadow: var(--pro-pin-shadow);
   z-index: 20;
+}
+
+.pro-chart-pin-disk {
+  position: absolute;
+  font-family: 'DM Mono', monospace;
+  font-size: 10.5px;
+  font-weight: 700;
+  color: var(--pro-pin-disk-color);
+  background: var(--pro-pin-disk-bg);
+  border: 1px solid var(--pro-pin-disk-border);
+  border-radius: 4px;
+  padding: 1px 6px;
+  transform: translate(8px, -50%);
+  pointer-events: none;
+  white-space: nowrap;
+  box-shadow: var(--pro-pin-shadow);
+  z-index: 20;
+}
+
+/* Detailed Storage & Drives Panel */
+.drives-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.drive-volume-card {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.drive-volume-card:hover {
+  border-color: var(--border-hover);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+
+.drive-volume-card.alert-critical {
+  border-color: rgba(239, 68, 68, 0.45);
+  background: rgba(239, 68, 68, 0.03);
+}
+
+.drive-volume-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.drive-letter-badge {
+  font-family: 'DM Mono', monospace;
+  font-size: 13px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+  background: rgba(245, 158, 11, 0.15);
+  color: var(--pro-chart-disk);
+  border: 1px solid rgba(245, 158, 11, 0.3);
+}
+
+.physical-drives-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-top: 16px;
+}
+
+.physical-drive-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 14px;
 }
 
 .pro-chart-popover {
