@@ -4810,99 +4810,119 @@ function DeviceMonitoringTab({
 
       {/* Detailed Drives & Storage Volumes Panel */}
       <section className="panel storage-panel">
-        <div className="panel-heading" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div className="panel-heading table-heading" style={{ padding: '13px 20px' }}>
           <div>
-            <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-              <HardDrive size={18} style={{ color: 'var(--pro-chart-disk)' }} />
+            <h2 style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '13.5px', margin: 0 }}>
+              <HardDrive size={16} style={{ color: 'var(--pro-chart-disk)' }} />
               Логические диски и накопители ({deviceDrives.length})
             </h2>
-            <p>Статус разделов файловой системы и физических накопителей рабочей станции {device.name}</p>
+            <p style={{ margin: '3px 0 0', fontSize: '11px', color: 'var(--muted)' }}>
+              Файловые разделы и накопители рабочей станции {device.name}
+            </p>
           </div>
-          <span className="badge" style={{ fontFamily: 'DM Mono', fontSize: '11px', color: 'var(--ink)' }}>
-            Свободно на C: {diskFreeGb} ГБ ({100 - dynamicDisk}%)
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span className="badge" style={{ fontFamily: 'DM Mono', fontSize: '11px', color: 'var(--ink)' }}>
+              Свободно на C: {diskFreeGb} ГБ ({100 - dynamicDisk}%)
+            </span>
+          </div>
         </div>
 
-        {/* Logical Partitions Cards Grid */}
-        <div className="drives-grid">
-          {deviceDrives.map((drv: any, dIdx: number) => {
-            const isWarn = drv.percent >= 80;
-            const isCrit = drv.percent >= 90;
-            return (
-              <div key={dIdx} className={`drive-volume-card ${isCrit ? 'alert-critical' : ''}`}>
-                <div className="drive-volume-header">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                    <span className="drive-letter-badge">{drv.device}</span>
-                    <strong style={{ fontSize: '13px', color: 'var(--ink)' }}>
-                      {drv.volumeName || 'Локальный диск'}
-                    </strong>
-                  </div>
-                  <span style={{ fontSize: '11px', color: 'var(--muted)', fontFamily: 'DM Mono' }}>
-                    {drv.fileSystem || 'NTFS'}
-                  </span>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', margin: '8px 0 4px 0' }}>
-                  <span style={{ fontSize: '20px', fontWeight: 700, fontFamily: 'DM Mono', color: isCrit ? 'var(--red)' : isWarn ? 'var(--orange)' : 'var(--ink)' }}>
-                    {drv.percent}%
-                  </span>
-                  <span style={{ fontSize: '12px', color: 'var(--muted)', fontFamily: 'DM Mono' }}>
-                    {drv.usedGb} ГБ из {drv.sizeGb} ГБ
-                  </span>
-                </div>
-
-                <div className="telemetry-progress-track" style={{ height: '7px', margin: '6px 0 10px 0' }}>
-                  <div
-                    className={`telemetry-progress-fill ${isCrit ? 'critical' : isWarn ? 'warning' : 'normal'}`}
-                    style={{ width: `${Math.min(100, Math.max(0, drv.percent))}%` }}
-                  />
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', color: 'var(--muted)' }}>
-                  <span>Свободно: <strong style={{ color: isCrit ? 'var(--red)' : 'var(--green)', fontFamily: 'DM Mono' }}>{drv.freeGb} ГБ</strong></span>
-                  {isCrit ? (
-                    <span style={{ color: 'var(--red)', fontWeight: 600 }}>⚠️ Место заканчивается</span>
-                  ) : isWarn ? (
-                    <span style={{ color: 'var(--orange)', fontWeight: 500 }}>Мало места</span>
-                  ) : (
-                    <span style={{ color: 'var(--green)' }}>✓ В норме</span>
-                  )}
-                </div>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Physical Storage Drives Specification */}
-        {physicalStorage.length > 0 && (
-          <div style={{ marginTop: '16px', borderTop: '1px solid var(--border)', paddingTop: '14px' }}>
-            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--muted)', textTransform: 'uppercase', letterSpacing: '0.5px', marginBottom: '10px' }}>
-              Физические накопители и SMART-телеметрия ({physicalStorage.length})
-            </div>
-            <div className="physical-drives-list">
-              {physicalStorage.map((ps: any, psIdx: number) => (
-                <div key={psIdx} className="physical-drive-item">
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
-                    <HardDrive size={16} style={{ color: 'var(--pro-chart-disk)' }} />
-                    <div>
-                      <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--ink)' }}>
-                        {ps.model || `Диск #${psIdx + 1}`}
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th style={{ width: '65px' }}>Том</th>
+                <th>Метка тома</th>
+                <th>ФС</th>
+                <th style={{ width: '220px' }}>Использование</th>
+                <th>Занято</th>
+                <th>Свободно</th>
+                <th>Всего</th>
+                <th style={{ textAlign: 'right' }}>Статус</th>
+              </tr>
+            </thead>
+            <tbody>
+              {deviceDrives.map((drv: any, dIdx: number) => {
+                const isWarn = drv.percent >= 80;
+                const isCrit = drv.percent >= 90;
+                return (
+                  <tr key={dIdx}>
+                    <td>
+                      <span className="drive-letter-badge">{drv.device}</span>
+                    </td>
+                    <td>
+                      <strong style={{ color: 'var(--ink)', fontSize: '11.5px' }}>
+                        {drv.volumeName || 'Локальный диск'}
+                      </strong>
+                    </td>
+                    <td className="mono" style={{ color: 'var(--muted)' }}>
+                      {drv.fileSystem || 'NTFS'}
+                    </td>
+                    <td>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <div className="telemetry-progress-track" style={{ flex: 1, height: '6px', margin: 0 }}>
+                          <div
+                            className={`telemetry-progress-fill ${isCrit ? 'critical' : isWarn ? 'warning' : 'normal'}`}
+                            style={{ width: `${Math.min(100, Math.max(0, drv.percent))}%` }}
+                          />
+                        </div>
+                        <span
+                          className="mono"
+                          style={{
+                            width: '38px',
+                            textAlign: 'right',
+                            fontWeight: 600,
+                            color: isCrit ? 'var(--red)' : isWarn ? 'var(--orange)' : 'var(--ink)'
+                          }}
+                        >
+                          {drv.percent}%
+                        </span>
                       </div>
-                      <div style={{ fontSize: '11px', color: 'var(--muted)', fontFamily: 'DM Mono' }}>
-                        {ps.type || 'SSD'} · {ps.capacityGb ? `${ps.capacityGb} ГБ` : '500 ГБ'} {ps.serialNumber ? `· S/N: ${ps.serialNumber}` : ''}
-                      </div>
-                    </div>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
-                    {ps.temperatureC !== undefined && (
-                      <span className="badge" style={{ fontSize: '11px', fontFamily: 'DM Mono' }}>
-                        🌡 {ps.temperatureC}°C
+                    </td>
+                    <td className="mono">{drv.usedGb} ГБ</td>
+                    <td className="mono" style={{ color: isCrit ? 'var(--red)' : 'var(--green)', fontWeight: 600 }}>
+                      {drv.freeGb} ГБ
+                    </td>
+                    <td className="mono" style={{ color: 'var(--muted)' }}>
+                      {drv.sizeGb} ГБ
+                    </td>
+                    <td style={{ textAlign: 'right' }}>
+                      <span className={`status-pill ${isCrit ? 'critical' : isWarn ? 'warning' : 'healthy'}`}>
+                        {isCrit ? 'Критично' : isWarn ? 'Мало места' : 'В норме'}
                       </span>
-                    )}
-                    <span className={`badge ${ps.healthPercent >= 90 ? 'match' : 'mismatch'}`} style={{ fontSize: '11px', fontWeight: 600 }}>
-                      SMART: {ps.healthPercent ?? 100}%
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Physical Storage Drives Specification Footer */}
+        {physicalStorage.length > 0 && (
+          <div className="storage-footer-bar">
+            <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+              <span style={{ fontWeight: 600, color: 'var(--ink)', fontSize: '11px' }}>
+                Физические накопители ({physicalStorage.length}):
+              </span>
+              {physicalStorage.map((ps: any, psIdx: number) => (
+                <div key={psIdx} style={{ display: 'inline-flex', alignItems: 'center', gap: '7px' }}>
+                  <HardDrive size={13} style={{ color: 'var(--pro-chart-disk)' }} />
+                  <span style={{ fontWeight: 600, color: 'var(--ink)' }}>{ps.model || `Диск #${psIdx + 1}`}</span>
+                  <span className="mono" style={{ color: 'var(--muted)' }}>
+                    ({ps.type || 'SSD'} · {ps.capacityGb ? `${ps.capacityGb} ГБ` : '500 ГБ'}{ps.serialNumber ? ` · S/N: ${ps.serialNumber}` : ''})
+                  </span>
+                  <span
+                    className={`status-pill ${ps.healthPercent >= 90 ? 'healthy' : 'warning'}`}
+                    style={{ fontSize: '9.5px', padding: '2px 6px' }}
+                  >
+                    SMART: {ps.healthPercent ?? 100}%
+                  </span>
+                  {ps.temperatureC !== undefined && (
+                    <span className="mono" style={{ fontSize: '10.5px', color: 'var(--muted)' }}>
+                      🌡 {ps.temperatureC}°C
                     </span>
-                  </div>
+                  )}
                 </div>
               ))}
             </div>
