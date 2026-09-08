@@ -55,18 +55,23 @@ def generate_morning_report(
                     except Exception:
                         pass
             if recent_event:
-                action = (recent_event.get("action") or "SHUTDOWN").upper()
-                details = recent_event.get("details") or recent_event.get("title") or ""
-                unreturned.append({
-                    "id": dev.get("id"),
-                    "name": dev.get("name") or dev.get("id"),
-                    "building": dev.get("building") or "Общие группы",
-                    "floor": dev.get("floor") or "1 этаж",
-                    "room": dev.get("room") or dev.get("group") or "—",
-                    "action": action,
-                    "reason": f"{action}: {details}" if details else action,
-                    "event_time": recent_event.get("timestamp") or recent_event.get("time")
-                })
+                action = (recent_event.get("action") or "").upper()
+                valid_unreturned_actions = {
+                    "SHUTDOWN", "FORCE_SHUTDOWN", "POWEROFF", "SLEEP", 
+                    "REBOOT", "OFF", "SCHEDULED_SHUTDOWN", "SCHEDULED_REBOOT", "CRASH"
+                }
+                if action in valid_unreturned_actions or ("SHUTDOWN" in action) or ("REBOOT" in action):
+                    details = recent_event.get("details") or recent_event.get("title") or ""
+                    unreturned.append({
+                        "id": dev.get("id"),
+                        "name": dev.get("name") or dev.get("id"),
+                        "building": dev.get("building") or "Общие группы",
+                        "floor": dev.get("floor") or "1 этаж",
+                        "room": dev.get("room") or dev.get("group") or "—",
+                        "action": action,
+                        "reason": f"{action}: {details}" if details else action,
+                        "event_time": recent_event.get("timestamp") or recent_event.get("time")
+                    })
 
     return {
         "user_id": user.get("id"),
@@ -220,7 +225,7 @@ async def send_scheduled_report_to_user(user: Dict[str, Any], report_type: str) 
     chat_id = str(user.get("telegramChatId", "")).strip()
     if not chat_id:
         return False
-    from backend.app.api.v1.telegram import load_config, get_httpx_client, load_devices
+    from backend.app.api.v1.telegram import load_config, get_httpx_client, load_devices_async
     from backend.app.api.v1.devices import load_device_power_logs
 
     cfg = load_config()
@@ -228,7 +233,7 @@ async def send_scheduled_report_to_user(user: Dict[str, Any], report_type: str) 
     if not token or not cfg.get("enabled", True):
         return False
 
-    devices = load_devices()
+    devices = await load_devices_async()
     power_logs = load_device_power_logs()
 
     if report_type == "morning":

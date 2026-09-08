@@ -147,7 +147,136 @@ def save_config(cfg: Dict[str, Any]):
 
 import sqlite3
 
+_cached_devices: List[Dict[str, Any]] = []
+
+def update_cached_devices(devs: List[Dict[str, Any]]) -> None:
+    global _cached_devices
+    _cached_devices = list(devs)
+
+def get_cached_devices() -> List[Dict[str, Any]]:
+    global _cached_devices
+    return list(_cached_devices)
+
+def _parse_device_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    devs = []
+    now_utc = datetime.utcnow()
+    for r in rows:
+        grp_str = r.get("group_name") or "Office"
+        grps = [g.strip() for g in grp_str.split(",") if g.strip()]
+        b_val = str(r.get("building") or "").strip()
+        f_val = str(r.get("floor") or "").strip()
+        r_val = str(r.get("room") or "").strip()
+
+        if not b_val and grp_str and "/" in grp_str:
+            parts = [p.strip() for p in grp_str.split("/")]
+            if len(parts) >= 3:
+                b_val, f_val, r_val = parts[0], parts[1], parts[2]
+            elif len(parts) == 2:
+                b_val, r_val = parts[0], parts[1]
+        
+        last_seen_val = r.get("last_seen")
+        sec_since = 999999
+        if last_seen_val:
+            try:
+                if isinstance(last_seen_val, str):
+                    dt = datetime.fromisoformat(last_seen_val.replace("Z", "+00:00"))
+                elif isinstance(last_seen_val, datetime):
+                    dt = last_seen_val
+                else:
+                    dt = None
+                if dt:
+                    if dt.tzinfo is not None:
+                        dt = dt.replace(tzinfo=None)
+                    sec_since = (now_utc - dt).total_seconds()
+            except Exception:
+                pass
+
+        p_raw = str(r.get("power_status") or "").strip().upper()
+        agent_ver = str(r.get("agent_version") or "")
+        dev_id = str(r.get("id") or "")
+
+        is_agentless = (
+            agent_ver == "Agentless" or 
+            dev_id.startswith("TC-") or 
+            "тонкий" in grp_str.lower()
+        )
+        hb_interval = r.get("heartbeat_interval") or 60
+        timeout = 120 if is_agentless else max(75, hb_interval * 2 + 15)
+
+        if p_raw in ["OFF", "POWERSTATUS.OFF"]:
+            is_online = False
+        elif p_raw in ["ON", "POWERSTATUS.ON", "BOOTING"]:
+            is_online = (sec_since <= timeout)
+        else:
+            is_online = (sec_since <= timeout)
+
+        effective_power = "On" if is_online else "Off"
+
+        devs.append({
+            "id": dev_id,
+            "name": r.get("name") or r.get("hostname") or dev_id,
+            "hostname": r.get("hostname") or "",
+            "ip": r.get("ip_address") or "",
+            "mac": r.get("mac_address") or "",
+            "group": grps[0] if grps else "Office",
+            "groups": grps,
+            "building": b_val or "Общие группы",
+            "floor": f_val or "1 этаж",
+            "room": r_val or (grps[0] if grps else "Без кабинета"),
+            "powerStatus": effective_power,
+            "isOnline": is_online,
+            "isAgentless": is_agentless,
+            "agentStatus": "Agentless" if is_agentless else ("Connected" if is_online else "Disconnected"),
+            "agentVersion": agent_ver or "2.9.4",
+            "healthStatus": "Healthy" if is_online else "Offline",
+            "lastSeen": last_seen_val.strftime("%H:%M:%S") if isinstance(last_seen_val, datetime) else str(last_seen_val or "—"),
+            "lastSeenIso": (last_seen_val.isoformat() + "Z") if isinstance(last_seen_val, datetime) else None,
+            "sec_since": sec_since
+        })
+    return devs
+
+async def load_devices_async() -> List[Dict[str, Any]]:
+    """Asynchronously loads all devices directly from SQLAlchemy (PostgreSQL / SQLite)."""
+    try:
+        from backend.app.db.session import AsyncSessionLocal
+        from backend.app.models.device import Device
+        from backend.app.api.v1.devices import format_device_summary
+        from sqlalchemy import select
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(Device))
+            devices = res.scalars().all()
+            formatted = [format_device_summary(d) for d in devices]
+            update_cached_devices(formatted)
+            return formatted
+    except Exception as e:
+        print(f"[Telegram load_devices_async Error] {e}")
+        return load_devices()
+
 def load_devices() -> List[Dict[str, Any]]:
+    """Synchronous device loader. Prioritizes fresh in-memory cache, falls back to DB."""
+    global _cached_devices
+    if _cached_devices:
+        return list(_cached_devices)
+
+    # 1. Try PostgreSQL synchronous query if configured
+    try:
+        from backend.app.db.session import is_postgres_url
+        if is_postgres_url(settings.DATABASE_URL):
+            import psycopg2
+            from psycopg2.extras import RealDictCursor
+            url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
+            conn = psycopg2.connect(url)
+            cursor = conn.cursor(cursor_factory=RealDictCursor)
+            cursor.execute("SELECT * FROM devices")
+            rows = [dict(r) for r in cursor.fetchall()]
+            conn.close()
+            devs = _parse_device_rows(rows)
+            update_cached_devices(devs)
+            return devs
+    except Exception:
+        pass
+
+    # 2. SQLite fallback
     possible_paths = [
         os.path.join(settings.DATA_DIR, "workstation_manager.db"),
         os.path.join(os.getcwd(), "data", "workstation_manager.db"),
@@ -163,87 +292,18 @@ def load_devices() -> List[Dict[str, Any]]:
                 cursor.execute("PRAGMA table_info(devices)")
                 cols = {c[1] for c in cursor.fetchall()}
                 select_cols = ["id", "name", "hostname", "ip_address", "mac_address", "group_name", "power_status", "agent_version", "last_seen"]
-                if "building" in cols: select_cols.append("building")
-                if "floor" in cols: select_cols.append("floor")
-                if "room" in cols: select_cols.append("room")
+                for extra in ["building", "floor", "room", "boot_time", "uptime_seconds", "heartbeat_interval"]:
+                    if extra in cols:
+                        select_cols.append(extra)
                 cursor.execute(f"SELECT {', '.join(select_cols)} FROM devices")
-                rows = cursor.fetchall()
+                rows = [dict(r) for r in cursor.fetchall()]
                 conn.close()
-                devs = []
-                now_utc = datetime.utcnow()
-                for r in rows:
-                    grp_str = r["group_name"] or "Office"
-                    grps = [g.strip() for g in grp_str.split(",") if g.strip()]
-                    b_val = str(r["building"]).strip() if "building" in r.keys() and r["building"] else ""
-                    f_val = str(r["floor"]).strip() if "floor" in r.keys() and r["floor"] else ""
-                    r_val = str(r["room"]).strip() if "room" in r.keys() and r["room"] else ""
-
-                    if not b_val and grp_str and "/" in grp_str:
-                        parts = [p.strip() for p in grp_str.split("/")]
-                        if len(parts) >= 3:
-                            b_val, f_val, r_val = parts[0], parts[1], parts[2]
-                        elif len(parts) == 2:
-                            b_val, r_val = parts[0], parts[1]
-                    
-                    last_seen_val = r["last_seen"]
-                    sec_since = 999999
-                    if last_seen_val:
-                        try:
-                            if isinstance(last_seen_val, str):
-                                dt = datetime.fromisoformat(last_seen_val.replace("Z", "+00:00"))
-                            elif isinstance(last_seen_val, datetime):
-                                dt = last_seen_val
-                            else:
-                                dt = None
-                            if dt:
-                                if dt.tzinfo is not None:
-                                    dt = dt.replace(tzinfo=None)
-                                sec_since = (now_utc - dt).total_seconds()
-                        except Exception:
-                            pass
-
-                    p_raw = str(r["power_status"] or "").strip().upper()
-                    agent_ver = str(r["agent_version"] or "")
-                    dev_id = str(r["id"] or "")
-
-                    is_agentless = (
-                        agent_ver == "Agentless" or 
-                        dev_id.startswith("TC-") or 
-                        "тонкий" in grp_str.lower()
-                    )
-                    timeout = 120 if is_agentless else 135
-
-                    if p_raw in ["OFF", "POWERSTATUS.OFF"]:
-                        is_online = False
-                    elif p_raw in ["ON", "POWERSTATUS.ON", "BOOTING"]:
-                        is_online = (sec_since <= timeout)
-                    else:
-                        is_online = (sec_since <= timeout)
-
-                    effective_power = "On" if is_online else "Off"
-
-                    devs.append({
-                        "id": dev_id,
-                        "name": r["name"] or r["hostname"] or dev_id,
-                        "hostname": r["hostname"] or "",
-                        "ip": r["ip_address"] or "",
-                        "mac": r["mac_address"] or "",
-                        "group": grps[0] if grps else "Office",
-                        "groups": grps,
-                        "building": b_val or "Общие группы",
-                        "floor": f_val or "1 этаж",
-                        "room": r_val or (grps[0] if grps else "Без кабинета"),
-                        "powerStatus": effective_power,
-                        "isOnline": is_online,
-                        "agentVersion": agent_ver or "2.9.4",
-                        "lastSeen": last_seen_val
-
-                    })
+                devs = _parse_device_rows(rows)
                 if devs:
+                    update_cached_devices(devs)
                     return devs
             except Exception:
                 pass
-    return []
     return []
 
 def send_wol_packet(mac_str: str) -> bool:

@@ -193,4 +193,75 @@ def test_telegram_reports_button_callbacks(monkeypatch):
     assert 'text' in res_evening
     assert 'добрый вечер' in res_evening['text'].lower()
 
+def test_morning_report_online_device_never_in_unreturned():
+    user = {'id': 'USR-1', 'scope': 'Все устройства', 'allowedGroups': []}
+    devices = [
+        {'id': 'PC-01', 'name': 'YEREMIN', 'room': 'Office', 'powerStatus': 'On', 'isOnline': True}
+    ]
+    now = datetime.now(timezone.utc)
+    power_logs = {
+        'PC-01': [
+            {'action': 'REBOOT', 'timestamp': (now - timedelta(hours=2)).isoformat(), 'details': 'Night schedule'}
+        ]
+    }
+    rep = generate_morning_report(user, devices, power_logs, now_dt=now)
+    assert rep['online_devices'] == 1
+    assert rep['offline_devices'] == 0
+    assert len(rep['unreturned_devices']) == 0
+
+def test_morning_report_boot_or_wake_never_in_unreturned():
+    user = {'id': 'USR-1', 'scope': 'Все устройства', 'allowedGroups': []}
+    devices = [
+        {'id': 'PC-02', 'name': 'DESKTOP', 'room': 'Office', 'powerStatus': 'Off', 'isOnline': False}
+    ]
+    now = datetime.now(timezone.utc)
+    # The device has a BOOT or WAKE event in the night window
+    power_logs = {
+        'PC-02': [
+            {'action': 'BOOT', 'timestamp': (now - timedelta(hours=1)).isoformat(), 'details': 'Компьютер включен локально'}
+        ]
+    }
+    rep = generate_morning_report(user, devices, power_logs, now_dt=now)
+    assert rep['online_devices'] == 0
+    assert rep['offline_devices'] == 1
+    # Crucial: BOOT is NOT a reason to list in "не вернулись онлайн после ночных событий"
+    assert len(rep['unreturned_devices']) == 0
+
+def test_morning_report_accurate_counts_and_formatting():
+    user = {'id': 'USR-1', 'displayName': 'Сергей', 'scope': 'Все устройства', 'allowedGroups': []}
+    devices = [
+        {'id': 'PC-1', 'name': 'YEREMIN', 'room': 'Office', 'powerStatus': 'On', 'isOnline': True},
+        {'id': 'PC-2', 'name': 'DESKTOP-J8IDHQH', 'room': 'Office', 'powerStatus': 'On', 'isOnline': True},
+        {'id': 'PC-3', 'name': 'LAB-1', 'room': 'B4-Class-541', 'powerStatus': 'Off', 'isOnline': False},
+        {'id': 'PC-4', 'name': 'LAB-2', 'room': 'B4-Class-541', 'powerStatus': 'Off', 'isOnline': False},
+    ]
+    now = datetime.now(timezone.utc)
+    power_logs = {}
+    rep = generate_morning_report(user, devices, power_logs, now_dt=now)
+    assert rep['online_devices'] == 2
+    assert rep['offline_devices'] == 2
+    msg = format_morning_report_message(rep)
+    assert "В сети: <b>2</b> ПК" in msg
+    assert "Выключено: <b>2</b> ПК" in msg
+    assert "Office</b>: 2/2 🟢" in msg
+    assert "B4-Class-541</b>: 0/2 🟢" in msg
+    assert "Ночных сбоев не зафиксировано" in msg
+
+def test_load_devices_cache_and_update():
+    import backend.app.api.v1.telegram as tg_module
+    sample_devs = [
+        {"id": "PC-TEST-1", "name": "Test PC 1", "powerStatus": "On", "isOnline": True}
+    ]
+    tg_module.update_cached_devices(sample_devs)
+    assert tg_module.get_cached_devices() == sample_devs
+    loaded = tg_module.load_devices()
+    assert len(loaded) == 1
+    assert loaded[0]["id"] == "PC-TEST-1"
+
+@pytest.mark.anyio
+async def test_load_devices_async():
+    import backend.app.api.v1.telegram as tg_module
+    devs = await tg_module.load_devices_async()
+    assert isinstance(devs, list)
+
 

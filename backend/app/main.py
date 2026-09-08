@@ -113,6 +113,13 @@ async def startup_event():
     print(f"  🕒 System Timezone:        {tz_env} ({local_now_str})")
     print("=" * 60)
 
+    # Preload device cache for instant Telegram bot and report availability
+    try:
+        from backend.app.api.v1.telegram import load_devices_async
+        await load_devices_async()
+    except Exception as ex:
+        logger.warning(f"Device cache preloading notice: {ex}")
+
     # Start automated scheduler and telegram bot background loops
     import asyncio
     asyncio.create_task(scheduler_service.start_background_loop())

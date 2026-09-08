@@ -9,80 +9,70 @@ router = APIRouter(prefix="/groups", tags=["groups"])
 
 GROUPS_FILE = os.path.join(settings.DATA_DIR, "groups.json")
 
-def unassign_devices_by_scope(building: Optional[str] = None, floor: Optional[str] = None, room: Optional[str] = None, group_name: Optional[str] = None):
-    possible_paths = [
-        os.path.join(settings.DATA_DIR, "workstation_manager.db"),
-        os.path.join(os.getcwd(), "data", "workstation_manager.db"),
-        os.path.join(os.getcwd(), "workstation_manager.db")
-    ]
-    for db_path in possible_paths:
-        if os.path.exists(db_path):
-            try:
-                conn = sqlite3.connect(db_path)
-                conn.row_factory = sqlite3.Row
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, group_name, building, floor, room FROM devices")
-                rows = cursor.fetchall()
+async def unassign_devices_by_scope(building: Optional[str] = None, floor: Optional[str] = None, room: Optional[str] = None, group_name: Optional[str] = None):
+    try:
+        from backend.app.db.session import AsyncSessionLocal
+        from backend.app.models.device import Device
+        from sqlalchemy import select
+        async with AsyncSessionLocal() as session:
+            res = await session.execute(select(Device))
+            devices = res.scalars().all()
 
-                for r in rows:
-                    dev_id = r["id"]
-                    curr_grp = r["group_name"] or ""
-                    curr_b = r["building"] or ""
-                    curr_f = r["floor"] or ""
-                    curr_r = r["room"] or ""
+            for d in devices:
+                curr_grp = d.group_name or ""
+                curr_b = d.building or ""
+                curr_f = d.floor or ""
+                curr_r = d.room or ""
 
-                    grps = [g.strip() for g in curr_grp.split(",") if g.strip()]
-                    should_update = False
-                    new_b = curr_b
-                    new_f = curr_f
-                    new_r = curr_r
+                grps = [g.strip() for g in curr_grp.split(",") if g.strip()]
+                should_update = False
+                new_b = curr_b
+                new_f = curr_f
+                new_r = curr_r
 
-                    # Match by room
-                    if building and floor and room:
-                        if (curr_b.lower() == building.lower() and curr_f.lower() == floor.lower() and curr_r.lower() == room.lower()) or (group_name and any(g.lower() == group_name.lower() for g in grps)):
-                            new_r = ""
-                            path = f"{building} / {floor} / {room}".lower()
-                            grps = [g for g in grps if g.lower() != path and (not group_name or g.lower() != group_name.lower())]
-                            should_update = True
+                # Match by room
+                if building and floor and room:
+                    path = f"{building} / {floor} / {room}".lower()
+                    if (curr_b.lower() == building.lower() and curr_f.lower() == floor.lower() and curr_r.lower() == room.lower()) or (group_name and any(g.lower() == group_name.lower() for g in grps)):
+                        new_r = ""
+                        grps = [g for g in grps if g.lower() != path and (not group_name or g.lower() != group_name.lower())]
+                        should_update = True
 
-                    # Match by floor
-                    elif building and floor:
-                        if curr_b.lower() == building.lower() and curr_f.lower() == floor.lower():
-                            new_f = ""
-                            new_r = ""
-                            prefix = f"{building} / {floor} /".lower()
-                            grps = [g for g in grps if not g.lower().startswith(prefix)]
-                            should_update = True
+                # Match by floor
+                elif building and floor:
+                    if curr_b.lower() == building.lower() and curr_f.lower() == floor.lower():
+                        new_f = ""
+                        new_r = ""
+                        prefix = f"{building} / {floor} /".lower()
+                        grps = [g for g in grps if not g.lower().startswith(prefix)]
+                        should_update = True
 
-                    # Match by building
-                    elif building:
-                        if curr_b.lower() == building.lower():
-                            new_b = ""
-                            new_f = ""
-                            new_r = ""
-                            prefix = f"{building} /".lower()
-                            grps = [g for g in grps if not g.lower().startswith(prefix)]
-                            should_update = True
+                # Match by building
+                elif building:
+                    if curr_b.lower() == building.lower():
+                        new_b = ""
+                        new_f = ""
+                        new_r = ""
+                        prefix = f"{building} /".lower()
+                        grps = [g for g in grps if not g.lower().startswith(prefix)]
+                        should_update = True
 
-                    # Match solely by group_name
-                    elif group_name:
-                        matched = any(g.lower() == group_name.lower() for g in grps)
-                        if matched:
-                            grps = [g for g in grps if g.lower() != group_name.lower()]
-                            should_update = True
+                # Match solely by group_name
+                elif group_name:
+                    matched = any(g.lower() == group_name.lower() for g in grps)
+                    if matched:
+                        grps = [g for g in grps if g.lower() != group_name.lower()]
+                        should_update = True
 
-                    if should_update:
-                        new_grp_str = ", ".join(grps) if grps else "Default"
-                        cursor.execute(
-                            "UPDATE devices SET group_name = ?, building = ?, floor = ?, room = ? WHERE id = ?",
-                            (new_grp_str, new_b, new_f, new_r, dev_id)
-                        )
+                if should_update:
+                    d.group_name = ", ".join(grps) if grps else "Default"
+                    d.building = new_b
+                    d.floor = new_f
+                    d.room = new_r
 
-                conn.commit()
-                conn.close()
-                break
-            except Exception as e:
-                print(f"Error unassigning devices in {db_path}: {e}")
+            await session.commit()
+    except Exception as e:
+        print(f"[unassign_devices_by_scope Error] {e}")
 
 def get_default_groups() -> List[Dict[str, Any]]:
     return [
@@ -374,7 +364,7 @@ async def delete_building(bld_name: str):
         and not g.get("name", "").lower().startswith(f"{bld_name.lower()} /")
     ]
     save_groups(groups_store)
-    unassign_devices_by_scope(building=bld_name)
+    await unassign_devices_by_scope(building=bld_name)
 
     return {"status": "deleted", "building": bld_name}
 
@@ -395,7 +385,7 @@ async def delete_floor(bld_name: str, flr_name: str):
         )
     ]
     save_groups(groups_store)
-    unassign_devices_by_scope(building=bld_name, floor=flr_name)
+    await unassign_devices_by_scope(building=bld_name, floor=flr_name)
 
     return {"status": "deleted", "building": bld_name, "floor": flr_name}
 
@@ -606,9 +596,9 @@ async def delete_group(name: str):
         flr = deleted.get("floor")
         rm = deleted.get("room")
         if bld and flr and rm:
-            unassign_devices_by_scope(building=bld, floor=flr, room=rm, group_name=name)
+            await unassign_devices_by_scope(building=bld, floor=flr, room=rm, group_name=name)
         else:
-            unassign_devices_by_scope(group_name=name)
+            await unassign_devices_by_scope(group_name=name)
         return {"status": "deleted", "group": deleted}
-    unassign_devices_by_scope(group_name=name)
+    await unassign_devices_by_scope(group_name=name)
     return {"status": "not_found"}

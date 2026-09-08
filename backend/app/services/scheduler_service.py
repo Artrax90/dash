@@ -171,11 +171,16 @@ class SchedulerService:
                 async with AsyncSessionLocal() as session:
                     res = await session.execute(select(Device))
                     devices = res.scalars().all()
-                    
-                    # 1. Device Offline / Shutdown Watchdog
+
                     from backend.app.models.device import PowerStatus, AgentStatus
                     from backend.app.api.v1.devices import log_device_power_event, device_power_logs, format_device_summary
+                    try:
+                        from backend.app.api.v1.telegram import update_cached_devices
+                        update_cached_devices([format_device_summary(d) for d in devices])
+                    except Exception:
+                        pass
                     
+                    # 1. Device Offline / Shutdown Watchdog
                     now_utc = datetime.utcnow()
                     now_ts = time.time()
                     status_changed = False
