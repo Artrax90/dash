@@ -1445,6 +1445,18 @@ export const systemApi = {
     });
     if (!res.ok) throw new Error('Ошибка очистки устаревших записей');
     return await res.json();
+  },
+  resetDatabase: async (confirmation: string, keepCurrentUser: boolean = true): Promise<any> => {
+    const res = await fetch(`${API_BASE}/system/reset-database`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ confirmation, keepCurrentUser })
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Ошибка обнуления базы данных' }));
+      throw new Error(err.detail || 'Ошибка обнуления базы данных');
+    }
+    return await res.json();
   }
 };
 

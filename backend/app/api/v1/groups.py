@@ -93,7 +93,7 @@ def load_groups() -> List[Dict[str, Any]]:
         try:
             with open(GROUPS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list):
                     # Update backup if valid
                     try:
                         with open(BACKUP_GROUPS_FILE, "w", encoding="utf-8") as bf:
@@ -109,7 +109,7 @@ def load_groups() -> List[Dict[str, Any]]:
         try:
             with open(BACKUP_GROUPS_FILE, "r", encoding="utf-8") as bf:
                 data = json.load(bf)
-                if isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list):
                     save_groups(data)
                     return data
         except Exception:
@@ -178,7 +178,7 @@ def load_buildings() -> List[Dict[str, Any]]:
         try:
             with open(BUILDINGS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
-                if isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list):
                     return data
         except Exception:
             pass
@@ -186,7 +186,7 @@ def load_buildings() -> List[Dict[str, Any]]:
         try:
             with open(BACKUP_BUILDINGS_FILE, "r", encoding="utf-8") as bf:
                 data = json.load(bf)
-                if isinstance(data, list) and len(data) > 0:
+                if isinstance(data, list):
                     save_buildings(data)
                     return data
         except Exception:

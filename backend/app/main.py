@@ -251,6 +251,38 @@ async def cleanup_system_data(request: Request):
         pass
     return await backup_service.cleanup_old_records(days=days)
 
+@app.post("/api/v1/system/reset-database")
+async def reset_system_database(request: Request):
+    """
+    Completely resets all database tables and clears fleet devices, groups, telemetry, and logs.
+    Requires exact confirmation phrase: 'УДАЛИТЬ ВСЕ ДАННЫЕ'.
+    """
+    from fastapi import HTTPException
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Неверный JSON формат")
+
+    CONFIRMATION_PHRASE = "УДАЛИТЬ ВСЕ ДАННЫЕ"
+    confirmation = ""
+    keep_current_user = True
+    if isinstance(payload, dict):
+        confirmation = str(payload.get("confirmation") or "").strip().upper()
+        keep_current_user = bool(payload.get("keepCurrentUser", True))
+
+    if confirmation != CONFIRMATION_PHRASE:
+        raise HTTPException(
+            status_code=400,
+            detail=f'Для подтверждения необходимо точно ввести фразу "{CONFIRMATION_PHRASE}"'
+        )
+
+    from backend.app.services.backup_service import backup_service
+    x_user = request.headers.get("X-Username") or request.headers.get("X-User-Id")
+    return await backup_service.reset_database(
+        keep_current_user=keep_current_user,
+        current_user_id=x_user
+    )
+
 # Auto-mount SPA frontend if built in dist/
 dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "dist"))
 if os.path.isdir(dist_dir) and os.path.exists(os.path.join(dist_dir, "index.html")):

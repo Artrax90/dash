@@ -17092,6 +17092,11 @@ function SettingsPage({
   const [isCleaningUp, setIsCleaningUp] = useState(false);
   const restoreFileInputRef = useRef<HTMLInputElement>(null);
 
+  const [showResetDbModal, setShowResetDbModal] = useState(false);
+  const [resetPhraseInput, setResetPhraseInput] = useState('');
+  const [keepAdminOnReset, setKeepAdminOnReset] = useState(true);
+  const [isResettingDb, setIsResettingDb] = useState(false);
+
   useEffect(() => {
     agentsApi.getSettings().then(s => {
       if (s && s.defaultHeartbeatInterval) setDefaultInterval(s.defaultHeartbeatInterval);
@@ -17200,6 +17205,28 @@ function SettingsPage({
       notify(`Ошибка очистки данных: ${err?.message || 'Сбой сервера'}`);
     } finally {
       setIsCleaningUp(false);
+    }
+  };
+
+  const CONFIRMATION_PHRASE = 'УДАЛИТЬ ВСЕ ДАННЫЕ';
+
+  const handleResetDatabase = async () => {
+    if (resetPhraseInput.trim().toUpperCase() !== CONFIRMATION_PHRASE) {
+      notify(`Для подтверждения введите точную фразу "${CONFIRMATION_PHRASE}"`);
+      return;
+    }
+    setIsResettingDb(true);
+    try {
+      const res = await systemApi.resetDatabase(CONFIRMATION_PHRASE, keepAdminOnReset);
+      setShowResetDbModal(false);
+      notify(res?.message || 'База данных успешно обнулена! Перезагрузка страницы через 1.5 сек...');
+      setTimeout(() => {
+        window.location.reload();
+      }, 1500);
+    } catch (err: any) {
+      notify(`Ошибка обнуления базы: ${err?.message || 'Сбой сервера'}`);
+    } finally {
+      setIsResettingDb(false);
     }
   };
 
@@ -17388,6 +17415,36 @@ function SettingsPage({
                   </Button>
                 </div>
               </div>
+
+              {/* Row 4: Complete Database Wipe / Reset */}
+              <div className="setting-row" style={{ borderTop: '1px solid rgba(239, 68, 68, 0.25)', paddingTop: '16px', marginTop: '6px' }}>
+                <div>
+                  <strong style={{ color: '#ef4444', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Trash2 size={15} /> Удаление и обнуление базы данных
+                  </strong>
+                  <span>Полное безвозвратное удаление всех компьютеров, групп, расписаний, инцидентов и телеметрии</span>
+                </div>
+                <div>
+                  <Button
+                    danger
+                    icon={<Trash2 size={14} />}
+                    onClick={() => {
+                      setResetPhraseInput('');
+                      setKeepAdminOnReset(true);
+                      setShowResetDbModal(true);
+                    }}
+                    style={{
+                      background: 'rgba(239, 68, 68, 0.12)',
+                      color: '#f87171',
+                      border: '1px solid rgba(239, 68, 68, 0.35)',
+                      fontWeight: 600,
+                      padding: '8px 14px'
+                    }}
+                  >
+                    Удалить базу
+                  </Button>
+                </div>
+              </div>
             </>
           )}
 
@@ -17405,8 +17462,139 @@ function SettingsPage({
           </div>
         </section>
       </div>
+
+      {showResetDbModal && (
+        <div
+          className="modal-backdrop"
+          style={{ zIndex: 9999, background: 'rgba(0, 0, 0, 0.78)', backdropFilter: 'blur(8px)' }}
+          onClick={() => !isResettingDb && setShowResetDbModal(false)}
+        >
+          <div
+            className="modal-card"
+            style={{
+              maxWidth: '520px',
+              width: '92%',
+              background: 'var(--panel, #0f172a)',
+              border: '1px solid rgba(239, 68, 68, 0.4)',
+              boxShadow: '0 25px 60px -15px rgba(239, 68, 68, 0.25), 0 10px 30px rgba(0,0,0,0.8)',
+              borderRadius: '14px',
+              padding: '24px',
+              color: 'var(--text, #f1f5f9)'
+            }}
+            onClick={e => e.stopPropagation()}
+          >
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: '14px', marginBottom: '18px' }}>
+              <div style={{
+                width: '44px',
+                height: '44px',
+                borderRadius: '10px',
+                background: 'rgba(239, 68, 68, 0.15)',
+                border: '1px solid rgba(239, 68, 68, 0.3)',
+                color: '#ef4444',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0
+              }}>
+                <AlertTriangle size={24} />
+              </div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#f87171' }}>
+                  Полное обнуление базы данных
+                </h3>
+                <p style={{ margin: '4px 0 0 0', fontSize: '12.5px', color: 'var(--muted, #94a3b8)' }}>
+                  Это действие необратимо и приведет к полной очистке всех данных системы.
+                </p>
+              </div>
+            </div>
+
+            <div style={{
+              background: 'rgba(239, 68, 68, 0.08)',
+              border: '1px solid rgba(239, 68, 68, 0.2)',
+              borderRadius: '8px',
+              padding: '12px 14px',
+              fontSize: '12.5px',
+              lineHeight: 1.6,
+              marginBottom: '18px',
+              color: '#fca5a5'
+            }}>
+              <strong>Будут безвозвратно удалены:</strong>
+              <ul style={{ margin: '6px 0 0 0', paddingLeft: '18px' }}>
+                <li>Все рабочие станции, тонкие клиенты и телеметрия (0 ПК)</li>
+                <li>Все группы, корпусы, этажи и кабинеты</li>
+                <li>Все инциденты, эталоны оборудования и история процессов</li>
+                <li>Расписания включения/выключения и токены агентов</li>
+              </ul>
+            </div>
+
+            <div style={{ marginBottom: '18px' }}>
+              <label style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '10px',
+                fontSize: '13px',
+                cursor: 'pointer',
+                userSelect: 'none'
+              }}>
+                <input
+                  type="checkbox"
+                  checked={keepAdminOnReset}
+                  onChange={e => setKeepAdminOnReset(e.target.checked)}
+                  style={{ width: '16px', height: '16px', cursor: 'pointer' }}
+                />
+                <span>Сохранить текущую учетную запись администратора</span>
+              </label>
+              <div style={{ fontSize: '11px', color: 'var(--muted, #94a3b8)', marginTop: '4px', marginLeft: '26px' }}>
+                {keepAdminOnReset
+                  ? 'Вы останетесь в системе, но весь парк ПК, группы и настройки очистятся.'
+                  : '⚠️ Будут удалены все аккаунты, система перейдет в режим первого запуска (создание администратора заново).'}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '20px' }}>
+              <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, marginBottom: '8px' }}>
+                Для подтверждения введите фразу: <span style={{ color: '#f87171', fontFamily: 'DM Mono, monospace', background: 'rgba(239,68,68,0.15)', padding: '2px 6px', borderRadius: '4px' }}>УДАЛИТЬ ВСЕ ДАННЫЕ</span>
+              </label>
+              <input
+                type="text"
+                className="text-input"
+                value={resetPhraseInput}
+                onChange={e => setResetPhraseInput(e.target.value)}
+                placeholder="УДАЛИТЬ ВСЕ ДАННЫЕ"
+                autoFocus
+                style={{
+                  width: '100%',
+                  fontFamily: 'DM Mono, monospace',
+                  borderColor: resetPhraseInput.trim().toUpperCase() === 'УДАЛИТЬ ВСЕ ДАННЫЕ' ? '#ef4444' : undefined,
+                  background: 'rgba(0, 0, 0, 0.25)'
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px' }}>
+              <Button onClick={() => setShowResetDbModal(false)} disabled={isResettingDb}>
+                Отмена
+              </Button>
+              <Button
+                danger
+                onClick={handleResetDatabase}
+                disabled={isResettingDb || resetPhraseInput.trim().toUpperCase() !== 'УДАЛИТЬ ВСЕ ДАННЫЕ'}
+                icon={isResettingDb ? <LoaderCircle size={14} className="spin" /> : <Trash2 size={14} />}
+                style={{
+                  background: resetPhraseInput.trim().toUpperCase() === 'УДАЛИТЬ ВСЕ ДАННЫЕ' ? '#dc2626' : undefined,
+                  color: '#ffffff',
+                  fontWeight: 600
+                }}
+              >
+                {isResettingDb ? 'Обнуление базы...' : 'Удалить все данные'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </>
   );
 }
 
 export default App;
+

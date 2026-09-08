@@ -195,4 +195,135 @@ class BackupService:
             "message": f"Очистка завершена: удалено {deleted_alerts} устаревших алертов и {deleted_audit} записей аудита (старше {days} дн.)"
         }
 
+    async def reset_database(self, keep_current_user: bool = True, current_user_id: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Completely resets all database tables and clears fleet devices, groups, telemetry, and logs.
+        """
+        # 1. Truncate / delete all rows in all database tables in reverse dependency order
+        async with AsyncSessionLocal() as session:
+            async with session.begin():
+                for table in reversed(Base.metadata.sorted_tables):
+                    try:
+                        await session.execute(table.delete())
+                    except Exception as ex:
+                        print(f"[Reset] Warning clearing table {table.name}: {ex}")
+
+        # 2. Reset filesystem configuration files and caches in DATA_DIR
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        files_to_empty_dict = ["device_processes.json", "device_configs.json"]
+        for fname in files_to_empty_dict:
+            p = os.path.join(settings.DATA_DIR, fname)
+            try:
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump({}, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        files_to_empty_list = [
+            "power_logs.json", "alerts.json", "audit_logs.json",
+            "groups.json", "groups.backup.json",
+            "buildings.json", "buildings.backup.json",
+            "schedules.json", "schedules.backup.json",
+            "tokens.json", "tokens.backup.json"
+        ]
+        for fname in files_to_empty_list:
+            p = os.path.join(settings.DATA_DIR, fname)
+            try:
+                with open(p, "w", encoding="utf-8") as f:
+                    json.dump([], f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        for extra_file in ["devices.json", "devices_cache.json"]:
+            p = os.path.join(settings.DATA_DIR, extra_file)
+            if os.path.exists(p):
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+        users_file = os.path.join(settings.DATA_DIR, "users.json")
+        backup_users_file = os.path.join(settings.DATA_DIR, "users.backup.json")
+        sessions_file = os.path.join(settings.DATA_DIR, "active_sessions.json")
+
+        if keep_current_user:
+            preserved_users = []
+            try:
+                if os.path.exists(users_file):
+                    with open(users_file, "r", encoding="utf-8") as f:
+                        all_users = json.load(f)
+                        if isinstance(all_users, list):
+                            if current_user_id:
+                                clean_cid = str(current_user_id).strip().lower()
+                                target_u = next((u for u in all_users if str(u.get("id", "")).lower() == clean_cid or str(u.get("username", "")).lower() == clean_cid), None)
+                                if target_u:
+                                    preserved_users.append(target_u)
+                            if not preserved_users:
+                                admin_u = next((u for u in all_users if "суперадминистратор" in str(u.get("role", "")).lower() or "admin" in str(u.get("role", "")).lower()), None)
+                                if admin_u:
+                                    preserved_users.append(admin_u)
+                                elif all_users:
+                                    preserved_users.append(all_users[0])
+            except Exception:
+                pass
+
+            if preserved_users:
+                try:
+                    with open(users_file, "w", encoding="utf-8") as f:
+                        json.dump(preserved_users, f, indent=2, ensure_ascii=False)
+                    with open(backup_users_file, "w", encoding="utf-8") as f:
+                        json.dump(preserved_users, f, indent=2, ensure_ascii=False)
+                except Exception:
+                    pass
+        else:
+            try:
+                with open(users_file, "w", encoding="utf-8") as f:
+                    json.dump([], f, indent=2, ensure_ascii=False)
+                with open(backup_users_file, "w", encoding="utf-8") as f:
+                    json.dump([], f, indent=2, ensure_ascii=False)
+                with open(sessions_file, "w", encoding="utf-8") as f:
+                    json.dump({}, f, indent=2, ensure_ascii=False)
+            except Exception:
+                pass
+
+        # 3. Clear in-memory caches
+        try:
+            from backend.app.api.v1.devices import device_live_processes, device_power_logs, device_drives_cache
+            device_live_processes.clear()
+            device_power_logs.clear()
+            device_drives_cache.clear()
+        except Exception:
+            pass
+
+        try:
+            from backend.app.api.v1.telegram import update_cached_devices
+            update_cached_devices([])
+        except Exception:
+            pass
+
+        try:
+            from backend.app.api.v1.agents import fleet_arp_cache, fleet_mac_to_ip
+            fleet_arp_cache.clear()
+            fleet_mac_to_ip.clear()
+        except Exception:
+            pass
+
+        # 4. Broadcast WebSocket event
+        now_iso = datetime.now(timezone.utc).isoformat()
+        try:
+            from backend.app.ws.manager import ws_manager
+            await ws_manager.broadcast_event("system.database_reset", {
+                "resetAt": now_iso,
+                "usersPreserved": keep_current_user
+            })
+        except Exception:
+            pass
+
+        return {
+            "status": "success",
+            "message": "База данных полностью обнулена. Все устройства, группы, инциденты и журналы удалены.",
+            "resetAt": now_iso,
+            "usersPreserved": keep_current_user
+        }
+
 backup_service = BackupService()
