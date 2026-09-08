@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc
 from backend.app.db.session import get_db
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
+from backend.app.models.alert import AlertModel
+from backend.app.models.device import Device, HealthStatus
 from backend.app.ws.manager import ws_manager
 
 router = APIRouter(prefix="/hardware", tags=["hardware"])
@@ -85,15 +87,47 @@ async def set_baseline(device_id: str, payload: Dict[str, Any], request: Request
         ch.diff_status = "ACCEPTED_AS_BASELINE"
         ch.acknowledged = True
 
+    # Also resolve all HARDWARE_MISMATCH alerts for this device
+    alt_res = await db.execute(
+        select(AlertModel).where(
+            AlertModel.device_id == device_id,
+            AlertModel.alert_type == "HARDWARE_MISMATCH",
+            AlertModel.state != "Resolved"
+        )
+    )
+    for alt in alt_res.scalars().all():
+        alt.state = "Resolved"
+
+    # Re-evaluate device health_status: check if any remaining open critical or warning alerts exist
+    rem_alerts = await db.execute(
+        select(AlertModel).where(
+            AlertModel.device_id == device_id,
+            AlertModel.state != "Resolved"
+        )
+    )
+    open_alts = rem_alerts.scalars().all()
+    dev_res = await db.execute(select(Device).where(Device.id == device_id))
+    dev_obj = dev_res.scalar_one_or_none()
+    if dev_obj:
+        if any(str(a.severity).lower() == "critical" for a in open_alts):
+            dev_obj.health_status = HealthStatus.CRITICAL
+        elif any(str(a.severity).lower() == "warning" for a in open_alts):
+            dev_obj.health_status = HealthStatus.WARNING
+        else:
+            dev_obj.health_status = HealthStatus.HEALTHY
+
     await db.commit()
     await ws_manager.broadcast_event("baseline.updated", {"deviceId": device_id, "approvedBy": approved_by})
+    if dev_obj:
+        await ws_manager.broadcast_event("device.updated", {
+            "id": dev_obj.id,
+            "deviceId": dev_obj.id,
+            "healthStatus": dev_obj.health_status.value if hasattr(dev_obj.health_status, "value") else str(dev_obj.health_status)
+        })
 
     # Log to Audit Trail
     try:
         from backend.app.api.v1.audit import record_audit
-        from backend.app.models.device import Device
-        dev_res = await db.execute(select(Device).where(Device.id == device_id))
-        dev_obj = dev_res.scalar_one_or_none()
         dev_name = dev_obj.name if dev_obj else device_id
 
         ram_info = spec.get("ram", {}) if isinstance(spec, dict) else {}

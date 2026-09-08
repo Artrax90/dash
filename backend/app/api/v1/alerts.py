@@ -8,7 +8,7 @@ from sqlalchemy import select, desc, delete
 from backend.app.core.config import settings
 from backend.app.db.session import get_db
 from backend.app.models.alert import AlertModel
-from backend.app.models.device import Device
+from backend.app.models.device import Device, HealthStatus
 from backend.app.models.hardware import HardwareChangeModel
 from backend.app.ws.manager import ws_manager
 
@@ -116,7 +116,46 @@ async def resolve_alert(alert_id: str, request: Request, db: AsyncSession = Depe
             for ch in hw_res.scalars().all():
                 ch.acknowledged = True
                 ch.diff_status = "RESOLVED"
+
+        # Re-evaluate device health status if device_id is present
+        if model.device_id:
+            dev_res = await db.execute(select(Device).where(Device.id == model.device_id))
+            dev_obj = dev_res.scalar_one_or_none()
+            if dev_obj:
+                rem_alts = await db.execute(
+                    select(AlertModel).where(
+                        AlertModel.device_id == model.device_id,
+                        AlertModel.id != alert_id,
+                        AlertModel.state != "Resolved"
+                    )
+                )
+                open_alts = rem_alts.scalars().all()
+                rem_hw = await db.execute(
+                    select(HardwareChangeModel).where(
+                        HardwareChangeModel.device_id == model.device_id,
+                        HardwareChangeModel.diff_status == "MISMATCH",
+                        HardwareChangeModel.acknowledged == False
+                    )
+                )
+                open_hw = rem_hw.scalars().all()
+                if any(str(a.severity).lower() == "critical" for a in open_alts) or any(str(h.severity).lower() == "critical" for h in open_hw):
+                    dev_obj.health_status = HealthStatus.CRITICAL
+                elif any(str(a.severity).lower() == "warning" for a in open_alts) or any(str(h.severity).lower() == "warning" for h in open_hw):
+                    dev_obj.health_status = HealthStatus.WARNING
+                else:
+                    dev_obj.health_status = HealthStatus.HEALTHY
+
         await db.commit()
+
+        if model.device_id:
+            dev_res = await db.execute(select(Device).where(Device.id == model.device_id))
+            dev_obj = dev_res.scalar_one_or_none()
+            if dev_obj:
+                await ws_manager.broadcast_event("device.updated", {
+                    "id": dev_obj.id,
+                    "deviceId": dev_obj.id,
+                    "healthStatus": dev_obj.health_status.value if hasattr(dev_obj.health_status, "value") else str(dev_obj.health_status)
+                })
         resolved_obj = {
             "id": model.id,
             "deviceId": model.device_id,
@@ -230,7 +269,18 @@ async def resolve_all_alerts(request: Request, db: AsyncSession = Depends(get_db
         ch.acknowledged = True
         ch.diff_status = "RESOLVED"
         
+    devs_res = await db.execute(select(Device))
+    for d in devs_res.scalars().all():
+        d.health_status = HealthStatus.HEALTHY
+
     await db.commit()
+
+    for d in devs_res.scalars().all():
+        await ws_manager.broadcast_event("device.updated", {
+            "id": d.id,
+            "deviceId": d.id,
+            "healthStatus": "Healthy"
+        })
 
     # 2. Resolve in JSON store
     for a in alerts_db:

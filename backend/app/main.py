@@ -98,6 +98,22 @@ def safe_migrate_columns_sync(connection):
         except Exception as ex:
             logger.debug(f"Alerts USB cleanup notice: {ex}")
 
+    if "devices" in tables and "alerts" in tables and "hardware_changes" in tables:
+        try:
+            connection.execute(text("""
+                UPDATE devices 
+                SET health_status = 'HEALTHY' 
+                WHERE (health_status = 'CRITICAL' OR health_status = 'WARNING' OR health_status = 'Critical' OR health_status = 'Warning')
+                  AND id NOT IN (
+                      SELECT DISTINCT device_id FROM alerts WHERE state = 'Open' AND device_id IS NOT NULL
+                  )
+                  AND id NOT IN (
+                      SELECT DISTINCT device_id FROM hardware_changes WHERE diff_status = 'MISMATCH' AND (acknowledged = 0 OR acknowledged IS NULL) AND component != 'USB-накопитель' AND id NOT LIKE '%USB%' AND device_id IS NOT NULL
+                  )
+            """))
+        except Exception as ex:
+            logger.debug(f"Device health auto-reconciliation notice: {ex}")
+
 @app.on_event("startup")
 async def startup_event():
     # Initialize DB schema

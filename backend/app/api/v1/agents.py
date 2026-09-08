@@ -735,6 +735,32 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
 
                 print(f"[Hardware Alert] Generated discrepancy alert for {device_id}: {alert_desc}")
 
+    # Self-healing: if device has no open alerts, no unacknowledged non-USB mismatches, and normal load, restore HEALTHY
+    if dev and dev.health_status in [HealthStatus.CRITICAL, HealthStatus.WARNING]:
+        rem_alts_q = await db.execute(
+            select(AlertModel).where(
+                AlertModel.device_id == real_device_id,
+                AlertModel.state == "Open",
+                AlertModel.severity.in_(["Critical", "Warning"])
+            )
+        )
+        has_open_alts = bool(rem_alts_q.scalars().first())
+        rem_hw_q = await db.execute(
+            select(HardwareChangeModel).where(
+                HardwareChangeModel.device_id == real_device_id,
+                HardwareChangeModel.diff_status == "MISMATCH",
+                HardwareChangeModel.acknowledged == False,
+                HardwareChangeModel.component != "USB-накопитель",
+                ~HardwareChangeModel.id.like("%USB%")
+            )
+        )
+        has_open_hw = bool(rem_hw_q.scalars().first())
+        cpu_val = payload.get("cpuUsage") or payload.get("cpu") or 0
+        ram_val = payload.get("ramUsage") or payload.get("ram") or 0
+        is_stressed = (isinstance(cpu_val, (int, float)) and cpu_val >= 90) or (isinstance(ram_val, (int, float)) and ram_val >= 90)
+        if not has_open_alts and not has_open_hw and not is_stressed:
+            dev.health_status = HealthStatus.HEALTHY
+
     await db.commit()
     return {"status": "received", "deviceId": device_id}
 
@@ -1545,6 +1571,29 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 matched_intervals = [group_map[g] for g in raw_groups if g in group_map and group_map[g] > 0]
                 if matched_intervals:
                     effective_interval = min(matched_intervals)
+
+            # Self-healing: restore HEALTHY if no open alerts or unacknowledged non-USB mismatches
+            if device and device.health_status in [HealthStatus.CRITICAL, HealthStatus.WARNING]:
+                rem_alts_q = await db.execute(
+                    select(AlertModel).where(
+                        AlertModel.device_id == device.id,
+                        AlertModel.state == "Open",
+                        AlertModel.severity.in_(["Critical", "Warning"])
+                    )
+                )
+                has_open_alts = bool(rem_alts_q.scalars().first())
+                rem_hw_q = await db.execute(
+                    select(HardwareChangeModel).where(
+                        HardwareChangeModel.device_id == device.id,
+                        HardwareChangeModel.diff_status == "MISMATCH",
+                        HardwareChangeModel.acknowledged == False,
+                        HardwareChangeModel.component != "USB-накопитель",
+                        ~HardwareChangeModel.id.like("%USB%")
+                    )
+                )
+                has_open_hw = bool(rem_hw_q.scalars().first())
+                if not has_open_alts and not has_open_hw:
+                    device.health_status = HealthStatus.HEALTHY
 
             await db.commit()
 

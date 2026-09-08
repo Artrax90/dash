@@ -1897,6 +1897,30 @@
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
+.device-status-card-clickable {
+  cursor: pointer;
+  user-select: none;
+  transition: all 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.device-status-card-clickable:hover {
+  transform: translateY(-2px);
+  border-color: var(--blue);
+  box-shadow: 0 4px 14px rgba(59, 130, 246, 0.12);
+}
+
+.device-status-card-clickable:active {
+  transform: translateY(0);
+}
+
+.health-card-hint {
+  transition: transform 0.15s ease;
+}
+
+.device-status-card-clickable:hover .health-card-hint {
+  transform: translateX(3px);
+}
+
 .device-status-card-icon {
   width: 34px;
   height: 34px;

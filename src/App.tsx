@@ -3120,6 +3120,8 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
   const [showDeleteDeviceModal, setShowDeleteDeviceModal] = useState(false);
   const [isUpdatingAgent, setIsUpdatingAgent] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
+  const [deviceAlerts, setDeviceAlerts] = useState<Alert[]>([]);
+  const [showHealthModal, setShowHealthModal] = useState(false);
 
   // Edit form states
   const [editName, setEditName] = useState('');
@@ -3138,7 +3140,8 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
       devicesApi.get(deviceId),
       sessionsApi.list(deviceId),
       hardwareApi.getChanges(deviceId),
-    ]).then(([d, s, ch]) => {
+      alertsApi.list(),
+    ]).then(([d, s, ch, allAlerts]) => {
       setDevice(d);
       const finalSessions = Array.isArray(s) ? s : (d && Array.isArray(d.rdpSessions) ? d.rdpSessions : []);
       setSessions(finalSessions);
@@ -3154,6 +3157,13 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
         setEditHeartbeatInterval(d.heartbeatInterval || null);
       }
       setChanges(ch);
+      if (Array.isArray(allAlerts)) {
+        const filtered = allAlerts.filter(a =>
+          (a.deviceId === deviceId || (d && (a.device === d.name || a.device === d.hostname))) &&
+          a.state !== 'Resolved'
+        );
+        setDeviceAlerts(filtered);
+      }
     });
   };
 
@@ -3169,6 +3179,15 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
       }).catch(() => {});
       sessionsApi.list(deviceId).then(s => {
         if (Array.isArray(s)) setSessions(s);
+      }).catch(() => {});
+      alertsApi.list().then(allAlerts => {
+        if (Array.isArray(allAlerts)) {
+          const filtered = allAlerts.filter(a =>
+            (a.deviceId === deviceId || (device && (a.device === device.name || a.device === device.hostname))) &&
+            a.state !== 'Resolved'
+          );
+          setDeviceAlerts(filtered);
+        }
       }).catch(() => {});
     }, 3000);
 
@@ -3346,6 +3365,17 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
     device.tags?.some(tag => tag.toLowerCase().includes('agentless') || tag.toLowerCase().includes('тонкий клиент'))
   );
 
+  const isUsbChange = (c: HardwareChange) => {
+    return Boolean(
+      (c as any).isUsb ||
+      c.component === 'USB-накопитель' ||
+      c.component === 'USB' ||
+      c.id.includes('USB') ||
+      (c.description && c.description.toLowerCase().includes('usb'))
+    );
+  };
+  const activeMismatches = changes.filter(c => c.diffStatus === 'MISMATCH' && !c.acknowledged && !isUsbChange(c));
+
   const activeTab = (isAgentless && !['Overview', 'Power', 'AlertPolicy', 'History'].includes(tab)) ? 'Overview' : tab;
 
   const tabs = isAgentless ? [
@@ -3356,7 +3386,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
   ] : [
     { id: 'Overview', label: t('devices.overview') },
     { id: 'Hardware', label: t('devices.hardware') },
-    { id: 'Baseline', label: t('devices.baseline'), count: changes.length },
+    { id: 'Baseline', label: t('devices.baseline'), count: activeMismatches.length > 0 ? activeMismatches.length : undefined },
     { id: 'Monitoring', label: t('nav.monitoring') },
     { id: 'RDP Sessions', label: t('devices.rdpSessionsTab'), count: activeRdpSessions.length },
     { id: 'Power', label: t('devices.powerTab') },
@@ -3476,12 +3506,22 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
           </div>
         </div>
 
-        <div className="device-status-card">
+        <div 
+          className="device-status-card device-status-card-clickable"
+          onClick={() => setShowHealthModal(true)}
+          role="button"
+          tabIndex={0}
+          style={{ cursor: 'pointer' }}
+          title="Нажмите для открытия подробной диагностики здоровья узла и активных проблем"
+        >
           <div className={`device-status-card-icon ${device.powerStatus !== 'On' ? (device.powerStatus === 'Booting' ? 'orange' : 'muted') : (device.healthStatus === 'Healthy' ? 'green' : device.healthStatus === 'Warning' ? 'orange' : 'red')}`}>
             <ShieldCheck size={17} />
           </div>
-          <div className="device-status-card-info">
-            <div className="device-status-card-label">{t('devices.health')}</div>
+          <div className="device-status-card-info" style={{ flex: 1 }}>
+            <div className="device-status-card-label" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span>{t('devices.health')}</span>
+              <span className="health-card-hint" style={{ fontSize: '11px', color: 'var(--blue)', fontWeight: 500 }}>Диагностика →</span>
+            </div>
             <div className="device-status-card-value">
               <i className={`status-dot ${device.powerStatus !== 'On' ? (device.powerStatus === 'Booting' ? 'orange' : 'grey') : (device.healthStatus === 'Healthy' ? 'green' : device.healthStatus === 'Warning' ? 'orange' : 'red')}`} />
               {device.powerStatus === 'Booting'
@@ -3605,6 +3645,82 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
           </div>
         ) : (
           <div className="detail-grid">
+            {/* Health & Discrepancy Diagnostics Banner */}
+            {(device.healthStatus !== 'Healthy' || activeMismatches.length > 0 || deviceAlerts.length > 0) && (
+              <div 
+                className={`device-health-banner ${device.healthStatus === 'Critical' ? 'critical' : 'warning'}`}
+                style={{
+                  gridColumn: '1 / -1',
+                  background: device.healthStatus === 'Critical' ? 'rgba(239, 68, 68, 0.08)' : 'rgba(245, 158, 11, 0.08)',
+                  border: device.healthStatus === 'Critical' ? '1px solid rgba(239, 68, 68, 0.35)' : '1px solid rgba(245, 158, 11, 0.35)',
+                  borderRadius: '12px',
+                  padding: '14px 18px',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  gap: '16px',
+                  flexWrap: 'wrap'
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px', flex: 1, minWidth: '280px' }}>
+                  <div style={{
+                    width: '38px',
+                    height: '38px',
+                    borderRadius: '10px',
+                    background: device.healthStatus === 'Critical' ? 'rgba(239, 68, 68, 0.15)' : 'rgba(245, 158, 11, 0.15)',
+                    color: device.healthStatus === 'Critical' ? 'var(--red)' : 'var(--yellow)',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0
+                  }}>
+                    <AlertTriangle size={20} />
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: '14px', color: device.healthStatus === 'Critical' ? 'var(--red)' : 'var(--yellow)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      {device.healthStatus === 'Critical' ? 'Критическое состояние узла' : 'Внимание: состояние узла требует проверки'}
+                      {activeMismatches.length > 0 && <span className="badge mismatch" style={{ fontSize: '11px', padding: '2px 8px' }}>{activeMismatches.length} расхожд. с эталоном</span>}
+                      {deviceAlerts.length > 0 && <span className="badge warning" style={{ fontSize: '11px', padding: '2px 8px' }}>{deviceAlerts.length} инцидент</span>}
+                    </div>
+                    <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginTop: '3px' }}>
+                      {activeMismatches.length > 0 ? (
+                        <>Конфигурация оборудования отличается от эталона: {activeMismatches.map(m => `${m.component} (${m.changeType})`).join(', ')}</>
+                      ) : deviceAlerts.length > 0 ? (
+                        <>{deviceAlerts[0].description || deviceAlerts[0].type}</>
+                      ) : (
+                        <>Высокая загрузка ресурсов (ЦП: {device.cpu}%, ОЗУ: {device.ram}%) или системное предупреждение</>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  {activeMismatches.length > 0 && (
+                    <Button primary icon={<Check size={14} />} onClick={handleAcceptBaseline}>
+                      Принять эталон
+                    </Button>
+                  )}
+                  {deviceAlerts.length > 0 && (
+                    <Button 
+                      primary 
+                      icon={<Check size={14} />} 
+                      onClick={async () => {
+                        for (const a of deviceAlerts) {
+                          await alertsApi.resolve(a.id);
+                        }
+                        notify('Все инциденты для данного ПК закрыты (Resolved)');
+                        loadDeviceData();
+                      }}
+                    >
+                      Закрыть инциденты ({deviceAlerts.length})
+                    </Button>
+                  )}
+                  <Button icon={<Activity size={14} />} onClick={() => setShowHealthModal(true)}>
+                    Диагностика
+                  </Button>
+                </div>
+              </div>
+            )}
+
             <section className="panel info-panel">
               <div className="panel-heading">
                 <div><h2>{t('devices.systemInfo')}</h2><p>{t('devices.reportedByAgent')}</p></div>
@@ -3899,17 +4015,62 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
             <div className="setting-row">
               <div>
                 <strong>{t('devices.matchStatus')}</strong>
-                <span>{changes.length === 0 ? t('devices.matched') : t('devices.mismatch')}</span>
+                <span>{activeMismatches.length === 0 ? 'Соответствует эталону (100%)' : `Обнаружены аппаратные расхождения (${activeMismatches.length})`}</span>
               </div>
-              <span className={`badge ${changes.length === 0 ? 'match' : 'mismatch'}`}>
-                {changes.length === 0 ? t('devices.matched') : t('devices.mismatch')}
+              <span className={`badge ${activeMismatches.length === 0 ? 'match' : 'mismatch'}`}>
+                {activeMismatches.length === 0 ? 'Соответствует (100%)' : `Расхождений: ${activeMismatches.length}`}
               </span>
             </div>
           </section>
 
+          {activeMismatches.length > 0 && (
+            <section className="panel table-panel" style={{ gridColumn: '1 / -1', border: '1px solid rgba(239, 68, 68, 0.4)' }}>
+              <div className="panel-heading">
+                <div>
+                  <h2 style={{ color: 'var(--red)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <AlertTriangle size={18} /> Требуют подтверждения: текущие расхождения с эталоном
+                  </h2>
+                  <p>Обнаружено несовпадение компонентов с утвержденной конфигурацией</p>
+                </div>
+                <Button primary icon={<Check size={14} />} onClick={handleAcceptBaseline}>
+                  Утвердить текущую конфигурацию как эталон
+                </Button>
+              </div>
+              <div className="table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      <th>Дата / Время</th>
+                      <th>Компонент</th>
+                      <th>Тип изменения</th>
+                      <th>Значение в эталоне</th>
+                      <th>Текущее значение на ПК</th>
+                      <th>Критичность</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {activeMismatches.map((ch) => (
+                      <tr key={`act-${ch.id}`}>
+                        <td className="muted-text">{ch.timestamp}</td>
+                        <td><strong>{ch.component}</strong></td>
+                        <td><span className="badge mismatch">{ch.changeType}</span></td>
+                        <td className="mono">{ch.previousValue || '—'}</td>
+                        <td className="mono" style={{ color: 'var(--red)', fontWeight: 600 }}>{ch.currentValue || '—'}</td>
+                        <td><span className={`badge ${ch.severity.toLowerCase()}`}>{ch.severity}</span></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+
           <section className="panel table-panel" style={{ gridColumn: '1 / -1' }}>
             <div className="panel-heading">
-              <div><h2>{t('devices.history')}</h2><p>{changes.length} событий зафиксировано</p></div>
+              <div>
+                <h2>{t('devices.history')}</h2>
+                <p>{changes.length} записей в журнале аппаратных изменений и подключений</p>
+              </div>
             </div>
             {changes.length > 0 ? (
               <div className="table-wrap">
@@ -3918,10 +4079,10 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                     <tr>
                       <th>Дата / Время</th>
                       <th>Компонент</th>
-                      <th>Тип изменения</th>
-                      <th>Старое значение</th>
-                      <th>Новое значение</th>
-                      <th>Критичность</th>
+                      <th>Тип события</th>
+                      <th>Предыдущее значение</th>
+                      <th>Зафиксированное значение</th>
+                      <th>Статус / Тип</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -3930,16 +4091,20 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                         <td className="muted-text">{ch.timestamp}</td>
                         <td><strong>{ch.component}</strong></td>
                         <td>{ch.changeType}</td>
-                        <td className="mono">{ch.previousValue}</td>
-                        <td className="mono">{ch.currentValue}</td>
-                        <td><span className={`badge ${ch.severity.toLowerCase()}`}>{ch.severity}</span></td>
+                        <td className="mono">{ch.previousValue || '—'}</td>
+                        <td className="mono">{ch.currentValue || '—'}</td>
+                        <td>
+                          <span className={`badge ${ch.diffStatus === 'MISMATCH' && !ch.acknowledged && !isUsbChange(ch) ? ch.severity.toLowerCase() : 'match'}`}>
+                            {isUsbChange(ch) ? 'USB (Инфо)' : (ch.diffStatus === 'ACCEPTED_AS_BASELINE' ? 'Принято в эталон' : (ch.diffStatus === 'RESOLVED' ? 'Разрешено' : ch.severity))}
+                          </span>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                 </table>
               </div>
             ) : (
-              <div className="empty-state" style={{ minHeight: '140px' }}><Check size={20} /> {t('devices.matched')}</div>
+              <div className="empty-state" style={{ minHeight: '140px' }}><Check size={20} /> Журнал изменений пуст</div>
             )}
           </section>
         </div>
@@ -4146,6 +4311,180 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
               >
                 Удалить устройство
               </Button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showHealthModal && (
+        <div className="modal-backdrop" onClick={() => setShowHealthModal(false)}>
+          <div className="modal-card" style={{ maxWidth: '640px', width: '92vw' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header">
+              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <ShieldCheck size={20} style={{ color: device.healthStatus === 'Healthy' ? 'var(--green)' : (device.healthStatus === 'Warning' ? 'var(--yellow)' : 'var(--red)') }} />
+                Диагностика здоровья узла · {device.name}
+              </h3>
+              <button className="modal-close" onClick={() => setShowHealthModal(false)}><X size={16} /></button>
+            </div>
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+              {/* Overall status badge & summary */}
+              <div style={{
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+                padding: '12px 16px',
+                borderRadius: '10px',
+                background: device.healthStatus === 'Healthy' ? 'rgba(16, 185, 129, 0.08)' : (device.healthStatus === 'Warning' ? 'rgba(245, 158, 11, 0.08)' : 'rgba(239, 68, 68, 0.08)'),
+                border: `1px solid ${device.healthStatus === 'Healthy' ? 'rgba(16, 185, 129, 0.25)' : (device.healthStatus === 'Warning' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(239, 68, 68, 0.25)')}`
+              }}>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: '13px' }}>Текущий статус здоровья</div>
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '2px' }}>
+                    {device.healthStatus === 'Healthy' 
+                      ? 'Все подсистемы работают в штатном режиме, расхождений и инцидентов нет.' 
+                      : (device.healthStatus === 'Warning' ? 'Обнаружены предупреждения или отклонения в конфигурации/нагрузке.' : 'Зафиксировано критическое состояние узла.')}
+                  </div>
+                </div>
+                <span className={`badge ${device.healthStatus === 'Healthy' ? 'match' : (device.healthStatus === 'Warning' ? 'warning' : 'mismatch')}`} style={{ fontSize: '12px', padding: '5px 12px' }}>
+                  {device.healthStatus === 'Healthy' ? '🟢 В норме (100%)' : (device.healthStatus === 'Warning' ? '🟠 Внимание' : '🔴 Ошибка (Critical)')}
+                </span>
+              </div>
+
+              {/* 1. Hardware Baseline check */}
+              <div style={{ border: '1px solid var(--line)', borderRadius: '10px', padding: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div style={{ fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Cpu size={16} style={{ color: 'var(--blue)' }} /> Аппаратный эталон (Baseline)
+                  </div>
+                  <span className={`badge ${activeMismatches.length === 0 ? 'match' : 'mismatch'}`}>
+                    {activeMismatches.length === 0 ? 'Соответствует (0 расхождений)' : `Расхождений: ${activeMismatches.length}`}
+                  </span>
+                </div>
+                {activeMismatches.length === 0 ? (
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Check size={15} style={{ color: 'var(--green)' }} />
+                    Аппаратная конфигурация полностью совпадает с утвержденным эталоном. USB-накопители исключены из эталона.
+                  </div>
+                ) : (
+                  <div>
+                    <div style={{ fontSize: '12px', color: 'var(--red)', marginBottom: '8px' }}>
+                      Несовпадение оборудования с эталоном:
+                    </div>
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '10px' }}>
+                      {activeMismatches.map(m => (
+                        <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', background: 'var(--surface-2)', padding: '6px 10px', borderRadius: '6px' }}>
+                          <span><strong>{m.component}</strong> ({m.changeType})</span>
+                          <span className="mono">{m.previousValue || '—'} → <strong style={{ color: 'var(--red)' }}>{m.currentValue || '—'}</strong></span>
+                        </div>
+                      ))}
+                    </div>
+                    <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                      <Button primary icon={<Check size={13} />} onClick={async () => { await handleAcceptBaseline(); setShowHealthModal(false); }}>
+                        Принять как новый эталон
+                      </Button>
+                      <Button onClick={() => { setShowHealthModal(false); setTab('Baseline'); }}>
+                        Перейти во вкладку «Эталон»
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* 2. Active Alerts check */}
+              <div style={{ border: '1px solid var(--line)', borderRadius: '10px', padding: '14px' }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                  <div style={{ fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <AlertTriangle size={16} style={{ color: deviceAlerts.length > 0 ? 'var(--yellow)' : 'var(--green)' }} /> 
+                    Инциденты и оповещения (Alerts)
+                  </div>
+                  <span className={`badge ${deviceAlerts.length === 0 ? 'match' : 'warning'}`}>
+                    {deviceAlerts.length === 0 ? '0 открытых' : `${deviceAlerts.length} активных`}
+                  </span>
+                </div>
+                {deviceAlerts.length === 0 ? (
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
+                    <Check size={15} style={{ color: 'var(--green)' }} />
+                    Нет незакрытых инцидентов для данной рабочей станции.
+                  </div>
+                ) : (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
+                    {deviceAlerts.map(a => (
+                      <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--surface-2)', borderRadius: '6px', fontSize: '12px' }}>
+                        <div>
+                          <div><strong>{a.type}</strong>: {a.description}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--muted)' }}>{a.time} · {a.severity}</div>
+                        </div>
+                        <Button 
+                          style={{ padding: '3px 8px', fontSize: '11px' }} 
+                          icon={<Check size={12} />} 
+                          onClick={async () => {
+                            await alertsApi.resolve(a.id);
+                            notify(`Инцидент #${a.id} закрыт (Resolved)`);
+                            loadDeviceData();
+                          }}
+                        >
+                          Закрыть
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* 3. Resources Utilization check */}
+              <div style={{ border: '1px solid var(--line)', borderRadius: '10px', padding: '14px' }}>
+                <div style={{ fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
+                  <Activity size={16} style={{ color: 'var(--blue)' }} /> Текущая нагрузка на ресурсы
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
+                  <div style={{ padding: '8px', background: 'var(--surface-2)', borderRadius: '8px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>Загрузка ЦП</div>
+                    <div style={{ fontSize: '18px', fontWeight: 700, color: (device.cpu || 0) >= 90 ? 'var(--red)' : 'var(--ink)' }}>{device.cpu || 0}%</div>
+                    <div style={{ fontSize: '10px', color: 'var(--muted)' }}>Порог: 90%</div>
+                  </div>
+                  <div style={{ padding: '8px', background: 'var(--surface-2)', borderRadius: '8px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>Память ОЗУ</div>
+                    <div style={{ fontSize: '18px', fontWeight: 700, color: (device.ram || 0) >= 90 ? 'var(--red)' : 'var(--ink)' }}>{device.ram || 0}%</div>
+                    <div style={{ fontSize: '10px', color: 'var(--muted)' }}>Порог: 90%</div>
+                  </div>
+                  <div style={{ padding: '8px', background: 'var(--surface-2)', borderRadius: '8px', textAlign: 'center' }}>
+                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>Диск C:</div>
+                    <div style={{ fontSize: '18px', fontWeight: 700, color: (device.disk || 0) >= 90 ? 'var(--red)' : 'var(--ink)' }}>{device.disk || 0}%</div>
+                    <div style={{ fontSize: '10px', color: 'var(--muted)' }}>Порог: 90%</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="modal-actions" style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+              <div>
+                {device.healthStatus !== 'Healthy' && (
+                  <Button
+                    icon={<RotateCcw size={14} />}
+                    onClick={async () => {
+                      try {
+                        await devicesApi.update(device.id, { healthStatus: 'Healthy' });
+                        setDevice(prev => prev ? { ...prev, healthStatus: 'Healthy' } : prev);
+                        notify('Статус здоровья станции успешно сброшен в норму (Healthy)');
+                        setShowHealthModal(false);
+                      } catch {
+                        notify('Ошибка сброса статуса');
+                      }
+                    }}
+                    title="Принудительно сбросить статус ошибки и перевести в норму"
+                  >
+                    Сбросить статус в норму (Healthy)
+                  </Button>
+                )}
+              </div>
+              <div style={{ display: 'flex', gap: '8px' }}>
+                <Button icon={<RefreshCw size={14} className={isSyncing ? 'spin' : ''} />} onClick={handleSyncDevice} disabled={isSyncing}>
+                  Синхронизировать
+                </Button>
+                <Button primary onClick={() => setShowHealthModal(false)}>
+                  Закрыть
+                </Button>
+              </div>
             </div>
           </div>
         </div>
