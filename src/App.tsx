@@ -1309,21 +1309,33 @@ function StatusPill({ status, type = 'default' }: { status: string; type?: 'defa
 
 function DeviceStatusBadge({ powerStatus, healthStatus }: { powerStatus: string; healthStatus?: string }) {
   const p = (powerStatus || '').toLowerCase();
+  const h = (healthStatus || '').toLowerCase();
   let statusClass = 'off';
+  let label = powerStatus || 'Off';
+
   if (p === 'on' || p === 'online') {
-    statusClass = 'on';
+    if (h === 'critical') {
+      statusClass = 'error';
+      label = 'Сбой';
+    } else if (h === 'warning') {
+      statusClass = 'warning';
+      label = 'Внимание';
+    } else {
+      statusClass = 'on';
+      label = 'Онлайн';
+    }
   } else if (p === 'booting' || p === 'waking' || p === 'rebooting' || p === 'shutting down') {
     statusClass = 'warning';
-  } else if (p === 'error' || (healthStatus && healthStatus.toLowerCase() === 'critical')) {
-    statusClass = 'error';
+    label = 'Загрузка';
   } else {
     statusClass = 'off';
+    label = 'Оффлайн';
   }
 
   return (
-    <span className={`device-status ${statusClass}`}>
+    <span className={`device-status ${statusClass}`} title={`Питание: ${powerStatus || 'Off'}, Здоровье: ${healthStatus || 'Healthy'}`}>
       <i />
-      {powerStatus || 'Off'}
+      {label}
     </span>
   );
 }
@@ -1442,8 +1454,39 @@ function Dashboard({
   const onlinePct = totalDevs > 0 ? Math.round((onlineDevs / totalDevs) * 100) : 0;
   const openAlertsCount = alerts.filter(a => a.state !== 'Resolved').length;
 
-  const activeHwMismatches = hardwareChanges.filter(c => c.diffStatus === 'MISMATCH' && !c.acknowledged).length;
+  const isUsbChange = (c: HardwareChange) => {
+    return Boolean(
+      (c as any).isUsb ||
+      c.component === 'USB-накопитель' ||
+      c.component === 'USB' ||
+      c.id.includes('USB') ||
+      (c.description && c.description.toLowerCase().includes('usb'))
+    );
+  };
+  const activeHwMismatches = hardwareChanges.filter(c => c.diffStatus === 'MISMATCH' && !c.acknowledged && !isUsbChange(c)).length;
   const baselineCompliance = totalDevs > 0 ? Math.max(0, Math.round(((totalDevs - Math.min(totalDevs, activeHwMismatches)) / totalDevs) * 100)) : 100;
+
+  // Real problematic online devices detection
+  const problemDevices = devices.filter(d => {
+    const isOnline = d.powerStatus === 'On' || d.powerStatus === 'on';
+    const hs = (d.healthStatus || '').toLowerCase();
+    const rawH = ((d as any).health || '').toLowerCase();
+    const isDegraded = hs === 'warning' || hs === 'critical' || rawH === 'warning' || rawH === 'critical';
+    const isHighLoad = (d.cpu !== undefined && d.cpu >= 90) || (d.ram !== undefined && d.ram >= 90);
+    return isOnline && (isDegraded || isHighLoad);
+  });
+
+  const problemCount = Math.max(stats?.problems || 0, problemDevices.length);
+  const healthyOnlineCount = Math.max(0, onlineDevs - problemCount);
+  const totalFleet = totalDevs > 0 ? totalDevs : devices.length || 1;
+  const healthyPct = totalFleet > 0 ? (healthyOnlineCount / totalFleet) * 100 : 100;
+  const problemPct = totalFleet > 0 ? (problemCount / totalFleet) * 100 : 0;
+  const offlinePct = totalFleet > 0 ? (offlineDevs / totalFleet) * 100 : 0;
+
+  const circumference = 2 * Math.PI * 52; // ~326.726
+  const healthyLen = (healthyPct / 100) * circumference;
+  const problemLen = (problemPct / 100) * circumference;
+  const offlineLen = (offlinePct / 100) * circumference;
 
   const enabledSchedules = schedules.filter(s => s.enabled);
   const nextSch = enabledSchedules[0];
@@ -1601,34 +1644,59 @@ function Dashboard({
         <section className="panel problems-panel">
           <div className="panel-heading">
             <div><h2>{t('dashboard.needsAttention')}</h2><p>{t('dashboard.needsAttentionSubtitle')}</p></div>
-            <span className="heading-count" onClick={() => onNavigate('Alerts')} style={{ cursor: 'pointer' }}>
-              {alerts.filter(a => a.state !== 'Resolved').length} {t('dashboard.openCount')}
+            <span 
+              className="heading-count" 
+              onClick={() => onNavigate(openAlertsCount > 0 ? 'Alerts' : 'Devices', { status: 'Problems' })} 
+              style={{ cursor: 'pointer' }}
+              title="Открыть список инцидентов"
+            >
+              {Math.max(openAlertsCount, problemDevices.length)} {t('dashboard.openCount')}
             </span>
           </div>
-          {alerts.filter(a => a.state !== 'Resolved').length === 0 ? (
+          {openAlertsCount === 0 && problemDevices.length === 0 ? (
             <div className="empty-state" style={{ minHeight: '160px' }}>
               <Check size={20} style={{ color: 'var(--green)' }} />
               <span>Все системы работают штатно. Нет активных инцидентов.</span>
             </div>
           ) : (
-            alerts.filter(a => a.state !== 'Resolved').slice(0, 4).map((alert) => (
-              <div
-                className="problem-row"
-                key={alert.id}
-                onClick={() => onNavigate('Alerts')}
-                style={{ cursor: 'pointer' }}
-                title="Перейти к списку инцидентов"
-              >
-                <div className={`problem-icon ${alert.severity.toLowerCase()}`}>
-                  {alert.severity === 'Critical' ? <AlertTriangle size={16} /> : <Bell size={16} />}
+            <>
+              {alerts.filter(a => a.state !== 'Resolved').slice(0, 4).map((alert) => (
+                <div
+                  className="problem-row"
+                  key={alert.id}
+                  onClick={() => onNavigate('Alerts')}
+                  style={{ cursor: 'pointer' }}
+                  title="Перейти к списку инцидентов"
+                >
+                  <div className={`problem-icon ${alert.severity.toLowerCase()}`}>
+                    {alert.severity === 'Critical' ? <AlertTriangle size={16} /> : <Bell size={16} />}
+                  </div>
+                  <div className="problem-info">
+                    <strong>{alert.type}</strong>
+                    <span>{alert.device} · {alert.time}</span>
+                  </div>
+                  <ChevronRight size={16} className="muted-icon" />
                 </div>
-                <div className="problem-info">
-                  <strong>{alert.type}</strong>
-                  <span>{alert.device} · {alert.time}</span>
+              ))}
+              {openAlertsCount === 0 && problemDevices.map(d => (
+                <div
+                  className="problem-row"
+                  key={`prob-dev-${d.id}`}
+                  onClick={() => onDevice(d.id)}
+                  style={{ cursor: 'pointer' }}
+                  title={`Перейти к карточке ${d.name}`}
+                >
+                  <div className="problem-icon warning">
+                    <AlertTriangle size={16} />
+                  </div>
+                  <div className="problem-info">
+                    <strong>{d.healthStatus === 'Critical' ? 'Критическое состояние узла' : 'Внимание: Снижена производительность'}</strong>
+                    <span>{d.name} ({d.ip}) · {d.cpu >= 90 ? `ЦП: ${d.cpu}%` : (d.ram >= 90 ? `ОЗУ: ${d.ram}%` : (d.healthStatus || 'Предупреждение'))}</span>
+                  </div>
+                  <ChevronRight size={16} className="muted-icon" />
                 </div>
-                <ChevronRight size={16} className="muted-icon" />
-              </div>
-            ))
+              ))}
+            </>
           )}
         </section>
 
@@ -1637,15 +1705,162 @@ function Dashboard({
             <div><h2>{t('dashboard.fleetHealth')}</h2><p>{t('dashboard.fleetHealthSubtitle')}</p></div>
             <Gauge size={19} className="heading-icon" />
           </div>
-          <div className="fleet-visual">
-            <div className="donut" onClick={() => onNavigate('Devices')} style={{ cursor: 'pointer' }} title="Перейти к устройствам">
-              <div><strong>{devices.length > 0 ? Math.round(((stats?.online || 0) / devices.length) * 100) : 100}%</strong><span>online</span></div>
+          <div className="fleet-visual-container">
+            <div className="fleet-visual">
+              <div 
+                className="donut-svg-wrapper" 
+                onClick={() => onNavigate('Devices', { status: problemCount > 0 ? 'Problems' : 'On' })} 
+                style={{ cursor: 'pointer' }} 
+                title={problemCount > 0 ? "Показать ПК с предупреждениями" : "Показать все включенные ПК"}
+              >
+                <svg className="fleet-donut-svg" viewBox="0 0 140 140">
+                  {/* Background ring */}
+                  <circle
+                    cx="70"
+                    cy="70"
+                    r="52"
+                    fill="none"
+                    stroke="var(--line)"
+                    strokeWidth="14"
+                  />
+                  {/* Offline segment */}
+                  {offlineLen > 0 && (
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="52"
+                      fill="none"
+                      stroke="#94a3b8"
+                      strokeWidth="14"
+                      strokeDasharray={`${offlineLen} ${circumference}`}
+                      strokeDashoffset={-((healthyLen + problemLen))}
+                      strokeLinecap="round"
+                      className="donut-segment offline"
+                    />
+                  )}
+                  {/* Healthy segment */}
+                  {healthyLen > 0 && (
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="52"
+                      fill="none"
+                      stroke="#10b981"
+                      strokeWidth="14"
+                      strokeDasharray={`${healthyLen} ${circumference}`}
+                      strokeDashoffset="0"
+                      strokeLinecap="round"
+                      className="donut-segment healthy"
+                    />
+                  )}
+                  {/* Problems segment */}
+                  {problemLen > 0 && (
+                    <circle
+                      cx="70"
+                      cy="70"
+                      r="52"
+                      fill="none"
+                      stroke="#f59e0b"
+                      strokeWidth="14"
+                      strokeDasharray={`${problemLen} ${circumference}`}
+                      strokeDashoffset={-(healthyLen)}
+                      strokeLinecap="round"
+                      className="donut-segment warning"
+                    />
+                  )}
+                </svg>
+                <div className="donut-center-content">
+                  {problemCount > 0 ? (
+                    <>
+                      <strong className="text-warning">{problemCount}</strong>
+                      <span className="donut-center-label">{lang === 'ru' ? 'внимание' : 'warning'}</span>
+                      <small className="donut-center-sub">{problemCount} из {totalFleet} ПК</small>
+                    </>
+                  ) : (
+                    <>
+                      <strong className="text-healthy">{onlinePct}%</strong>
+                      <span className="donut-center-label">{lang === 'ru' ? 'онлайн' : 'online'}</span>
+                      <small className="donut-center-sub">{onlineDevs} из {totalFleet} ПК</small>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="fleet-legend-interactive">
+                <div 
+                  className={`fleet-legend-item ${healthyOnlineCount > 0 ? 'active-item' : ''}`}
+                  onClick={() => onNavigate('Devices', { status: 'Healthy' })} 
+                  style={{ cursor: 'pointer' }}
+                  title="Показать исправные ПК онлайн"
+                >
+                  <i className="dot green" />
+                  <span className="legend-label">{t('dashboard.healthyOnline')}</span>
+                  <strong className="legend-value">{healthyOnlineCount}</strong>
+                  <span className="legend-pct">{Math.round(healthyPct)}%</span>
+                </div>
+
+                <div 
+                  className={`fleet-legend-item ${problemCount > 0 ? 'problem-item pulse-item' : ''}`}
+                  onClick={() => onNavigate('Devices', { status: 'Problems' })} 
+                  style={{ cursor: 'pointer' }}
+                  title="Показать ПК, требующие внимания"
+                >
+                  <i className="dot orange" />
+                  <span className="legend-label">{t('dashboard.warningProblems')}</span>
+                  <strong className="legend-value" style={{ color: problemCount > 0 ? 'var(--orange)' : undefined }}>
+                    {problemCount}
+                  </strong>
+                  <span className="legend-pct">{Math.round(problemPct)}%</span>
+                </div>
+
+                <div 
+                  className="fleet-legend-item"
+                  onClick={() => onNavigate('Devices', { status: 'Off' })} 
+                  style={{ cursor: 'pointer' }}
+                  title="Показать выключенные ПК"
+                >
+                  <i className="dot gray" />
+                  <span className="legend-label">{t('dashboard.offlineDevices')}</span>
+                  <strong className="legend-value">{offlineDevs}</strong>
+                  <span className="legend-pct">{Math.round(offlinePct)}%</span>
+                </div>
+              </div>
             </div>
-            <div className="legend">
-              <div onClick={() => onNavigate('Devices', { status: 'On' })} style={{ cursor: 'pointer' }}><i className="dot green" /><span>{t('dashboard.online')}</span><strong>{stats?.online || 0}</strong></div>
-              <div onClick={() => onNavigate('Devices', { status: 'Off' })} style={{ cursor: 'pointer' }}><i className="dot gray" /><span>{t('dashboard.offline')}</span><strong>{stats?.offline || 0}</strong></div>
-              <div onClick={() => onNavigate('Alerts')} style={{ cursor: 'pointer' }}><i className="dot orange" /><span>{t('dashboard.problems')}</span><strong>{stats?.problems || 0}</strong></div>
-            </div>
+
+            {/* Actionable callout card */}
+            {problemCount > 0 ? (
+              <div 
+                className="fleet-status-banner warning"
+                onClick={() => {
+                  if (problemDevices.length === 1) {
+                    onDevice(problemDevices[0].id);
+                  } else {
+                    onNavigate('Devices', { status: 'Problems' });
+                  }
+                }}
+                style={{ cursor: 'pointer' }}
+                title="Нажмите для перехода к проблемным станциям"
+              >
+                <div className="banner-icon warning"><AlertTriangle size={16} /></div>
+                <div className="banner-content">
+                  <strong>
+                    {problemCount === 1 ? '1 станция требует внимания' : `${problemCount} станций требуют внимания`}
+                  </strong>
+                  <span className="banner-sub">
+                    {problemDevices.map(d => `${d.name || d.id}${d.healthStatus === 'Critical' ? ' (Сбой)' : (d.cpu >= 90 ? ` (ЦП ${d.cpu}%)` : (d.ram >= 90 ? ` (ОЗУ ${d.ram}%)` : ''))}`).join(', ') || 'Проверьте состояние узлов'}
+                  </span>
+                </div>
+                <ChevronRight size={15} className="banner-arrow" />
+              </div>
+            ) : (
+              <div className="fleet-status-banner healthy">
+                <div className="banner-icon healthy"><Check size={15} /></div>
+                <div className="banner-content">
+                  <strong>Парк компьютеров стабилен</strong>
+                  <span className="banner-sub">Все активные рабочие станции работают в штатном режиме</span>
+                </div>
+              </div>
+            )}
           </div>
           <div className="fleet-footer">
             <span><span className="pulse-dot" /> {t('dashboard.updatedJustNow')}</span>
@@ -2134,11 +2349,32 @@ function Devices({
 
   const availableGroups = ['Office', 'Warehouse', 'Management', 'Testing', 'Dev'];
 
+  const isProblemDevice = (dev: Device) => {
+    const isOnline = dev.powerStatus === 'On' || dev.powerStatus === 'on';
+    const hs = (dev.healthStatus || '').toLowerCase();
+    const rawH = ((dev as any).health || '').toLowerCase();
+    const isDegraded = hs === 'warning' || hs === 'critical' || rawH === 'warning' || rawH === 'critical';
+    const isHighLoad = (dev.cpu !== undefined && dev.cpu >= 90) || (dev.ram !== undefined && dev.ram >= 90);
+    return isOnline && (isDegraded || isHighLoad);
+  };
+
   const filtered = items.filter((d) => {
     const devGroups = getDeviceGroups(d);
     const matchQuery = `${d.name} ${d.id} ${devGroups.join(' ')} ${d.ip} ${d.hostname} ${d.currentUser} ${(d.tags || []).join(' ')}`.toLowerCase().includes(query.toLowerCase());
     const matchGroup = filterGroup === 'ALL' || devGroups.some(g => g.toLowerCase() === filterGroup.toLowerCase());
-    const matchStatus = filterStatus === 'ALL' || d.powerStatus.toLowerCase() === filterStatus.toLowerCase();
+    
+    let matchStatus = true;
+    const fsLower = filterStatus.toLowerCase();
+    if (fsLower === 'all') {
+      matchStatus = true;
+    } else if (fsLower === 'problems') {
+      matchStatus = isProblemDevice(d);
+    } else if (fsLower === 'healthy') {
+      matchStatus = (d.powerStatus === 'On' || d.powerStatus === 'on') && !isProblemDevice(d);
+    } else {
+      matchStatus = d.powerStatus.toLowerCase() === filterStatus.toLowerCase();
+    }
+
     const matchRdp = !filterRdpOnly || Boolean(
       d.rdpStatus && (
         d.rdpStatus.toLowerCase().includes('актив') ||
@@ -2282,10 +2518,12 @@ function Devices({
           className="text-input"
           value={filterStatus}
           onChange={(e) => setFilterStatus(e.target.value)}
-          style={{ minWidth: '130px', height: '34px', fontSize: '11px', padding: '0 8px' }}
+          style={{ minWidth: '150px', height: '34px', fontSize: '11px', padding: '0 8px' }}
         >
           <option value="ALL">Статус: Все</option>
-          <option value="On">Онлайн (On)</option>
+          <option value="Healthy">🟢 В норме (Онлайн)</option>
+          <option value="Problems">⚠️ Проблемы / Внимание</option>
+          <option value="On">Онлайн (Все)</option>
           <option value="Off">Оффлайн (Off)</option>
           <option value="Booting">Загрузка</option>
         </select>
@@ -2312,6 +2550,36 @@ function Devices({
           </Button>
         )}
       </div>
+
+      {/* Filter notifications */}
+      {filterStatus.toLowerCase() === 'problems' && (
+        <div style={{ margin: '0 0 16px', padding: '10px 16px', background: 'var(--orange-soft)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--ink)', fontSize: '12px' }}>
+            <AlertTriangle size={16} style={{ color: 'var(--orange)', flex: 'none' }} />
+            <span>Фильтр активен: отображаются только рабочие станции с предупреждениями или повышенной нагрузкой ({filtered.length})</span>
+          </div>
+          <button 
+            onClick={() => setFilterStatus('ALL')} 
+            style={{ border: 'none', background: 'transparent', color: 'var(--orange)', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
+          >
+            Сбросить фильтр
+          </button>
+        </div>
+      )}
+      {filterStatus.toLowerCase() === 'healthy' && (
+        <div style={{ margin: '0 0 16px', padding: '10px 16px', background: 'var(--green-soft)', border: '1px solid rgba(16, 185, 129, 0.2)', borderRadius: '8px', display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--ink)', fontSize: '12px' }}>
+            <Check size={16} style={{ color: 'var(--green)', flex: 'none' }} />
+            <span>Фильтр активен: отображаются исправные станции онлайн без предупреждений ({filtered.length})</span>
+          </div>
+          <button 
+            onClick={() => setFilterStatus('ALL')} 
+            style={{ border: 'none', background: 'transparent', color: 'var(--green)', cursor: 'pointer', fontSize: '11px', fontWeight: 600 }}
+          >
+            Сбросить фильтр
+          </button>
+        </div>
+      )}
 
       {/* Bulk actions bar */}
       {selectedIds.length > 0 && (

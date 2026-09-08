@@ -86,6 +86,18 @@ def safe_migrate_columns_sync(connection):
                 except Exception as ex:
                     logger.debug(f"Column migration notice for {col_name}: {ex}")
 
+    if "hardware_changes" in tables:
+        try:
+            connection.execute(text("UPDATE hardware_changes SET diff_status = 'INFO', severity = 'Info' WHERE (component = 'USB-накопитель' OR id LIKE '%USB%') AND diff_status = 'MISMATCH'"))
+        except Exception as ex:
+            logger.debug(f"Hardware changes USB cleanup notice: {ex}")
+
+    if "alerts" in tables:
+        try:
+            connection.execute(text("UPDATE alerts SET state = 'Resolved', severity = 'Info' WHERE alert_type = 'USB_STORAGE_CHANGED' AND state = 'Open'"))
+        except Exception as ex:
+            logger.debug(f"Alerts USB cleanup notice: {ex}")
+
 @app.on_event("startup")
 async def startup_event():
     # Initialize DB schema

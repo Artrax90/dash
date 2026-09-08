@@ -3,6 +3,34 @@ from datetime import datetime
 
 class HardwareDiffService:
     @staticmethod
+    def is_usb_storage(d: Dict[str, Any]) -> bool:
+        if not isinstance(d, dict):
+            return False
+        bus = str(d.get("busType", "")).upper()
+        interface = str(d.get("interfaceType", "")).upper()
+        media = str(d.get("mediaType", "")).lower()
+        model = str(d.get("model", "")).lower()
+        name = str(d.get("name", "")).lower()
+        pnp = str(d.get("pnpDeviceId", "")).upper()
+        stype = str(d.get("type", "")).lower()
+        return (
+            bool(d.get("isRemovable")) or
+            "USB" in bus or
+            "USB" in interface or
+            "USB" in pnp or
+            "removable" in media or
+            "usb flash" in stype or
+            "datatraveler" in model or
+            "flash" in model or
+            "usb" in model or
+            "sandisk" in model or
+            "transcend" in model or
+            "card reader" in model or
+            "sd card" in model or
+            "sd card" in name
+        )
+
+    @staticmethod
     def compare_specs(prev_spec: Dict[str, Any], current_spec: Dict[str, Any], device_id: str) -> List[Dict[str, Any]]:
         """
         Compare current hardware snapshot with previous snapshot (or baseline) and generate diff items.
@@ -90,27 +118,7 @@ class HardwareDiffService:
         base_storage = prev_spec.get("storage", []) or []
         curr_storage = current_spec.get("storage", []) or []
 
-        def is_usb_storage(d: Dict[str, Any]) -> bool:
-            if not isinstance(d, dict):
-                return False
-            bus = str(d.get("busType", "")).upper()
-            interface = str(d.get("interfaceType", "")).upper()
-            media = str(d.get("mediaType", "")).lower()
-            model = str(d.get("model", "")).lower()
-            name = str(d.get("name", "")).lower()
-            return (
-                "USB" in bus or
-                "USB" in interface or
-                "removable" in media or
-                "usb" in media or
-                "usb" in model or
-                "flash" in model or
-                "datatraveler" in model or
-                "sandisk" in model or
-                "transcend" in model or
-                "kingston" in model or
-                bool(d.get("isRemovable"))
-            )
+        is_usb_storage = HardwareDiffService.is_usb_storage
 
         if isinstance(base_storage, list) and isinstance(curr_storage, list) and len(base_storage) > 0 and len(curr_storage) > 0:
             base_disks = {d.get("serialNumber"): d for d in base_storage if isinstance(d, dict) and d.get("serialNumber") and not str(d.get("serialNumber")).startswith("DISK-SN-")}
@@ -132,8 +140,8 @@ class HardwareDiffService:
                             "previousValue": f"{d.get('model', 'Накопитель')} (S/N: {sn})",
                             "currentValue": "Отсутствует / Извлечен",
                             "description": desc,
-                            "acknowledged": False,
-                            "diffStatus": "MISMATCH",
+                            "acknowledged": True if is_usb else False,
+                            "diffStatus": "INFO" if is_usb else "MISMATCH",
                             "isUsb": is_usb
                         })
                         
@@ -152,8 +160,8 @@ class HardwareDiffService:
                             "previousValue": "Отсутствует",
                             "currentValue": f"{d.get('model', 'Накопитель')} (S/N: {sn})",
                             "description": desc,
-                            "acknowledged": False,
-                            "diffStatus": "MISMATCH",
+                            "acknowledged": True if is_usb else False,
+                            "diffStatus": "INFO" if is_usb else "MISMATCH",
                             "isUsb": is_usb
                         })
 

@@ -56,6 +56,13 @@ async def set_baseline(device_id: str, payload: Dict[str, Any], request: Request
     if not spec:
         raise HTTPException(status_code=400, detail="No hardware spec available to approve as baseline")
 
+    if isinstance(spec, dict):
+        import copy
+        from backend.app.services.hardware_diff_service import HardwareDiffService
+        spec = copy.deepcopy(spec)
+        if "storage" in spec and isinstance(spec["storage"], list):
+            spec["storage"] = [d for d in spec["storage"] if not HardwareDiffService.is_usb_storage(d)]
+
     bl_res = await db.execute(select(HardwareBaselineModel).where(HardwareBaselineModel.device_id == device_id))
     baseline = bl_res.scalar_one_or_none()
     

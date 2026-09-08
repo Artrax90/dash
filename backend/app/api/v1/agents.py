@@ -643,7 +643,8 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     # Already open alert exists, do not duplicate
                     continue
 
-                if dev:
+                is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
+                if dev and not is_usb:
                     if str(c["severity"]).lower() == "critical":
                         dev.health_status = HealthStatus.CRITICAL
                     elif str(c["severity"]).lower() == "warning":
@@ -653,16 +654,15 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     device_id=real_device_id,
                     component=c["component"],
                     change_type=c["changeType"],
-                    severity=c["severity"],
+                    severity="Info" if is_usb else c["severity"],
                     previous_value=c["previousValue"],
                     current_value=c["currentValue"],
-                    diff_status=c["diffStatus"]
+                    diff_status="INFO" if is_usb else c["diffStatus"]
                 )
                 db.add(hw_change)
                 hardware_changes_db.insert(0, c)
 
                 # Create persistent Alert
-                is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
                 cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else "HARDWARE_MISMATCH"
                 cur_category = "Security" if is_usb else "Hardware"
 
@@ -672,8 +672,8 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     device_id=real_device_id,
                     alert_type=cur_alert_type,
                     category=cur_category,
-                    severity=c["severity"],
-                    state="Open",
+                    severity="Info" if is_usb else c["severity"],
+                    state="Resolved" if is_usb else "Open",
                     description=alert_desc
                 )
                 db.add(new_alert)
@@ -1440,25 +1440,26 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                     ):
                                         continue
 
-                                    if str(c["severity"]).lower() == "critical":
-                                        device.health_status = HealthStatus.CRITICAL
-                                    elif str(c["severity"]).lower() == "warning":
-                                        device.health_status = HealthStatus.WARNING
+                                    is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
+                                    if not is_usb:
+                                        if str(c["severity"]).lower() == "critical":
+                                            device.health_status = HealthStatus.CRITICAL
+                                        elif str(c["severity"]).lower() == "warning":
+                                            device.health_status = HealthStatus.WARNING
                                     hw_change = HardwareChangeModel(
                                         id=c["id"],
                                         device_id=device.id,
                                         component=c["component"],
                                         change_type=c["changeType"],
-                                        severity=c["severity"],
+                                        severity="Info" if is_usb else c["severity"],
                                         previous_value=c["previousValue"],
                                         current_value=c["currentValue"],
-                                        diff_status=c["diffStatus"]
+                                        diff_status="INFO" if is_usb else c["diffStatus"]
                                     )
                                     db.add(hw_change)
                                     hardware_changes_db.insert(0, c)
 
                                     # Create persistent Alert
-                                    is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
                                     cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else "HARDWARE_MISMATCH"
                                     cur_category = "Security" if is_usb else "Hardware"
 
@@ -1468,8 +1469,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         device_id=device.id,
                                         alert_type=cur_alert_type,
                                         category=cur_category,
-                                        severity=c["severity"],
-                                        state="Open",
+                                        severity="Info" if is_usb else c["severity"],
+                                        state="Resolved" if is_usb else "Open",
                                         description=alert_desc
                                     )
                                     db.add(new_alert)
