@@ -91,7 +91,6 @@ class AlertPolicyThresholdsSchema(BaseModel):
 class AlertPolicyChannelsSchema(BaseModel):
     webUi: bool = True
     telegram: bool = True
-    email: bool = False
 
 class AlertPolicySchema(BaseModel):
     deviceId: str

@@ -1670,6 +1670,9 @@ function Get-LiveHardwareSpec() {
 `$script:lastPciCount = -1
 `$script:lastPciSig = ""
 `$script:lastNetCount = -1
+`$script:prevProcTimes = @{}
+`$script:prevProcSampleTime = `$null
+`$script:procCpuCores = [System.Environment]::ProcessorCount
 
 function Invoke-Inventory() {
     try {
@@ -1867,23 +1870,80 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                 `$allProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 0 }
             }
             if (`$allProcs) {
-                `$allProcs = `$allProcs | Sort-Object @{Expression={ if (`$_.CPU) { `$_.CPU } else { 0 } }; Descending=`$true}, @{Expression={ if (`$_.WorkingSet64) { `$_.WorkingSet64 } else { 0 } }; Descending=`$true}
+                `$nowSampleTime = [datetime]::UtcNow
+                `$cores = if (`$script:procCpuCores -and `$script:procCpuCores -gt 0) { `$script:procCpuCores } else { [System.Environment]::ProcessorCount }
+                if (-not `$cores -or `$cores -lt 1) { `$cores = 1 }
+
+                # If first run or no previous snapshot, take a quick 250ms delta so first heartbeat has real non-zero CPU
+                if (-not `$script:prevProcTimes -or `$script:prevProcTimes.Count -eq 0 -or -not `$script:prevProcSampleTime) {
+                    `$snap1 = @{}
+                    `$t1 = [datetime]::UtcNow
+                    foreach (`$p in `$allProcs) {
+                        if (`$p.CPU) { `$snap1[`$p.Id] = [double]`$p.CPU }
+                    }
+                    Start-Sleep -Milliseconds 250
+                    `$allProcs = @(try { Get-Process -IncludeUserName -ErrorAction Stop | Where-Object { `$_.Id -gt 0 } } catch { Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 0 } })
+                    `$nowSampleTime = [datetime]::UtcNow
+                    `$script:prevProcTimes = `$snap1
+                    `$script:prevProcSampleTime = `$t1
+                }
+
+                `$dtSec = (`$nowSampleTime - `$script:prevProcSampleTime).TotalSeconds
+                if (`$dtSec -lt 0.2) { `$dtSec = 0.2 }
+
+                `$newProcTimes = @{}
+                `$calculatedProcs = @()
+
                 foreach (`$p in `$allProcs) {
+                    `$curCpu = 0.0
+                    if (`$p.CPU) {
+                        `$curCpu = [double]`$p.CPU
+                        `$newProcTimes[`$p.Id] = `$curCpu
+                    }
+
                     `$pCpu = 0.0
-                    if (`$p.CPU) { `$pCpu = [math]::Round((`$p.CPU % 100), 1) }
+                    if (`$curCpu -gt 0.0 -and `$script:prevProcTimes.ContainsKey(`$p.Id)) {
+                        `$prevCpu = [double]`$script:prevProcTimes[`$p.Id]
+                        `$deltaCpu = `$curCpu - `$prevCpu
+                        if (`$deltaCpu -gt 0.0) {
+                            `$rawPct = (`$deltaCpu / (`$dtSec * `$cores)) * 100.0
+                            `$pCpu = [math]::Round([math]::Min(100.0, [math]::Max(0.0, `$rawPct)), 1)
+                        }
+                    }
+
                     `$pRamMb = 0
                     if (`$p.WorkingSet64) { `$pRamMb = [int][math]::Round(`$p.WorkingSet64 / 1MB, 0) }
                     `$pName = `$p.ProcessName
                     if (-not `$pName.EndsWith(".exe")) { `$pName = `$pName + ".exe" }
                     `$pUser = if (`$p.UserName) { (`$p.UserName -split '\\')[-1] } else { if (`$p.SessionId -eq 0) { "SYSTEM" } else { if (`$user) { `$user } else { "User" } } }
-                    `$procList += @{
+
+                    `$calculatedProcs += [PSCustomObject]@{
                         pid = `$p.Id
                         name = `$pName
-                        cpu = "`$pCpu"
+                        cpu = `$pCpu
+                        cpuVal = `$pCpu
                         ram = `$pRamMb
                         diskIo = "0.1 MB/s"
                         user = `$pUser
                         status = "Running"
+                        workingSet = (if (`$p.WorkingSet64) { `$p.WorkingSet64 } else { 0 })
+                    }
+                }
+
+                `$script:prevProcTimes = `$newProcTimes
+                `$script:prevProcSampleTime = `$nowSampleTime
+
+                # Sort primarily by CPU % descending, secondarily by RAM
+                `$sorted = `$calculatedProcs | Sort-Object @{Expression={ `$_.cpuVal }; Descending=`$true}, @{Expression={ `$_.workingSet }; Descending=`$true}
+                foreach (`$item in `$sorted) {
+                    `$procList += @{
+                        pid = `$item.pid
+                        name = `$item.name
+                        cpu = "`$(`$item.cpu)"
+                        ram = `$item.ram
+                        diskIo = `$item.diskIo
+                        user = `$item.user
+                        status = `$item.status
                     }
                 }
             }

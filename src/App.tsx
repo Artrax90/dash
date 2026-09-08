@@ -733,6 +733,42 @@ function App() {
     } catch {}
   };
 
+  // Prevent accidental modal close when dragging/selecting text inside modal and releasing mouse on backdrop
+  useEffect(() => {
+    let isDownInsideModal = false;
+
+    const handleMouseDown = (e: MouseEvent) => {
+      const target = e.target as HTMLElement | null;
+      if (target) {
+        const backdrop = target.closest('.modal-backdrop');
+        if (backdrop && target !== backdrop) {
+          isDownInsideModal = true;
+        } else {
+          isDownInsideModal = false;
+        }
+      }
+    };
+
+    const handleClick = (e: MouseEvent) => {
+      if (isDownInsideModal) {
+        const target = e.target as HTMLElement | null;
+        if (target && target.classList.contains('modal-backdrop')) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+        }
+      }
+      isDownInsideModal = false;
+    };
+
+    window.addEventListener('mousedown', handleMouseDown, true);
+    window.addEventListener('click', handleClick, true);
+
+    return () => {
+      window.removeEventListener('mousedown', handleMouseDown, true);
+      window.removeEventListener('click', handleClick, true);
+    };
+  }, []);
+
   // Sync with browser Back/Forward buttons (popstate)
   useEffect(() => {
     notificationService.initAutoPrompt();
@@ -1456,7 +1492,7 @@ function Dashboard({
     };
   }, []);
 
-  const filtered = devices.filter((d) => `${d.name} ${d.id} ${d.ip} ${getDeviceGroups(d).join(' ')}`.toLowerCase().includes(query.toLowerCase())).slice(0, 8);
+  const filtered = devices.filter((d) => `${d.name} ${d.id} ${d.ip} ${getDeviceGroups(d).join(' ')}`.toLowerCase().includes(query.toLowerCase()));
 
   const totalDevs = stats?.total || devices.length || 0;
   const onlineDevs = stats?.online || 0;
@@ -1971,7 +2007,8 @@ function DeviceTable({
   onSelectToggle,
   onSelectAll,
   onDeleteDevice,
-  onEditMetadata
+  onEditMetadata,
+  pageSize = 8
 }: {
   devices: Device[];
   onDevice: (id: string) => void;
@@ -1982,10 +2019,25 @@ function DeviceTable({
   onSelectAll?: () => void;
   onDeleteDevice?: (id: string) => void;
   onEditMetadata?: (device: Device) => void;
+  pageSize?: number;
 }) {
   const { t } = useLanguage();
-  const allSelected = devices.length > 0 && devices.every(d => selectedIds.includes(d.id));
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
+  const [currentPage, setCurrentPage] = useState(1);
+
+  const totalPages = Math.max(1, Math.ceil(devices.length / pageSize));
+
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(1);
+    }
+  }, [devices.length, totalPages, currentPage]);
+
+  const startIndex = (currentPage - 1) * pageSize;
+  const endIndex = Math.min(startIndex + pageSize, devices.length);
+  const pagedDevices = compact ? devices : devices.slice(startIndex, endIndex);
+
+  const allSelected = pagedDevices.length > 0 && pagedDevices.every(d => selectedIds.includes(d.id));
 
   // Close context menu on outside click
   useEffect(() => {
@@ -2025,7 +2077,7 @@ function DeviceTable({
               </td>
             </tr>
           ) : (
-            devices.map((device) => {
+            pagedDevices.map((device) => {
               const devGroups = getDeviceGroups(device);
               return (
                 <tr key={device.id}>
@@ -2161,11 +2213,59 @@ function DeviceTable({
       </table>
       {!compact && (
         <div className="table-footer">
-          <span>{t('common.showing')} <strong>{devices.length === 0 ? 0 : 1}–{devices.length}</strong> {t('common.ofTotal')} <strong>{devices.length}</strong> {t('common.devices')}</span>
+          <span>{t('common.showing')} <strong>{devices.length === 0 ? 0 : startIndex + 1}–{endIndex}</strong> {t('common.ofTotal')} <strong>{devices.length}</strong> {t('common.devices')}</span>
           <div className="pagination">
-            <button disabled>{t('common.previous')}</button>
-            <button className="current">1</button>
-            <button disabled>{t('common.next')}</button>
+            <button
+              disabled={currentPage <= 1}
+              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+            >
+              {t('common.previous')}
+            </button>
+            {totalPages <= 7 ? (
+              Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                <button
+                  key={p}
+                  className={p === currentPage ? 'current' : ''}
+                  onClick={() => setCurrentPage(p)}
+                >
+                  {p}
+                </button>
+              ))
+            ) : (
+              <>
+                <button
+                  className={currentPage === 1 ? 'current' : ''}
+                  onClick={() => setCurrentPage(1)}
+                >
+                  1
+                </button>
+                {currentPage > 3 && <span style={{ padding: '0 4px', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center' }}>...</span>}
+                {Array.from({ length: totalPages }, (_, i) => i + 1)
+                  .filter(p => p > 1 && p < totalPages && Math.abs(p - currentPage) <= 1)
+                  .map(p => (
+                    <button
+                      key={p}
+                      className={p === currentPage ? 'current' : ''}
+                      onClick={() => setCurrentPage(p)}
+                    >
+                      {p}
+                    </button>
+                  ))}
+                {currentPage < totalPages - 2 && <span style={{ padding: '0 4px', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center' }}>...</span>}
+                <button
+                  className={currentPage === totalPages ? 'current' : ''}
+                  onClick={() => setCurrentPage(totalPages)}
+                >
+                  {totalPages}
+                </button>
+              </>
+            )}
+            <button
+              disabled={currentPage >= totalPages}
+              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+            >
+              {t('common.next')}
+            </button>
           </div>
         </div>
       )}
@@ -2218,20 +2318,23 @@ function Devices({
   const [editDevAssetTag, setEditDevAssetTag] = useState('');
   const [editDevNotes, setEditDevNotes] = useState('');
   const [newTagInput, setNewTagInput] = useState('');
+  const [systemGroups, setSystemGroups] = useState<string[]>([]);
 
   // Existing fleet groups dynamically computed
   const existingFleetGroups = useMemo(() => {
     if (hasRestrictedScope) {
-      return [...allowedGroupsList].sort((a, b) => a.localeCompare(b, 'ru'));
+      const filtered = systemGroups.filter(g => isPathInScope(g, allowedGroupsList));
+      return Array.from(new Set([...allowedGroupsList, ...filtered])).sort((a, b) => a.localeCompare(b, 'ru'));
     }
     const set = new Set<string>();
     items.forEach(d => {
       getDeviceGroups(d).forEach(g => { if (g && g.trim()) set.add(g.trim()); });
       if (d.group && d.group.trim()) set.add(d.group.trim());
     });
+    systemGroups.forEach(g => { if (g && g.trim()) set.add(g.trim()); });
     ['Тонкие клиенты', 'Office', 'Warehouse', 'Management', 'Testing', 'Dev'].forEach(g => set.add(g));
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [items, hasRestrictedScope, allowedGroupsList]);
+  }, [items, systemGroups, hasRestrictedScope, allowedGroupsList]);
 
   // Add Device Modal state (Agent vs Agentless / Thin Client)
   const [addModalTab, setAddModalTab] = useState<'agent' | 'agentless'>('agent');
@@ -2335,6 +2438,46 @@ function Devices({
       setItems(data);
       setLoading(false);
     });
+    Promise.all([
+      groupsApi.list().catch(() => []),
+      groupsApi.getBuildings().catch(() => []),
+      groupsApi.getHierarchy().catch(() => [])
+    ]).then(([list, buildings, hierarchy]) => {
+      const gSet = new Set<string>();
+      (list || []).forEach((g: any) => {
+        if (g?.name) gSet.add(g.name.trim());
+      });
+      (buildings || []).forEach((b: any) => {
+        const bName = (b?.name || '').trim();
+        if (bName && bName !== 'Общие группы') {
+          gSet.add(bName);
+          if (Array.isArray(b.floors)) {
+            b.floors.forEach((f: string) => {
+              if (f) gSet.add(`${bName} / ${f.trim()}`);
+            });
+          }
+        }
+      });
+      (hierarchy || []).forEach((b: any) => {
+        const bName = (b.building || b.name || '').trim();
+        if (bName && bName !== 'Общие группы') {
+          gSet.add(bName);
+          (b.floors || []).forEach((f: any) => {
+            const fName = (f.floor || f.name || '').trim();
+            if (fName) {
+              gSet.add(`${bName} / ${fName}`);
+              (f.rooms || []).forEach((r: any) => {
+                const rName = (typeof r === 'string' ? r : (r.room || r.name || '')).trim();
+                if (rName) {
+                  gSet.add(`${bName} / ${fName} / ${rName}`);
+                }
+              });
+            }
+          });
+        }
+      });
+      setSystemGroups(Array.from(gSet));
+    }).catch(() => {});
   };
 
   useEffect(() => {
@@ -2363,7 +2506,7 @@ function Devices({
     if (initialFilter?.rdp !== undefined) setFilterRdpOnly(initialFilter.rdp);
   }, [initialFilter]);
 
-  const availableGroups = ['Office', 'Warehouse', 'Management', 'Testing', 'Dev'];
+  const availableGroups = existingFleetGroups;
 
   const isProblemDevice = (dev: Device) => {
     const isOnline = dev.powerStatus === 'On' || dev.powerStatus === 'on';
@@ -8020,7 +8163,6 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
 
   const [webUiChannel, setWebUiChannel] = useState(true);
   const [telegramChannel, setTelegramChannel] = useState(true);
-  const [emailChannel, setEmailChannel] = useState(false);
 
   useEffect(() => {
     devicesApi.getAlertPolicy(deviceId).then(policy => {
@@ -8056,7 +8198,6 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
         const ch = policy.notifyChannels || policy.notify_channels || {};
         if (ch.webUi !== undefined) setWebUiChannel(ch.webUi);
         if (ch.telegram !== undefined) setTelegramChannel(ch.telegram);
-        if (ch.email !== undefined) setEmailChannel(ch.email);
       }
     });
   }, [deviceId]);
@@ -8090,7 +8231,6 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
       notifyChannels: {
         webUi: webUiChannel,
         telegram: telegramChannel,
-        email: emailChannel,
       }
     });
     notify('Политика оповещений устройства успешно сохранена!');
@@ -8132,7 +8272,7 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
               </div>
               <p style={{ margin: '0 0 10px', fontSize: '11px', color: 'var(--muted)', lineHeight: '1.55' }}>
                 Включен мониторинг исключительно критических инцидентов: несанкционированное изъятие или замена комплектующих (CPU, RAM, GPU, системных дисков), аварийное обесточивание и потеря связи со станцией.
-                Обычные внешние USB-флешки и пороги нагрузки игнорируются, исключая ложный шум в Telegram и почте.
+                Обычные внешние USB-флешки и пороги нагрузки игнорируются, исключая ложный шум в Telegram и веб-интерфейсе.
               </p>
               <button className="text-button" style={{ fontWeight: 600, fontSize: '11px' }} onClick={() => setMode('Custom')}>
                 ⚙️ Переключить в Custom для ручной настройки чекбоксов →
@@ -8394,10 +8534,6 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
           <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
             <input type="checkbox" checked={telegramChannel} onChange={(e) => setTelegramChannel(e.target.checked)} />
             Telegram-бот
-          </label>
-          <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '11px', cursor: 'pointer' }}>
-            <input type="checkbox" checked={emailChannel} onChange={(e) => setEmailChannel(e.target.checked)} />
-            Email оповещения
           </label>
         </div>
       </div>
@@ -14424,7 +14560,14 @@ function Groups({
 
   // Add PC to group modal
   const [showAddPcModal, setShowAddPcModal] = useState(false);
+  const [groupAddModalTab, setGroupAddModalTab] = useState<'assign' | 'agent' | 'agentless'>('assign');
   const [selectedPcToAssign, setSelectedPcToAssign] = useState<string>('');
+  const [groupTcName, setGroupTcName] = useState('');
+  const [groupTcIp, setGroupTcIp] = useState('');
+  const [groupTcMac, setGroupTcMac] = useState('');
+  const [groupTcIsProbing, setGroupTcIsProbing] = useState(false);
+  const [groupTcProbeResult, setGroupTcProbeResult] = useState<{ success: boolean; message: string; online: boolean; suggestedCommand?: string } | null>(null);
+  const [groupTcIsSaving, setGroupTcIsSaving] = useState(false);
 
   // 3-Level Hierarchy Drill-Down State (Cards / Tiles)
   const [drillBuilding, setDrillBuilding] = useState<string | null>(null);
@@ -14969,6 +15112,80 @@ function Groups({
       setShowAddPcModal(false);
       setSelectedPcToAssign('');
       loadData();
+    }
+  };
+
+  const handleGroupProbeTc = async () => {
+    if (!groupTcIp.trim()) {
+      notify('Введите IP-адрес тонкого клиента для проверки');
+      return;
+    }
+    setGroupTcIsProbing(true);
+    setGroupTcProbeResult(null);
+    try {
+      const res = await devicesApi.probe(groupTcIp.trim());
+      setGroupTcProbeResult({
+        success: res.success,
+        message: res.message,
+        online: res.online,
+        suggestedCommand: res.suggestedCommand || `(Get-NetNeighbor -IPAddress ${groupTcIp.trim()}).LinkLayerAddress | Set-Clipboard`
+      });
+      if (res.mac) {
+        setGroupTcMac(res.mac);
+        notify(`MAC-адрес успешно получен: ${res.mac}`);
+      } else {
+        notify('Устройство не ответило в ARP-таблице сервера. Доступна быстрая вставка через PowerShell.');
+      }
+    } catch (err: any) {
+      setGroupTcProbeResult({
+        success: false,
+        message: err?.message || 'Сбой проверки соединения',
+        online: false,
+        suggestedCommand: `(Get-NetNeighbor -IPAddress ${groupTcIp.trim()}).LinkLayerAddress | Set-Clipboard`
+      });
+      notify(err?.message || 'Ошибка проверки соединения');
+    } finally {
+      setGroupTcIsProbing(false);
+    }
+  };
+
+  const handleGroupSaveTc = async () => {
+    if (!selectedGroup) return;
+    if (!groupTcName.trim()) {
+      notify('Укажите имя тонкого клиента');
+      return;
+    }
+    if (!groupTcIp.trim()) {
+      notify('Укажите IP-адрес устройства');
+      return;
+    }
+    if (!groupTcMac.trim()) {
+      notify('Укажите MAC-адрес устройства для отправки пакетов Wake-on-LAN');
+      return;
+    }
+    if (!canManageGroup(selectedGroup.name) || isObserver) {
+      notify('Отказ в доступе: вы не можете добавлять устройства в эту группу');
+      return;
+    }
+    setGroupTcIsSaving(true);
+    try {
+      const res = await devicesApi.createAgentless({
+        name: groupTcName.trim(),
+        ip: groupTcIp.trim(),
+        mac: groupTcMac.trim(),
+        group: selectedGroup.name
+      });
+      notify(res?.message || `Тонкий клиент «${groupTcName}» добавлен в группу "${selectedGroup.name}"!`);
+      setShowAddPcModal(false);
+      setGroupTcName('');
+      setGroupTcIp('');
+      setGroupTcMac('');
+      setGroupTcProbeResult(null);
+      loadData();
+    } catch (err: any) {
+      notify(err?.message || 'Ошибка добавления устройства');
+    } finally {
+      setGroupTcIsSaving(false);
     }
   };
 
@@ -16133,71 +16350,249 @@ function Groups({
       {/* Add PC to Group Modal */}
       {showAddPcModal && selectedGroup && canManageGroup(selectedGroup.name) && !isObserver && (
         <div className="modal-backdrop" onClick={() => setShowAddPcModal(false)}>
-          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '540px', textAlign: 'left' }}>
+          <div className="confirm-modal" onClick={(e) => e.stopPropagation()} style={{ width: '560px', textAlign: 'left' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
               <div className="confirm-icon" style={{ background: 'var(--blue-soft)', color: 'var(--blue)', margin: 0 }}><FolderPlus size={22} /></div>
               <div>
                 <h2 style={{ fontSize: '17px', margin: 0 }}>Добавить ПК в группу "{selectedGroup.name}"</h2>
-                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>Привяжите существующий компьютер или разверните новый</p>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>Привязка зарегистрированного ПК, установка агента или тонкий клиент</p>
               </div>
             </div>
 
-            <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
-              <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Вариант 1: Выбрать из зарегистрированных ПК</label>
-                <select
-                  className="text-input"
-                  style={{ width: '100%' }}
-                  value={selectedPcToAssign}
-                  onChange={(e) => setSelectedPcToAssign(e.target.value)}
-                >
-                  <option value="">-- Выберите компьютер для добавления --</option>
-                  {devices.map(d => {
-                    const devGroups = getDeviceGroups(d);
-                    const alreadyInGroup = devGroups.some(g => g.toLowerCase() === selectedGroup.name.toLowerCase());
+            {/* Modal Tabs */}
+            <div className="tabs" style={{ marginBottom: '16px', gap: '16px' }}>
+              <button
+                type="button"
+                className={groupAddModalTab === 'assign' ? 'active' : ''}
+                onClick={() => setGroupAddModalTab('assign')}
+              >
+                Привязать существующий ПК
+              </button>
+              <button
+                type="button"
+                className={groupAddModalTab === 'agent' ? 'active' : ''}
+                onClick={() => setGroupAddModalTab('agent')}
+              >
+                Установка агента
+              </button>
+              <button
+                type="button"
+                className={groupAddModalTab === 'agentless' ? 'active' : ''}
+                onClick={() => setGroupAddModalTab('agentless')}
+              >
+                Тонкий клиент (WoL / Agentless)
+              </button>
+            </div>
+
+            {groupAddModalTab === 'assign' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Выбрать из зарегистрированных ПК парка</label>
+                  <select
+                    className="text-input"
+                    style={{ width: '100%' }}
+                    value={selectedPcToAssign}
+                    onChange={(e) => setSelectedPcToAssign(e.target.value)}
+                  >
+                    <option value="">-- Выберите компьютер для добавления --</option>
+                    {devices.map(d => {
+                      const devGroups = getDeviceGroups(d);
+                      const alreadyInGroup = devGroups.some(g => g.toLowerCase() === selectedGroup.name.toLowerCase());
+                      return (
+                        <option key={d.id} value={d.id} disabled={alreadyInGroup}>
+                          {d.name} ({d.hostname}) — {alreadyInGroup ? 'уже в этой группе' : `группы: ${devGroups.join(', ')}`}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+
+                <div className="modal-actions" style={{ marginTop: '20px' }}>
+                  <Button onClick={() => setShowAddPcModal(false)}>{t('common.cancel')}</Button>
+                  <Button primary onClick={handleAssignPcToGroup} disabled={!selectedPcToAssign}>
+                    Добавить в группу
+                  </Button>
+                </div>
+              </div>
+            )}
+
+            {groupAddModalTab === 'agent' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Команда автоустановки прямо в эту группу (PowerShell):</label>
+                  {(() => {
+                    const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
+                    const serverHost = window.location.hostname || 'localhost';
+                    const srvUrl = `http://${serverHost}:${effectivePort}`;
+                    const cmd = `irm "${srvUrl}/install.ps1?group=${encodeURIComponent(selectedGroup.name)}&server_url=${encodeURIComponent(srvUrl)}" | iex`;
                     return (
-                      <option key={d.id} value={d.id} disabled={alreadyInGroup}>
-                        {d.name} ({d.hostname}) — {alreadyInGroup ? 'уже в этой группе' : `группы: ${devGroups.join(', ')}`}
-                      </option>
+                      <>
+                        <div className="code-card" style={{ marginTop: 0 }}>
+                          <pre>{cmd}</pre>
+                        </div>
+                        <button
+                          className="text-button"
+                          style={{ marginTop: '6px' }}
+                          onClick={() => {
+                            copyToClipboard(cmd);
+                            notify('Команда скопирована в буфер обмена!');
+                          }}
+                        >
+                          <Copy size={12} /> Скопировать команду
+                        </button>
+                      </>
                     );
-                  })}
-                </select>
-              </div>
+                  })()}
+                </div>
 
-              <div style={{ padding: '12px 0', borderTop: '1px solid var(--line)' }}>
-                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Вариант 2: Команда автоустановки прямо в эту группу (PowerShell):</label>
-                {(() => {
-                  const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
-                  const serverHost = window.location.hostname || 'localhost';
-                  const srvUrl = `http://${serverHost}:${effectivePort}`;
-                  const cmd = `irm "${srvUrl}/install.ps1?group=${encodeURIComponent(selectedGroup.name)}&server_url=${encodeURIComponent(srvUrl)}" | iex`;
-                  return (
-                    <>
-                      <div className="code-card" style={{ marginTop: 0 }}>
-                        <pre>{cmd}</pre>
-                      </div>
-                      <button
-                        className="text-button"
-                        style={{ marginTop: '4px' }}
-                        onClick={() => {
-                          copyToClipboard(cmd);
-                          notify('Команда скопирована в буфер обмена!');
+                <div className="modal-actions" style={{ marginTop: '20px' }}>
+                  <Button onClick={() => setShowAddPcModal(false)}>Закрыть</Button>
+                </div>
+              </div>
+            )}
+
+            {groupAddModalTab === 'agentless' && (
+              <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.2)', padding: '12px 14px', borderRadius: '8px', fontSize: '12px', color: 'var(--ink)' }}>
+                  💡 <strong>Безагентный режим:</strong> предназначен для тонких клиентов (WTware, Thinstation, бездисковые терминалы). Сервер автоматически будит устройство по сети (Wake-on-LAN) по кнопке и расписанию.
+                </div>
+
+                <div>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Имя устройства / Рабочее место</label>
+                  <input
+                    className="text-input"
+                    placeholder="Например: ТК Кабинет 101, WTware Склад..."
+                    value={groupTcName}
+                    onChange={e => setGroupTcName(e.target.value)}
+                    style={{ width: '100%' }}
+                  />
+                </div>
+
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>IP-адрес в локальной сети</label>
+                    <input
+                      className="text-input mono"
+                      placeholder="192.168.0.150"
+                      value={groupTcIp}
+                      onChange={e => { setGroupTcIp(e.target.value); setGroupTcProbeResult(null); }}
+                      style={{ width: '100%' }}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '4px' }}>Группа / Кабинет</label>
+                    <input
+                      className="text-input"
+                      value={selectedGroup.name}
+                      disabled
+                      style={{ width: '100%', opacity: 0.85, background: 'var(--surface-2, rgba(0,0,0,0.03))' }}
+                      title="Устройство будет автоматически привязано к текущей открытой группе"
+                    />
+                  </div>
+                </div>
+
+                <div>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '4px' }}>
+                    <label style={{ fontSize: '12px', fontWeight: 600, margin: 0 }}>Физический MAC-адрес (для WoL)</label>
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <Button
+                        type="button"
+                        icon={<Copy size={12} />}
+                        onClick={async () => {
+                          try {
+                            const text = await navigator.clipboard?.readText();
+                            if (text) {
+                              const m = text.match(/([0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}/) || text.match(/[0-9a-fA-F]{12}/);
+                              if (m) {
+                                const raw = m[0].replace(/[^a-fA-F0-9]/g, '').toUpperCase();
+                                const formatted = raw.match(/.{1,2}/g)?.join(':') || raw;
+                                setGroupTcMac(formatted);
+                                notify(`Вставлен MAC-адрес: ${formatted}`);
+                                return;
+                              }
+                            }
+                            notify('В буфере не найден MAC-адрес');
+                          } catch {
+                            notify('Вставьте MAC-адрес вручную (Ctrl+V)');
+                          }
                         }}
+                        style={{ padding: '4px 8px', fontSize: '11px' }}
+                        title="Вставить MAC из буфера обмена"
                       >
-                        <Copy size={12} /> Скопировать команду
-                      </button>
-                    </>
-                  );
-                })()}
-              </div>
-            </div>
+                        Вставить
+                      </Button>
+                      <Button
+                        type="button"
+                        icon={groupTcIsProbing ? <LoaderCircle size={12} className="spin" /> : <Wifi size={12} />}
+                        onClick={handleGroupProbeTc}
+                        disabled={groupTcIsProbing || !groupTcIp.trim()}
+                        style={{ padding: '4px 8px', fontSize: '11px' }}
+                        title="Опросить ARP-таблицу сети и проверить отклик"
+                      >
+                        {groupTcIsProbing ? 'Опрос...' : 'Проверить'}
+                      </Button>
+                    </div>
+                  </div>
+                  <input
+                    className="text-input mono"
+                    placeholder="00:11:22:33:44:55"
+                    value={groupTcMac}
+                    onChange={e => setGroupTcMac(e.target.value)}
+                    style={{ width: '100%' }}
+                  />
+                  {groupTcProbeResult && (
+                    <div style={{
+                      marginTop: '6px',
+                      padding: '8px 10px',
+                      borderRadius: '6px',
+                      fontSize: '11px',
+                      background: groupTcProbeResult.success ? 'rgba(34, 197, 94, 0.1)' : 'rgba(239, 68, 68, 0.1)',
+                      color: groupTcProbeResult.success ? 'var(--green)' : 'var(--red)',
+                      border: `1px solid ${groupTcProbeResult.success ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`
+                    }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                        {groupTcProbeResult.success ? <Check size={14} /> : <AlertTriangle size={14} />}
+                        <span>{groupTcProbeResult.message}</span>
+                      </div>
+                      {groupTcProbeResult.suggestedCommand && !groupTcProbeResult.success && (
+                        <div style={{ marginTop: '6px', paddingTop: '6px', borderTop: '1px dashed rgba(239, 68, 68, 0.2)' }}>
+                          <span style={{ color: 'var(--muted)', display: 'block', marginBottom: '4px' }}>
+                            Для быстрого извлечения MAC с другого ПК в этой подсети:
+                          </span>
+                          <div style={{ display: 'flex', gap: '6px', alignItems: 'center' }}>
+                            <code style={{ fontSize: '10px', background: 'rgba(0,0,0,0.05)', padding: '2px 6px', borderRadius: '4px', flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                              {groupTcProbeResult.suggestedCommand}
+                            </code>
+                            <button
+                              type="button"
+                              className="text-button"
+                              style={{ fontSize: '10px', padding: '2px 6px' }}
+                              onClick={() => {
+                                copyToClipboard(groupTcProbeResult.suggestedCommand!);
+                                notify('Команда скопирована в буфер!');
+                              }}
+                            >
+                              Копировать
+                            </button>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                </div>
 
-            <div className="modal-actions" style={{ marginTop: '20px' }}>
-              <Button onClick={() => setShowAddPcModal(false)}>{t('common.cancel')}</Button>
-              <Button primary onClick={handleAssignPcToGroup} disabled={!selectedPcToAssign}>
-                Добавить в группу
-              </Button>
-            </div>
+                <div className="modal-actions" style={{ marginTop: '20px' }}>
+                  <Button onClick={() => setShowAddPcModal(false)}>{t('common.cancel')}</Button>
+                  <Button
+                    primary
+                    onClick={handleGroupSaveTc}
+                    disabled={groupTcIsSaving || !groupTcName.trim() || !groupTcIp.trim() || !groupTcMac.trim()}
+                  >
+                    {groupTcIsSaving ? 'Сохранение...' : 'Добавить тонкий клиент'}
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}

@@ -404,29 +404,56 @@ class AlertEngine:
                 "time": now_utc.isoformat() + "Z",
                 "timestamp": now_utc.isoformat() + "Z"
             }
-            alerts_db.insert(0, alert_dict)
-            if len(alerts_db) > 1000:
-                alerts_db.pop()
-                
             # Query device alert policy
             pol_res = await session.execute(
                 select(AlertPolicyModel).where(
-                    (AlertPolicyModel.device_id == device.id) | (AlertPolicyModel.device_id == device.hostname)
+                    (AlertPolicyModel.device_id == device.id) | 
+                    (AlertPolicyModel.device_id == (device.hostname or "")) |
+                    (AlertPolicyModel.device_id == (device.id.upper() if device.id else "")) |
+                    (AlertPolicyModel.device_id == (device.hostname.upper() if device.hostname else ""))
                 )
             )
             pol_model = pol_res.scalar_one_or_none()
+            if not pol_model:
+                try:
+                    from backend.app.api.v1.devices import load_device_configs
+                    cfgs = load_device_configs().get("policies", {})
+                    for candidate in (device.id, (device.hostname or ""), (device.id.upper() if device.id else "")):
+                        if candidate in cfgs:
+                            c_p = cfgs[candidate]
+                            pol_model = AlertPolicyModel(
+                                device_id=device.id,
+                                mode=c_p.get("mode", "Full"),
+                                events_config=c_p.get("events", {}),
+                                thresholds=c_p.get("thresholds", {}),
+                                notify_channels=c_p.get("notifyChannels") or c_p.get("notify_channels", {})
+                            )
+                            break
+                except Exception:
+                    pass
+
             policy_dict = {
                 "mode": pol_model.mode,
                 "events_config": pol_model.events_config,
                 "notify_channels": pol_model.notify_channels
             } if pol_model else {"mode": "Full", "events_config": {"agentDisconnect": True}, "notify_channels": {"webUi": True, "telegram": True}}
-            
+
+            channels = policy_dict.get("notify_channels", {}) if "notify_channels" in policy_dict else (policy_dict.get("notifyChannels", {}) or {})
+            is_web_enabled = bool(channels.get("webUi", True))
+            is_tg_enabled = bool(channels.get("telegram", True))
+
+            if is_web_enabled:
+                alerts_db.insert(0, alert_dict)
+                if len(alerts_db) > 1000:
+                    alerts_db.pop()
+
             # Rate-limit Telegram dispatch (max once per 60s per device)
-            if now_ts - tracker.get("last_offline_alert_ts", 0) >= 60:
+            if is_tg_enabled and (now_ts - tracker.get("last_offline_alert_ts", 0) >= 60):
                 tracker["last_offline_alert_ts"] = now_ts
                 await cls.dispatch_alert(alert_dict, policy=policy_dict)
-                
-            await ws_manager.broadcast_event("alert.created", alert_dict)
+
+            if is_web_enabled:
+                await ws_manager.broadcast_event("alert.created", alert_dict)
         except Exception as err:
             print(f"[Trigger Device Offline Error] {err}")
 

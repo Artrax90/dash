@@ -120,7 +120,6 @@ export interface AlertPolicy {
   notifyChannels: {
     webUi: boolean;
     telegram: boolean;
-    email: boolean;
   };
 }
 

@@ -1507,7 +1507,7 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
                 "highCpuUsage": True, "highRamUsage": True, "highDiskUsage": True
             },
             "thresholds": {"cpuPercent": 90, "ramPercent": 85, "diskPercent": 90, "rdpIdleMinutes": 30},
-            "notifyChannels": {"webUi": True, "telegram": True, "email": False}
+            "notifyChannels": {"webUi": True, "telegram": True}
         }
 
     # Fetch live reported processes
@@ -1718,6 +1718,14 @@ async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSe
     thresholds = payload.get("thresholds", {})
     channels = payload.get("notifyChannels", {}) or payload.get("notify_channels", {})
 
+    dev_res = await db.execute(
+        select(Device).where(
+            (Device.id == device_id) | (Device.id == device_id.upper()) | (Device.id == device_id.lower()) |
+            (Device.hostname == device_id) | (Device.hostname == (device_id.upper() if device_id else ""))
+        )
+    )
+    dev = dev_res.scalar_one_or_none()
+
     if not policy:
         policy = AlertPolicyModel(
             device_id=device_id,
@@ -1733,6 +1741,26 @@ async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSe
         policy.thresholds = thresholds
         policy.notify_channels = channels
 
+    if dev:
+        other_ids = {dev.id, dev.hostname} - {device_id, None, ""}
+        for oid in other_ids:
+            res_alt = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == oid))
+            alt_pol = res_alt.scalar_one_or_none()
+            if not alt_pol:
+                alt_pol = AlertPolicyModel(
+                    device_id=oid,
+                    mode=mode,
+                    events_config=events,
+                    thresholds=thresholds,
+                    notify_channels=channels
+                )
+                db.add(alt_pol)
+            else:
+                alt_pol.mode = mode
+                alt_pol.events_config = events
+                alt_pol.thresholds = thresholds
+                alt_pol.notify_channels = channels
+
     await db.commit()
 
     # Also persist to DEVICE_CONFIGS_FILE for redundancy
@@ -1740,12 +1768,16 @@ async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSe
         cfgs = load_device_configs()
         if "policies" not in cfgs:
             cfgs["policies"] = {}
-        cfgs["policies"][device_id] = {
+        pol_entry = {
             "mode": mode,
             "events": events,
             "thresholds": thresholds,
             "notifyChannels": channels
         }
+        cfgs["policies"][device_id] = pol_entry
+        if dev:
+            if dev.id: cfgs["policies"][dev.id] = pol_entry
+            if dev.hostname: cfgs["policies"][dev.hostname] = pol_entry
         save_device_configs(cfgs)
     except Exception:
         pass
@@ -1796,8 +1828,7 @@ async def get_alert_policy(device_id: str, db: AsyncSession = Depends(get_db)):
         },
         "notifyChannels": {
             "webUi": True,
-            "telegram": True,
-            "email": False,
+            "telegram": True
         }
     }
 

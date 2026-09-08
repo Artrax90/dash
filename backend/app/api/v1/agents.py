@@ -694,23 +694,56 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     "time": datetime.utcnow().isoformat() + "Z",
                     "timestamp": datetime.utcnow().isoformat() + "Z"
                 }
-                alerts_db.insert(0, alert_dict)
-
                 # Query policy if exists
-                pol_res = await db.execute(select(AlertPolicyModel).where((AlertPolicyModel.device_id == real_device_id) | (AlertPolicyModel.device_id == device_id)))
+                pol_res = await db.execute(
+                    select(AlertPolicyModel).where(
+                        (AlertPolicyModel.device_id == real_device_id) | 
+                        (AlertPolicyModel.device_id == device_id) |
+                        (AlertPolicyModel.device_id == (dev.hostname if dev else "")) |
+                        (AlertPolicyModel.device_id == (dev.id if dev else ""))
+                    )
+                )
                 pol_model = pol_res.scalar_one_or_none()
+                if not pol_model:
+                    try:
+                        from backend.app.api.v1.devices import load_device_configs
+                        cfgs = load_device_configs().get("policies", {})
+                        for candidate in (real_device_id, device_id, (dev.hostname if dev else ""), (dev.id if dev else "")):
+                            if candidate in cfgs:
+                                c_p = cfgs[candidate]
+                                pol_model = AlertPolicyModel(
+                                    device_id=real_device_id,
+                                    mode=c_p.get("mode", "Full"),
+                                    events_config=c_p.get("events", {}),
+                                    thresholds=c_p.get("thresholds", {}),
+                                    notify_channels=c_p.get("notifyChannels") or c_p.get("notify_channels", {})
+                                )
+                                break
+                    except Exception:
+                        pass
+
                 policy_dict = {
                     "mode": pol_model.mode,
                     "events_config": pol_model.events_config,
                     "notify_channels": pol_model.notify_channels
                 } if pol_model else None
 
+                policy_channels = (policy_dict.get("notify_channels") or policy_dict.get("notifyChannels") or {}) if policy_dict else {"webUi": True, "telegram": True}
+                is_web_enabled = bool(policy_channels.get("webUi", True))
+                is_tg_enabled = bool(policy_channels.get("telegram", True))
+
+                if is_web_enabled:
+                    alerts_db.insert(0, alert_dict)
+
                 # Dispatch alert via alert engine (Telegram + Web UI) and WebSocket
                 try:
-                    await alert_engine.dispatch_alert(alert_dict, policy=policy_dict)
+                    if is_tg_enabled:
+                        await alert_engine.dispatch_alert(alert_dict, policy=policy_dict)
                 except Exception as e:
                     print(f"[Alert Dispatch Error] {e}")
-                await ws_manager.broadcast_event("alert.created", alert_dict)
+
+                if is_web_enabled:
+                    await ws_manager.broadcast_event("alert.created", alert_dict)
                 await ws_manager.broadcast_event("hardware.change", {
                     "deviceId": device_id,
                     "component": c["component"],
@@ -1271,7 +1304,16 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
             if "processes" in payload and isinstance(payload["processes"], list) and len(payload["processes"]) > 0:
                 from backend.app.api.v1.devices import device_live_processes
-                procs = payload["processes"]
+                procs = []
+                for p in payload["processes"]:
+                    if isinstance(p, dict):
+                        p_copy = dict(p)
+                        try:
+                            c_val = float(p_copy.get("cpu", 0))
+                            p_copy["cpu"] = str(round(min(100.0, max(0.0, c_val)), 1))
+                        except Exception:
+                            p_copy["cpu"] = "0.0"
+                        procs.append(p_copy)
                 for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None), device_id, (device_id.upper() if device_id else None)):
                     if k:
                         device_live_processes[k] = procs
@@ -1521,22 +1563,55 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                     }
                                     from backend.app.api.v1.alerts import alerts_db
                                     from backend.app.services.alert_engine import alert_engine
-                                    alerts_db.insert(0, alert_dict)
 
                                     # Query device alert policy if available
-                                    pol_res = await db.execute(select(AlertPolicyModel).where((AlertPolicyModel.device_id == device.id) | (AlertPolicyModel.device_id == device.hostname)))
+                                    pol_res = await db.execute(
+                                        select(AlertPolicyModel).where(
+                                            (AlertPolicyModel.device_id == device.id) | 
+                                            (AlertPolicyModel.device_id == device.hostname) |
+                                            (AlertPolicyModel.device_id == (device.id.upper() if device.id else "")) |
+                                            (AlertPolicyModel.device_id == (device.hostname.upper() if device.hostname else ""))
+                                        )
+                                    )
                                     pol_model = pol_res.scalar_one_or_none()
+                                    if not pol_model:
+                                        try:
+                                            from backend.app.api.v1.devices import load_device_configs
+                                            cfgs = load_device_configs().get("policies", {})
+                                            for candidate in (device.id, device.hostname, (device.id.upper() if device.id else "")):
+                                                if candidate and candidate in cfgs:
+                                                    c_p = cfgs[candidate]
+                                                    pol_model = AlertPolicyModel(
+                                                        device_id=device.id,
+                                                        mode=c_p.get("mode", "Full"),
+                                                        events_config=c_p.get("events", {}),
+                                                        thresholds=c_p.get("thresholds", {}),
+                                                        notify_channels=c_p.get("notifyChannels") or c_p.get("notify_channels", {})
+                                                    )
+                                                    break
+                                        except Exception:
+                                            pass
+
                                     policy_dict = {
                                         "mode": pol_model.mode,
                                         "events_config": pol_model.events_config,
                                         "notify_channels": pol_model.notify_channels
                                     } if pol_model else None
+                                    policy_channels = (policy_dict.get("notify_channels") or policy_dict.get("notifyChannels") or {}) if policy_dict else {"webUi": True, "telegram": True}
+                                    is_web_enabled = bool(policy_channels.get("webUi", True))
+                                    is_tg_enabled = bool(policy_channels.get("telegram", True))
+
+                                    if is_web_enabled:
+                                        alerts_db.insert(0, alert_dict)
 
                                     try:
-                                        await alert_engine.dispatch_alert(alert_dict, policy=policy_dict)
+                                        if is_tg_enabled:
+                                            await alert_engine.dispatch_alert(alert_dict, policy=policy_dict)
                                     except Exception as e:
                                         print(f"[Alert Dispatch Error] {e}")
-                                    await ws_manager.broadcast_event("alert.created", alert_dict)
+
+                                    if is_web_enabled:
+                                        await ws_manager.broadcast_event("alert.created", alert_dict)
                                     await ws_manager.broadcast_event("hardware.change", {
                                         "deviceId": device.id,
                                         "component": c["component"],
