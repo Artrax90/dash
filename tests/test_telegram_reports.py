@@ -247,6 +247,33 @@ def test_morning_report_accurate_counts_and_formatting():
     assert "B4-Class-541</b>: 0/2 🟢" in msg
     assert "Ночных сбоев не зафиксировано" in msg
 
+def test_morning_report_message_when_no_night_reboots():
+    user = {'id': 'USR-1', 'displayName': 'Сергей', 'scope': 'Все устройства', 'allowedGroups': []}
+    devices = [
+        {'id': 'PC-1', 'name': 'YEREMIN', 'room': 'Office', 'powerStatus': 'On', 'isOnline': True}
+    ]
+    rep = generate_morning_report(user, devices, {})
+    msg = format_morning_report_message(rep)
+    assert "перезагрузк" not in msg.lower()
+    assert "штатном режиме" in msg.lower()
+
+def test_morning_report_message_when_night_reboots_exist():
+    now = datetime.now(timezone.utc)
+    user = {'id': 'USR-1', 'displayName': 'Сергей', 'scope': 'Все устройства', 'allowedGroups': []}
+    devices = [
+        {'id': 'PC-1', 'name': 'YEREMIN', 'room': 'Office', 'powerStatus': 'On', 'isOnline': True}
+    ]
+    power_logs = {
+        'PC-1': [
+            {'action': 'REBOOT', 'timestamp': (now - timedelta(hours=2)).isoformat(), 'details': 'Scheduled night reboot'}
+        ]
+    }
+    rep = generate_morning_report(user, devices, power_logs, now_dt=now)
+    assert rep.get('night_reboots_count') == 1
+    msg = format_morning_report_message(rep)
+    assert "плановые перезагрузки (1 шт.) прошли штатно" in msg
+
+
 def test_load_devices_cache_and_update():
     import backend.app.api.v1.telegram as tg_module
     sample_devs = [

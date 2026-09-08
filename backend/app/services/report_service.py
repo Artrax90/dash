@@ -30,6 +30,10 @@ def generate_morning_report(
     online_count = 0
     offline_count = 0
     unreturned = []
+    night_reboots_count = 0
+    night_shutdowns_count = 0
+    night_wakes_count = 0
+    night_events_count = 0
 
     # Window for night events: last 12 hours
     cutoff_time = now_dt - timedelta(hours=12)
@@ -38,11 +42,28 @@ def generate_morning_report(
         dev_id = str(dev.get("id", "")).upper()
         is_on = (dev.get("powerStatus") == "On" or dev.get("isOnline") is True)
         
+        dev_events = power_logs.get(dev_id, [])
+        for evt in dev_events:
+            evt_time_str = evt.get("timestamp") or evt.get("time")
+            if evt_time_str:
+                try:
+                    evt_dt = datetime.fromisoformat(evt_time_str.replace("Z", "+00:00"))
+                    if evt_dt >= cutoff_time:
+                        act = str(evt.get("action") or "").upper()
+                        night_events_count += 1
+                        if "REBOOT" in act:
+                            night_reboots_count += 1
+                        elif "SHUTDOWN" in act or "POWEROFF" in act or act == "OFF":
+                            night_shutdowns_count += 1
+                        elif "WAKE" in act:
+                            night_wakes_count += 1
+                except Exception:
+                    pass
+
         if is_on:
             online_count += 1
         else:
             offline_count += 1
-            dev_events = power_logs.get(dev_id, [])
             recent_event = None
             for evt in dev_events:
                 evt_time_str = evt.get("timestamp") or evt.get("time")
@@ -80,7 +101,11 @@ def generate_morning_report(
         "online_devices": online_count,
         "offline_devices": offline_count,
         "unreturned_devices": unreturned,
-        "user_devices": user_devices
+        "user_devices": user_devices,
+        "night_reboots_count": night_reboots_count,
+        "night_shutdowns_count": night_shutdowns_count,
+        "night_wakes_count": night_wakes_count,
+        "night_events_count": night_events_count
     }
 
 def generate_evening_report(
@@ -137,7 +162,14 @@ def format_morning_report_message(report: Dict[str, Any]) -> str:
             lines.append(f"   📍 <i>{loc}</i> — {u.get('reason')}")
         lines.append("")
     else:
-        lines.append("✅ <b>Ночных сбоев не зафиксировано</b>, все перезагрузки прошли успешно.\n")
+        reboots = report.get("night_reboots_count", 0)
+        events = report.get("night_events_count", 0)
+        if reboots > 0:
+            lines.append(f"✅ <b>Ночных сбоев не зафиксировано</b>, плановые перезагрузки ({reboots} шт.) прошли штатно.\n")
+        elif events > 0:
+            lines.append("✅ <b>Ночных сбоев не зафиксировано</b>, все ночные операции завершены штатно.\n")
+        else:
+            lines.append("✅ <b>Ночных сбоев не зафиксировано</b>, парк работает в штатном режиме.\n")
 
     lines.append(f"📊 <b>Текущий статус парка (всего {total} ПК):</b>")
     lines.append(f"🟢 В сети: <b>{online}</b> ПК")
