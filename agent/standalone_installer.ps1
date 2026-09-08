@@ -1,4 +1,4 @@
-# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
 $embeddedServer = "__SERVER_URL__"
 $embeddedToken = "__TOKEN__"
 
@@ -410,7 +410,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.4"
+    agentVersion = "2.9.5"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -754,7 +754,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.4'
+`$AgentVersion = '2.9.5'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
@@ -773,9 +773,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.4") {
+function Update-AgentService([string]`$targetVer = "2.9.5") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.4"
+        `$targetVer = "2.9.5"
     }
     try {
         # 1. Report update in progress
@@ -2554,7 +2554,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.4"
+    agentVersion = "2.9.5"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
