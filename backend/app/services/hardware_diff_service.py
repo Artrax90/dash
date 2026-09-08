@@ -31,6 +31,32 @@ class HardwareDiffService:
         )
 
     @staticmethod
+    def is_virtual_gpu(gpu: Any) -> bool:
+        """
+        Check whether a given GPU model/dictionary represents a virtual or remote display adapter
+        (e.g. Microsoft Remote Display Adapter created dynamically during RDP connections).
+        """
+        if isinstance(gpu, dict):
+            name = str(gpu.get("model") or gpu.get("name") or "").strip()
+        else:
+            name = str(gpu or "").strip()
+        n = name.lower()
+        virtual_markers = [
+            "remote display adapter",
+            "remote desktop",
+            "basic display adapter",
+            "basic render driver",
+            "rdp display",
+            "virtual display",
+            "indirect display",
+            "parsec virtual",
+            "citrix indirect",
+            "iddcx adapter",
+            "luminoncore iddcx",
+        ]
+        return any(marker in n for marker in virtual_markers)
+
+    @staticmethod
     def compare_specs(prev_spec: Dict[str, Any], current_spec: Dict[str, Any], device_id: str) -> List[Dict[str, Any]]:
         """
         Compare current hardware snapshot with previous snapshot (or baseline) and generate diff items.
@@ -170,12 +196,16 @@ class HardwareDiffService:
         curr_gpus_raw = current_spec.get("gpus", []) or []
 
         if isinstance(base_gpus_raw, list) and isinstance(curr_gpus_raw, list) and (len(base_gpus_raw) > 0 or len(curr_gpus_raw) > 0):
-            base_gpus = sorted([g.get("model").strip() for g in base_gpus_raw if isinstance(g, dict) and g.get("model") and "Basic" not in g.get("model")])
-            curr_gpus = sorted([g.get("model").strip() for g in curr_gpus_raw if isinstance(g, dict) and g.get("model") and "Basic" not in g.get("model")])
-            
-            if base_gpus != curr_gpus:
-                if len(curr_gpus) > len(base_gpus):
-                    added = [g for g in curr_gpus if g not in base_gpus] or curr_gpus
+            base_models = sorted([g.get("model").strip() for g in base_gpus_raw if isinstance(g, dict) and g.get("model")])
+            curr_models = sorted([g.get("model").strip() for g in curr_gpus_raw if isinstance(g, dict) and g.get("model")])
+
+            # 3.1 Physical GPUs (excludes basic & virtual/remote display adapters)
+            physical_base = sorted([m for m in base_models if not HardwareDiffService.is_virtual_gpu(m)])
+            physical_curr = sorted([m for m in curr_models if not HardwareDiffService.is_virtual_gpu(m)])
+
+            if physical_base != physical_curr:
+                if len(physical_curr) > len(physical_base):
+                    added = [g for g in physical_curr if g not in physical_base] or physical_curr
                     changes.append({
                         "id": f"HWC-{device_id}-GPU-ADD-{ts_suffix}",
                         "deviceId": device_id,
@@ -183,14 +213,15 @@ class HardwareDiffService:
                         "component": "GPU",
                         "changeType": "ADDED",
                         "severity": "Warning",
-                        "previousValue": ", ".join(base_gpus) or "Отсутствует",
-                        "currentValue": ", ".join(curr_gpus),
+                        "previousValue": ", ".join(physical_base) or "Отсутствует",
+                        "currentValue": ", ".join(physical_curr),
                         "description": f"Установлена дополнительная видеокарта: {', '.join(added)}",
                         "acknowledged": False,
                         "diffStatus": "MISMATCH",
+                        "isVirtualGpu": False,
                     })
-                elif len(curr_gpus) < len(base_gpus):
-                    removed = [g for g in base_gpus if g not in curr_gpus] or base_gpus
+                elif len(physical_curr) < len(physical_base):
+                    removed = [g for g in physical_base if g not in physical_curr] or physical_base
                     changes.append({
                         "id": f"HWC-{device_id}-GPU-REM-{ts_suffix}",
                         "deviceId": device_id,
@@ -198,11 +229,12 @@ class HardwareDiffService:
                         "component": "GPU",
                         "changeType": "REMOVED",
                         "severity": "Critical",
-                        "previousValue": ", ".join(base_gpus),
-                        "currentValue": ", ".join(curr_gpus) or "Отсутствует",
+                        "previousValue": ", ".join(physical_base),
+                        "currentValue": ", ".join(physical_curr) or "Отсутствует",
                         "description": f"Извлечена видеокарта: {', '.join(removed)}",
                         "acknowledged": False,
                         "diffStatus": "MISMATCH",
+                        "isVirtualGpu": False,
                     })
                 else:
                     changes.append({
@@ -212,11 +244,50 @@ class HardwareDiffService:
                         "component": "GPU",
                         "changeType": "MODIFIED",
                         "severity": "Critical",
-                        "previousValue": ", ".join(base_gpus) or "None",
-                        "currentValue": ", ".join(curr_gpus) or "None",
-                        "description": f"Замена видеокарты: {', '.join(base_gpus)} -> {', '.join(curr_gpus)}",
+                        "previousValue": ", ".join(physical_base) or "None",
+                        "currentValue": ", ".join(physical_curr) or "None",
+                        "description": f"Замена видеокарты: {', '.join(physical_base)} -> {', '.join(physical_curr)}",
                         "acknowledged": False,
                         "diffStatus": "MISMATCH",
+                        "isVirtualGpu": False,
+                    })
+
+            # 3.2 Virtual / RDP Display Adapters (Recorded as INFO, suppressed by default from health alerts)
+            virtual_base = sorted([m for m in base_models if HardwareDiffService.is_virtual_gpu(m)])
+            virtual_curr = sorted([m for m in curr_models if HardwareDiffService.is_virtual_gpu(m)])
+
+            if virtual_base != virtual_curr:
+                added_v = [g for g in virtual_curr if g not in virtual_base]
+                removed_v = [g for g in virtual_base if g not in virtual_curr]
+                if added_v:
+                    changes.append({
+                        "id": f"HWC-{device_id}-VGPU-ADD-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "RDP-видеоадаптер",
+                        "changeType": "ADDED",
+                        "severity": "Info",
+                        "previousValue": ", ".join(virtual_base) or "Отсутствует",
+                        "currentValue": ", ".join(virtual_curr),
+                        "description": f"Подключен виртуальный дисплей сессии (RDP): {', '.join(added_v)}",
+                        "acknowledged": True,
+                        "diffStatus": "INFO",
+                        "isVirtualGpu": True,
+                    })
+                if removed_v:
+                    changes.append({
+                        "id": f"HWC-{device_id}-VGPU-REM-{ts_suffix}",
+                        "deviceId": device_id,
+                        "timestamp": now_str,
+                        "component": "RDP-видеоадаптер",
+                        "changeType": "REMOVED",
+                        "severity": "Info",
+                        "previousValue": ", ".join(virtual_base),
+                        "currentValue": ", ".join(virtual_curr) or "Отсутствует / Завершено",
+                        "description": f"Отключен виртуальный дисплей сессии (RDP): {', '.join(removed_v)}",
+                        "acknowledged": True,
+                        "diffStatus": "INFO",
+                        "isVirtualGpu": True,
                     })
 
         # 4. Compare CPU (Processor replacement)

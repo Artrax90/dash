@@ -30,6 +30,10 @@ class AlertEngine:
                 return bool(events.get("usbStorage", False))
             # In Full mode, default to True unless explicitly disabled
             return bool(events.get("usbStorage", True))
+
+        if alert_type == "VIRTUAL_GPU_CHANGED":
+            # Virtual / RDP remote display adapter changes: disabled by default
+            return bool(events.get("remoteDisplayAdapter", False))
             
         if alert_type == "HARDWARE_MISMATCH" and not events.get("hardwareChanges", True):
             return False
@@ -75,10 +79,12 @@ class AlertEngine:
                     events = cfg.get("eventsConfig", {}) or {}
                     a_type = alert.get("type", "")
                     
-                    # Granular Telegram Event Filter:
-                    # 1. USB Storage events: disabled by default in Telegram to prevent production notification floods!
+                    # 1. USB Storage & Virtual RDP Display events: disabled by default to prevent notification floods!
                     if a_type == "USB_STORAGE_CHANGED" and not events.get("usbStorage", False):
                         print(f"[Telegram Alert] Skipped USB event ({alert.get('description')}) - Telegram usbStorage alerts disabled in settings.")
+                        return
+                    if a_type == "VIRTUAL_GPU_CHANGED" and not events.get("remoteDisplayAdapter", False):
+                        print(f"[Telegram Alert] Skipped Virtual GPU event ({alert.get('description')}) - Telegram remoteDisplayAdapter alerts disabled in settings.")
                         return
                     # 2. Hardware changes
                     if a_type == "HARDWARE_MISMATCH" and not events.get("hardwareChanges", True):

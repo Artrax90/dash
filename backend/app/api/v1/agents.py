@@ -644,7 +644,9 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     continue
 
                 is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
-                if dev and not is_usb:
+                is_virtual_gpu = bool(c.get("isVirtualGpu")) or c.get("component") in ["RDP-видеоадаптер", "VIRTUAL_GPU"]
+                is_suppressed_hardware = is_usb or is_virtual_gpu
+                if dev and not is_suppressed_hardware:
                     if str(c["severity"]).lower() == "critical":
                         dev.health_status = HealthStatus.CRITICAL
                     elif str(c["severity"]).lower() == "warning":
@@ -654,17 +656,17 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     device_id=real_device_id,
                     component=c["component"],
                     change_type=c["changeType"],
-                    severity="Info" if is_usb else c["severity"],
+                    severity="Info" if is_suppressed_hardware else c["severity"],
                     previous_value=c["previousValue"],
                     current_value=c["currentValue"],
-                    diff_status="INFO" if is_usb else c["diffStatus"]
+                    diff_status="INFO" if is_suppressed_hardware else c["diffStatus"]
                 )
                 db.add(hw_change)
                 hardware_changes_db.insert(0, c)
 
                 # Create persistent Alert
-                cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else "HARDWARE_MISMATCH"
-                cur_category = "Security" if is_usb else "Hardware"
+                cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else ("VIRTUAL_GPU_CHANGED" if is_virtual_gpu else "HARDWARE_MISMATCH")
+                cur_category = "Security" if is_usb else ("Remote" if is_virtual_gpu else "Hardware")
 
                 alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
                 new_alert = AlertModel(
@@ -672,8 +674,8 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     device_id=real_device_id,
                     alert_type=cur_alert_type,
                     category=cur_category,
-                    severity="Info" if is_usb else c["severity"],
-                    state="Resolved" if is_usb else "Open",
+                    severity="Info" if is_suppressed_hardware else c["severity"],
+                    state="Resolved" if is_suppressed_hardware else "Open",
                     description=alert_desc
                 )
                 db.add(new_alert)
@@ -1467,7 +1469,9 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         continue
 
                                     is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
-                                    if not is_usb:
+                                    is_virtual_gpu = bool(c.get("isVirtualGpu")) or c.get("component") in ["RDP-видеоадаптер", "VIRTUAL_GPU"]
+                                    is_suppressed_hardware = is_usb or is_virtual_gpu
+                                    if not is_suppressed_hardware:
                                         if str(c["severity"]).lower() == "critical":
                                             device.health_status = HealthStatus.CRITICAL
                                         elif str(c["severity"]).lower() == "warning":
@@ -1477,17 +1481,17 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         device_id=device.id,
                                         component=c["component"],
                                         change_type=c["changeType"],
-                                        severity="Info" if is_usb else c["severity"],
+                                        severity="Info" if is_suppressed_hardware else c["severity"],
                                         previous_value=c["previousValue"],
                                         current_value=c["currentValue"],
-                                        diff_status="INFO" if is_usb else c["diffStatus"]
+                                        diff_status="INFO" if is_suppressed_hardware else c["diffStatus"]
                                     )
                                     db.add(hw_change)
                                     hardware_changes_db.insert(0, c)
 
                                     # Create persistent Alert
-                                    cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else "HARDWARE_MISMATCH"
-                                    cur_category = "Security" if is_usb else "Hardware"
+                                    cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else ("VIRTUAL_GPU_CHANGED" if is_virtual_gpu else "HARDWARE_MISMATCH")
+                                    cur_category = "Security" if is_usb else ("Remote" if is_virtual_gpu else "Hardware")
 
                                     alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
                                     new_alert = AlertModel(
@@ -1495,8 +1499,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         device_id=device.id,
                                         alert_type=cur_alert_type,
                                         category=cur_category,
-                                        severity="Info" if is_usb else c["severity"],
-                                        state="Resolved" if is_usb else "Open",
+                                        severity="Info" if is_suppressed_hardware else c["severity"],
+                                        state="Resolved" if is_suppressed_hardware else "Open",
                                         description=alert_desc
                                     )
                                     db.add(new_alert)

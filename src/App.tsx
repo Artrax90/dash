@@ -4,7 +4,7 @@ import {
   Clock3, Command, Cpu, Database, Ellipsis, Filter, Gauge, Globe, HardDrive, Key, LayoutDashboard, ListFilter,
   LoaderCircle, LogOut, Menu, Monitor, Moon, MoreHorizontal, Network, Power, RefreshCw, Search, Send, Server,
   Settings, ShieldCheck, Sun, Tag, Terminal, UserRound, Users as UsersIcon, Wifi, X, Zap, Plus, Trash2, Play,
-  Edit3, Lock, Download, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
+  Edit3, Lock, Download, Upload, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
   Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb, Building, Layers, MapPin, FileSpreadsheet, Clock, BarChart2
 } from 'lucide-react';
 import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, systemApi, getActiveUserName, wsClient, notificationService } from '@/api';
@@ -769,13 +769,13 @@ function App() {
         const targetUsername = evt?.username?.trim().toLowerCase();
 
         if (myUsername && targetUsername && myUsername === targetUsername) {
-          // If my active token matches the one being superseded or is different from the newly issued token
-          if (myToken && evt.previousToken && myToken === evt.previousToken) {
+          // If my active token differs from the newly issued token, kick out immediately!
+          if (myToken && evt.newToken && myToken !== evt.newToken) {
             localStorage.removeItem('wm_user_session');
             localStorage.removeItem('wm_token');
             setCurrentUser(null);
             setToast({
-              message: '⚠️ Сессия завершена: выполнен вход в систему под этой учетной записью с другого компьютера или вкладки.',
+              message: '⚠️ Сессия завершена: выполнен вход в систему под этой учетной записью с другого компьютера.',
               type: 'error'
             });
           }
@@ -783,7 +783,7 @@ function App() {
       } catch {}
     });
 
-    // Periodic check (every 10s) to guarantee single session integrity even if WebSocket was temporarily disconnected
+    // Periodic check (every 5s) to guarantee single session integrity even if WebSocket was temporarily disconnected
     const sessionCheckInterval = setInterval(async () => {
       try {
         const myToken = localStorage.getItem('wm_token');
@@ -801,7 +801,7 @@ function App() {
           }
         }
       } catch {}
-    }, 10000);
+    }, 5000);
 
     return () => {
       window.removeEventListener('popstate', handlePopState);
@@ -7949,6 +7949,7 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
   const [hwCritical, setHwCritical] = useState(true);
   const [hwDisks, setHwDisks] = useState(true);
   const [hwUsb, setHwUsb] = useState(false);
+  const [hwVirtualGpu, setHwVirtualGpu] = useState(false);
   const [hwNetwork, setHwNetwork] = useState(true);
 
   const [powerWake, setPowerWake] = useState(true);
@@ -7982,6 +7983,7 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
         if (ev.hardwareChanges !== undefined) setHwCritical(ev.hardwareChanges);
         if (ev.hwDisks !== undefined) setHwDisks(ev.hwDisks);
         if (ev.usbStorage !== undefined) setHwUsb(ev.usbStorage);
+        if (ev.remoteDisplayAdapter !== undefined) setHwVirtualGpu(ev.remoteDisplayAdapter);
         if (ev.hwNetwork !== undefined) setHwNetwork(ev.hwNetwork);
 
         if (ev.morningWakeFailed !== undefined) setPowerWake(ev.morningWakeFailed);
@@ -8019,6 +8021,7 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
         hardwareChanges: hwCritical,
         hwDisks,
         usbStorage: hwUsb,
+        remoteDisplayAdapter: hwVirtualGpu,
         hwNetwork,
         morningWakeFailed: powerWake,
         eveningShutdownFailed: powerShutdown,
@@ -8190,6 +8193,16 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
                   <span className="maintenance-badge" style={{ margin: 0 }}>Внимание</span>
                 </div>
                 <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Оповещать о подключении/извлечении флешек. Отключите в проде для защиты от спама</span>
+              </div>
+            </label>
+            <label style={{ cursor: 'pointer', display: 'flex', gap: '10px', alignItems: 'flex-start', padding: '12px 21px', background: hwVirtualGpu ? 'rgba(235, 120, 50, 0.08)' : undefined }}>
+              <input type="checkbox" checked={hwVirtualGpu} onChange={(e) => setHwVirtualGpu(e.target.checked)} style={{ marginTop: '2px' }} />
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <strong style={{ display: 'block', fontSize: '11px', color: 'var(--ink)' }}>Виртуальные RDP видеоадаптеры</strong>
+                  <span className="maintenance-badge" style={{ margin: 0 }}>Внимание</span>
+                </div>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Оповещать о подключении Microsoft Remote Display Adapter. По умолчанию выключено для защиты от спама</span>
               </div>
             </label>
           </div>
@@ -13587,6 +13600,7 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
     criticalAlerts: true,
     hardwareChanges: true,
     usbStorage: false, // Default false to prevent flooding Telegram with flash drive insertions
+    remoteDisplayAdapter: false, // Default false to prevent false hardware alerts on RDP sessions
     morningWakeSummary: true,
     eveningShutdownSummary: true,
     powerAlerts: true,
@@ -13930,6 +13944,17 @@ function TelegramPage({ notify }: { notify: (message: string) => void }) {
                 <span style={{ fontSize: '10px', color: 'var(--muted)' }}>По умолчанию выключено. Включайте только для станций строгого контроля, чтобы обычные флешки не спамили в Telegram</span>
               </div>
               <Switch checked={eventsConfig.usbStorage} onChange={v => setEventsConfig(p => ({ ...p, usbStorage: v }))} />
+            </div>
+
+            <div className="setting-row" style={{ margin: 0, padding: '12px 14px', background: eventsConfig.remoteDisplayAdapter ? 'rgba(235, 120, 50, 0.08)' : 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+              <div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                  <strong>Виртуальные видеоадаптеры RDP</strong>
+                  <span className="maintenance-badge" style={{ margin: 0 }}>RDP</span>
+                </div>
+                <span style={{ fontSize: '10px', color: 'var(--muted)' }}>По умолчанию выключено. Предотвращает ложные алерты о замене видеокарты при подключении по RDP (Microsoft Remote Display Adapter)</span>
+              </div>
+              <Switch checked={eventsConfig.remoteDisplayAdapter} onChange={v => setEventsConfig(p => ({ ...p, remoteDisplayAdapter: v }))} />
             </div>
 
             <div className="setting-row" style={{ margin: 0, padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
@@ -16366,7 +16391,7 @@ function SettingsPage({
   notify: (message: string) => void;
 }) {
   const { lang, setLang, t } = useLanguage();
-  const [activeTab, setActiveTab] = useState<'general' | 'alerts' | 'integrations' | 'security' | 'storage'>('general');
+  const [activeTab, setActiveTab] = useState<'general' | 'storage'>('general');
 
   const [currentWorkspaceName, setCurrentWorkspaceName] = useState(workspaceName);
   const [timezone, setTimezone] = useState(() => {
@@ -16379,21 +16404,6 @@ function SettingsPage({
   const [realtimeEvents, setRealtimeEvents] = useState(() => {
     try { return localStorage.getItem('wm_realtime_events') !== 'false'; } catch { return true; }
   });
-  const [ramAlert, setRamAlert] = useState(() => {
-    try { return localStorage.getItem('wm_ram_alert') !== 'false'; } catch { return true; }
-  });
-  const [hwAlert, setHwAlert] = useState(() => {
-    try { return localStorage.getItem('wm_hw_alert') !== 'false'; } catch { return true; }
-  });
-  const [syslogExport, setSyslogExport] = useState(() => {
-    try { return localStorage.getItem('wm_syslog_export') === 'true'; } catch { return false; }
-  });
-  const [twoFactor, setTwoFactor] = useState(() => {
-    try { return localStorage.getItem('wm_two_factor') === 'true'; } catch { return false; }
-  });
-  const [sessionTimeout, setSessionTimeout] = useState(() => {
-    try { return localStorage.getItem('wm_session_timeout') || '60'; } catch { return '60'; }
-  });
   const [historyRetention, setHistoryRetention] = useState(() => {
     try { return localStorage.getItem('wm_history_retention') || '30'; } catch { return '30'; }
   });
@@ -16404,6 +16414,11 @@ function SettingsPage({
   }, [workspaceName]);
 
   const [systemDbStatus, setSystemDbStatus] = useState<any>(null);
+  const [isCheckingDb, setIsCheckingDb] = useState(false);
+  const [isDownloadingBackup, setIsDownloadingBackup] = useState(false);
+  const [isRestoringBackup, setIsRestoringBackup] = useState(false);
+  const [isCleaningUp, setIsCleaningUp] = useState(false);
+  const restoreFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     agentsApi.getSettings().then(s => {
@@ -16414,30 +16429,103 @@ function SettingsPage({
     }).catch(() => {});
   }, []);
 
-
   const handleSaveSettings = () => {
     onSaveWorkspaceName(currentWorkspaceName);
     try {
       localStorage.setItem('wm_timezone', timezone);
       localStorage.setItem('wm_realtime_events', String(realtimeEvents));
-      localStorage.setItem('wm_ram_alert', String(ramAlert));
-      localStorage.setItem('wm_hw_alert', String(hwAlert));
-      localStorage.setItem('wm_syslog_export', String(syslogExport));
-      localStorage.setItem('wm_two_factor', String(twoFactor));
-      localStorage.setItem('wm_session_timeout', sessionTimeout);
       localStorage.setItem('wm_history_retention', historyRetention);
     } catch {}
     notify('Настройки сохранены: рабочее пространство и параметры обновлены!');
   };
 
-  const handleBackupDb = () => {
-    downloadTextFile(`workstation_manager_backup_${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify({
-      backupDate: new Date().toISOString(),
-      version: '1.4.2',
-      status: 'OK',
-      system: currentWorkspaceName
-    }, null, 2));
-    notify('Резервная копия конфигурации успешно выгружена!');
+  const handleCheckDb = async () => {
+    setIsCheckingDb(true);
+    try {
+      const res = await systemApi.getStatus();
+      if (res?.database) {
+        setSystemDbStatus(res.database);
+        notify(`Соединение с ${res.database.type?.toUpperCase() || 'БД'} активно и стабильно (задержка < 1ms)`);
+      } else {
+        notify('База данных активна');
+      }
+    } catch (err: any) {
+      notify(`Ошибка проверки БД: ${err?.message || 'Нет связи'}`);
+    } finally {
+      setIsCheckingDb(false);
+    }
+  };
+
+  const handleDownloadBackup = async () => {
+    setIsDownloadingBackup(true);
+    try {
+      await systemApi.downloadBackup();
+      notify('Полная резервная копия базы данных и конфигурации успешно сохранена!');
+    } catch (err: any) {
+      notify(`Ошибка скачивания бэкапа: ${err?.message || 'Сбой сервера'}`);
+    } finally {
+      setIsDownloadingBackup(false);
+    }
+  };
+
+  const handleRestoreFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    try {
+      const text = await file.text();
+      const parsed = JSON.parse(text);
+      if (!parsed.tables && !parsed.files) {
+        notify('Ошибка: Файл не содержит данных резервной копии Workstation Manager.');
+        return;
+      }
+      const tableCount = Object.keys(parsed.tables || {}).length;
+      const ts = parsed.timestamp ? new Date(parsed.timestamp).toLocaleString() : 'неизвестно';
+      const confirmed = window.confirm(
+        `Внимание! Восстановление из бэкапа от ${ts} перезапишет текущие таблицы базы данных (${tableCount} табл.) и системные файлы конфигурации.\n\nПродолжить восстановление?`
+      );
+      if (!confirmed) {
+        if (restoreFileInputRef.current) restoreFileInputRef.current.value = '';
+        return;
+      }
+      setIsRestoringBackup(true);
+      const res = await systemApi.restoreBackup(parsed);
+      if (res && res.status === 'ok') {
+        notify('База данных успешно восстановлена! Перезагрузка страницы через 1.5 сек...');
+        setTimeout(() => {
+          window.location.reload();
+        }, 1500);
+      } else {
+        notify(`Ошибка восстановления: ${res?.message || 'Неизвестный сбой'}`);
+      }
+    } catch (err: any) {
+      notify(`Ошибка обработки файла бэкапа: ${err?.message || 'Некорректный JSON'}`);
+    } finally {
+      setIsRestoringBackup(false);
+      if (restoreFileInputRef.current) restoreFileInputRef.current.value = '';
+    }
+  };
+
+  const handleCleanupOldData = async () => {
+    const days = parseInt(historyRetention, 10) || 30;
+    const confirmed = window.confirm(
+      `Вы действительно хотите безвозвратно удалить разрешенные инциденты (алерты) и записи журнала аудита старше ${days} дней?`
+    );
+    if (!confirmed) return;
+    setIsCleaningUp(true);
+    try {
+      const res = await systemApi.cleanupData(days);
+      if (res && res.status === 'ok') {
+        const dAlerts = res.deleted?.alerts ?? 0;
+        const dLogs = res.deleted?.audit_logs ?? 0;
+        notify(`Очистка выполнена: удалено устаревших алертов: ${dAlerts}, записей аудита: ${dLogs}`);
+      } else {
+        notify('Очистка выполнена.');
+      }
+    } catch (err: any) {
+      notify(`Ошибка очистки данных: ${err?.message || 'Сбой сервера'}`);
+    } finally {
+      setIsCleaningUp(false);
+    }
   };
 
   return (
@@ -16445,14 +16533,11 @@ function SettingsPage({
       <PageHeader
         eyebrow="SYSTEM"
         title="Настройки"
-        description="Параметры рабочего пространства, язык интерфейса и интеграции."
+        description="Параметры рабочего пространства, язык интерфейса и хранение данных."
       />
       <div className="settings-layout">
         <aside className="panel settings-nav">
           <button className={activeTab === 'general' ? 'active' : ''} onClick={() => setActiveTab('general')}><Settings size={16} /> Основные</button>
-          <button className={activeTab === 'alerts' ? 'active' : ''} onClick={() => setActiveTab('alerts')}><Bell size={16} /> Оповещения</button>
-          <button className={activeTab === 'integrations' ? 'active' : ''} onClick={() => setActiveTab('integrations')}><Network size={16} /> Интеграции</button>
-          <button className={activeTab === 'security' ? 'active' : ''} onClick={() => setActiveTab('security')}><ShieldCheck size={16} /> Безопасность</button>
           <button className={activeTab === 'storage' ? 'active' : ''} onClick={() => setActiveTab('storage')}><Database size={16} /> Хранение данных</button>
         </aside>
 
@@ -16532,69 +16617,19 @@ function SettingsPage({
             </>
           )}
 
-          {activeTab === 'alerts' && (
-            <>
-              <div className="panel-heading">
-                <div><h2>Глобальные настройки оповещений</h2><p>Политика рассылки экстренных уведомлений</p></div>
-              </div>
-              <div className="setting-row">
-                <div><strong>Оповещать при изъятии ОЗУ</strong><span>Мгновенный алерт в Telegram и веб</span></div>
-                <Switch checked={ramAlert} onChange={setRamAlert} />
-              </div>
-              <div className="setting-row">
-                <div><strong>Оповещать при замене дисков или GPU</strong><span>Фиксация расхождения с аппаратным эталоном</span></div>
-                <Switch checked={hwAlert} onChange={setHwAlert} />
-              </div>
-            </>
-          )}
-
-          {activeTab === 'integrations' && (
-            <>
-              <div className="panel-heading">
-                <div><h2>Интеграции и шлюзы</h2><p>Связь со сторонними сервисами мониторинга</p></div>
-              </div>
-              <div className="setting-row">
-                <div><strong>Telegram Gateway</strong><span>Подключение рабочего бота</span></div>
-                <span className="badge match">Connected</span>
-              </div>
-              <div className="setting-row">
-                <div><strong>Syslog / SIEM Forwarder</strong><span>Экспорт журналов аудита по RFC 5424</span></div>
-                <Switch checked={syslogExport} onChange={setSyslogExport} />
-              </div>
-            </>
-          )}
-
-          {activeTab === 'security' && (
-            <>
-              <div className="panel-heading">
-                <div><h2>Безопасность и сессии</h2><p>Аутентификация и защита данных</p></div>
-              </div>
-              <div className="setting-row">
-                <div><strong>Двухфакторная аутентификация (2FA)</strong><span>TOTP аутентификатор для администраторов</span></div>
-                <Switch checked={twoFactor} onChange={setTwoFactor} />
-              </div>
-              <div className="setting-row">
-                <div><strong>Таймаут сессии веб-панели</strong><span>Автоматический выход при неактивности</span></div>
-                <select value={sessionTimeout} onChange={e => setSessionTimeout(e.target.value)} className="text-input">
-                  <option value="30">30 минут</option>
-                  <option value="60">1 час</option>
-                  <option value="120">2 часа</option>
-                </select>
-              </div>
-            </>
-          )}
-
           {activeTab === 'storage' && (
             <>
               <div className="panel-heading">
-                <div><h2>Хранение данных и СУБД</h2><p>База данных PostgreSQL / SQLite и резервные копии</p></div>
+                <div><h2>Хранение данных и СУБД</h2><p>База данных PostgreSQL / SQLite, резервное копирование и управление архивом</p></div>
               </div>
+
+              {/* Row 1: Current Database Status & Connection Test */}
               <div className="setting-row">
                 <div>
                   <strong>Текущая база данных</strong>
                   <span>Используемая СУБД сервера и статус подключения</span>
                 </div>
-                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                   <span style={{
                     display: 'inline-flex',
                     alignItems: 'center',
@@ -16614,19 +16649,69 @@ function SettingsPage({
                       ? `${systemDbStatus.host || 'postgres'}:${systemDbStatus.port || 5432}/${systemDbStatus.database || 'workstation_manager'}`
                       : (systemDbStatus?.database || 'workstation_manager.db')}
                   </span>
+                  <Button
+                    onClick={handleCheckDb}
+                    disabled={isCheckingDb}
+                    icon={isCheckingDb ? <LoaderCircle size={14} className="spin" /> : <Zap size={14} />}
+                  >
+                    {isCheckingDb ? 'Проверка...' : 'Проверить подключение'}
+                  </Button>
                 </div>
               </div>
+
+              {/* Row 2: Full Database Backup & Restore */}
               <div className="setting-row">
-                <div><strong>Резервная копия базы данных</strong><span>Создать и скачать моментальный снимок конфигурации</span></div>
-                <Button icon={<Download size={14} />} onClick={handleBackupDb}>Скачать Backup</Button>
+                <div>
+                  <strong>Резервная копия базы данных</strong>
+                  <span>Полная выгрузка всех 14 таблиц базы данных и конфигурационных файлов (JSON)</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Button
+                    icon={isDownloadingBackup ? <LoaderCircle size={14} className="spin" /> : <Download size={14} />}
+                    onClick={handleDownloadBackup}
+                    disabled={isDownloadingBackup}
+                  >
+                    {isDownloadingBackup ? 'Формирование...' : 'Скачать Backup'}
+                  </Button>
+                  <Button
+                    icon={isRestoringBackup ? <LoaderCircle size={14} className="spin" /> : <Upload size={14} />}
+                    onClick={() => restoreFileInputRef.current?.click()}
+                    disabled={isRestoringBackup}
+                  >
+                    {isRestoringBackup ? 'Восстановление...' : 'Восстановить из файла'}
+                  </Button>
+                  <input
+                    type="file"
+                    ref={restoreFileInputRef}
+                    onChange={handleRestoreFile}
+                    accept=".json"
+                    style={{ display: 'none' }}
+                  />
+                </div>
               </div>
+
+              {/* Row 3: History retention & cleanup */}
               <div className="setting-row">
-                <div><strong>Хранение истории метрик</strong><span>Глубина архива телеметрии</span></div>
-                <select value={historyRetention} onChange={e => setHistoryRetention(e.target.value)} className="text-input">
-                  <option value="7">7 дней</option>
-                  <option value="30">30 дней</option>
-                  <option value="90">90 дней</option>
-                </select>
+                <div>
+                  <strong>Глубина хранения архива и очистка</strong>
+                  <span>Срок хранения разрешенных инцидентов и журналов аудита в базе данных</span>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <select value={historyRetention} onChange={e => setHistoryRetention(e.target.value)} className="text-input" style={{ width: '130px' }}>
+                    <option value="7">7 дней</option>
+                    <option value="30">30 дней</option>
+                    <option value="90">90 дней</option>
+                    <option value="180">180 дней</option>
+                    <option value="365">1 год</option>
+                  </select>
+                  <Button
+                    icon={isCleaningUp ? <LoaderCircle size={14} className="spin" /> : <Trash2 size={14} />}
+                    onClick={handleCleanupOldData}
+                    disabled={isCleaningUp}
+                  >
+                    {isCleaningUp ? 'Очистка...' : 'Очистить устаревшие записи'}
+                  </Button>
+                </div>
               </div>
             </>
           )}

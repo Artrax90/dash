@@ -12,8 +12,27 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 USERS_FILE = os.path.join(settings.DATA_DIR, "users.json")
 
-# In-memory store of single active session per username: username_lower -> {"token": token, "loginTime": ...}
-user_active_sessions: Dict[str, Dict[str, Any]] = {}
+SESSIONS_FILE = os.path.join(settings.DATA_DIR, "active_sessions.json")
+
+def _load_sessions() -> Dict[str, Dict[str, Any]]:
+    if os.path.exists(SESSIONS_FILE):
+        try:
+            with open(SESSIONS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def _save_sessions():
+    try:
+        os.makedirs(os.path.dirname(SESSIONS_FILE), exist_ok=True)
+        with open(SESSIONS_FILE, "w", encoding="utf-8") as f:
+            json.dump(user_active_sessions, f, indent=2, ensure_ascii=False)
+    except Exception:
+        pass
+
+# Persistent single active session per username: username_lower -> {"token": token, "loginTime": ...}
+user_active_sessions: Dict[str, Dict[str, Any]] = _load_sessions()
 
 def register_user_session(username: str, token: Optional[str] = None) -> str:
     """
@@ -29,6 +48,7 @@ def register_user_session(username: str, token: Optional[str] = None) -> str:
         "token": new_token,
         "loginTime": datetime.now(timezone.utc).isoformat()
     }
+    _save_sessions()
     return new_token
 
 def validate_user_session(username: str, token: str) -> bool:
@@ -51,6 +71,7 @@ def revoke_user_sessions(username: str):
     clean_username = (username or "").strip().lower()
     if clean_username in user_active_sessions:
         del user_active_sessions[clean_username]
+        _save_sessions()
 
 
 def is_superadmin_role(role: Optional[str]) -> bool:
@@ -467,20 +488,20 @@ async def login(payload: LoginPayload):
 
     # Check if there is an existing active session for this user
     old_session = user_active_sessions.get(clean_username)
+    old_token = old_session.get("token") if old_session else None
     session_token = register_user_session(clean_username)
 
-    if old_session and old_session.get("token") and old_session.get("token") != session_token:
-        # Notify WebSocket clients that the previous session on another PC is kicked out
-        try:
-            from backend.app.ws.manager import ws_manager
-            await ws_manager.broadcast_event("session.invalidated", {
-                "username": clean_username,
-                "previousToken": old_session.get("token"),
-                "newToken": session_token,
-                "reason": "Вход выполнен с другого устройства или вкладки"
-            })
-        except Exception:
-            pass
+    # Notify WebSocket clients so any previously open sessions on other computers are kicked out immediately
+    try:
+        from backend.app.ws.manager import ws_manager
+        await ws_manager.broadcast_event("session.invalidated", {
+            "username": clean_username,
+            "previousToken": old_token,
+            "newToken": session_token,
+            "reason": "Вход выполнен с другого устройства под этой же учетной записью"
+        })
+    except Exception:
+        pass
 
     return {
         "status": "success",

@@ -1373,7 +1373,7 @@ export const systemApi = {
     } catch {}
     return {
       status: 'online',
-      version: '1.0.0',
+      version: '2.9.6',
       database: {
         type: 'sqlite',
         dialect: 'sqlite',
@@ -1382,6 +1382,34 @@ export const systemApi = {
       },
     };
   },
+  downloadBackup: async (): Promise<any> => {
+    const res = await fetch(`${API_BASE}/system/backup`, {
+      headers: getAuthHeaders()
+    });
+    if (!res.ok) throw new Error('Ошибка создания резервной копии');
+    return await res.json();
+  },
+  restoreBackup: async (backupData: any): Promise<any> => {
+    const res = await fetch(`${API_BASE}/system/restore`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify(backupData)
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Ошибка восстановления базы данных' }));
+      throw new Error(err.detail || 'Ошибка восстановления базы данных');
+    }
+    return await res.json();
+  },
+  cleanupData: async (days: number): Promise<any> => {
+    const res = await fetch(`${API_BASE}/system/cleanup`, {
+      method: 'POST',
+      headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+      body: JSON.stringify({ days })
+    });
+    if (!res.ok) throw new Error('Ошибка очистки устаревших записей');
+    return await res.json();
+  }
 };
 
 export { wsClient } from '@/services/websocket';

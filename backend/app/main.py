@@ -2,7 +2,7 @@ import os
 import time
 from datetime import datetime
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Response
-from fastapi.responses import PlainTextResponse, FileResponse
+from fastapi.responses import PlainTextResponse, FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from backend.app.core.config import settings
 
@@ -88,15 +88,15 @@ def safe_migrate_columns_sync(connection):
 
     if "hardware_changes" in tables:
         try:
-            connection.execute(text("UPDATE hardware_changes SET diff_status = 'INFO', severity = 'Info' WHERE (component = 'USB-накопитель' OR id LIKE '%USB%') AND diff_status = 'MISMATCH'"))
+            connection.execute(text("UPDATE hardware_changes SET diff_status = 'INFO', severity = 'Info' WHERE (component = 'USB-накопитель' OR id LIKE '%USB%' OR description LIKE '%Remote Display Adapter%' OR current_value LIKE '%Remote Display Adapter%') AND diff_status = 'MISMATCH'"))
         except Exception as ex:
-            logger.debug(f"Hardware changes USB cleanup notice: {ex}")
+            logger.debug(f"Hardware changes USB/VGPU cleanup notice: {ex}")
 
     if "alerts" in tables:
         try:
-            connection.execute(text("UPDATE alerts SET state = 'Resolved', severity = 'Info' WHERE alert_type = 'USB_STORAGE_CHANGED' AND state = 'Open'"))
+            connection.execute(text("UPDATE alerts SET state = 'Resolved', severity = 'Info' WHERE (alert_type IN ('USB_STORAGE_CHANGED', 'VIRTUAL_GPU_CHANGED') OR description LIKE '%Remote Display Adapter%') AND state = 'Open'"))
         except Exception as ex:
-            logger.debug(f"Alerts USB cleanup notice: {ex}")
+            logger.debug(f"Alerts USB/VGPU cleanup notice: {ex}")
 
     if "devices" in tables and "alerts" in tables and "hardware_changes" in tables:
         try:
@@ -108,7 +108,7 @@ def safe_migrate_columns_sync(connection):
                       SELECT DISTINCT device_id FROM alerts WHERE state = 'Open' AND device_id IS NOT NULL
                   )
                   AND id NOT IN (
-                      SELECT DISTINCT device_id FROM hardware_changes WHERE diff_status = 'MISMATCH' AND (acknowledged = 0 OR acknowledged IS NULL) AND component != 'USB-накопитель' AND id NOT LIKE '%USB%' AND device_id IS NOT NULL
+                      SELECT DISTINCT device_id FROM hardware_changes WHERE diff_status = 'MISMATCH' AND (acknowledged = 0 OR acknowledged IS NULL) AND component NOT IN ('USB-накопитель', 'RDP-видеоадаптер') AND id NOT LIKE '%USB%' AND id NOT LIKE '%VGPU%' AND description NOT LIKE '%Remote Display Adapter%' AND device_id IS NOT NULL
                   )
             """))
         except Exception as ex:
@@ -208,6 +208,48 @@ async def get_system_status():
         "serverTime": get_local_now().strftime("%Y-%m-%d %H:%M:%S"),
         "database": db_info,
     }
+
+@app.get("/api/v1/system/backup")
+async def export_system_backup():
+    """Exports full JSON database and configuration backup."""
+    from backend.app.services.backup_service import backup_service
+    data = await backup_service.create_backup()
+    now_str = datetime.utcnow().strftime("%Y-%m-%d_%H%M")
+    filename = f"workstation_manager_backup_{now_str}.json"
+    return JSONResponse(
+        content=data,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )
+
+@app.post("/api/v1/system/restore")
+async def restore_system_backup(request: Request):
+    """Restores database tables and configs from uploaded backup."""
+    from backend.app.services.backup_service import backup_service
+    from fastapi import HTTPException
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Неверный JSON формат резервной копии")
+    try:
+        res = await backup_service.restore_backup(payload)
+        return res
+    except Exception as ex:
+        raise HTTPException(status_code=400, detail=f"Ошибка восстановления: {str(ex)}")
+
+@app.post("/api/v1/system/cleanup")
+async def cleanup_system_data(request: Request):
+    """Prunes resolved alerts and audit records older than specified retention days."""
+    from backend.app.services.backup_service import backup_service
+    days = 30
+    try:
+        body = await request.json()
+        if isinstance(body, dict) and "days" in body:
+            days = int(body["days"])
+    except Exception:
+        pass
+    return await backup_service.cleanup_old_records(days=days)
 
 # Auto-mount SPA frontend if built in dist/
 dist_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "dist"))

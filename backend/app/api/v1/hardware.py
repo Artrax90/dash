@@ -64,6 +64,8 @@ async def set_baseline(device_id: str, payload: Dict[str, Any], request: Request
         spec = copy.deepcopy(spec)
         if "storage" in spec and isinstance(spec["storage"], list):
             spec["storage"] = [d for d in spec["storage"] if not HardwareDiffService.is_usb_storage(d)]
+        if "gpus" in spec and isinstance(spec["gpus"], list):
+            spec["gpus"] = [g for g in spec["gpus"] if not HardwareDiffService.is_virtual_gpu(g)]
 
     bl_res = await db.execute(select(HardwareBaselineModel).where(HardwareBaselineModel.device_id == device_id))
     baseline = bl_res.scalar_one_or_none()
