@@ -5990,7 +5990,9 @@ function Monitoring({
   const [timeRange, setTimeRange] = useState<'1h' | '6h' | '24h' | '7d'>('24h');
   const [searchQuery, setSearchQuery] = useState('');
   const [stressOnly, setStressOnly] = useState(false);
-  const [sortBy, setSortBy] = useState<'stress' | 'cpu' | 'ram' | 'disk' | 'name'>('stress');
+  type MonitoringSortField = 'name' | 'group' | 'user' | 'cpu' | 'ram' | 'disk' | 'uptime';
+  const [sortField, setSortField] = useState<MonitoringSortField>('ram');
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const [metricTab, setMetricTab] = useState<'all' | 'cpu' | 'ram' | 'disk'>('all');
   const [refreshing, setRefreshing] = useState(false);
   const [telemetryHistory, setTelemetryHistory] = useState<any[]>([]);
@@ -6117,17 +6119,62 @@ function Monitoring({
     return matchesGroup && matchesSearch && matchesStress;
   });
 
-  // Sort devices
-  const sortedDevices = [...filteredDevices].sort((a, b) => {
-    if (sortBy === 'stress') {
-      const aStress = Math.max(a.cpu, a.ram, a.disk);
-      const bStress = Math.max(b.cpu, b.ram, b.disk);
-      return bStress - aStress;
+  const getDeviceUptimeValue = (d: Device): number => {
+    if (d.powerStatus !== 'On') return -1;
+    if (typeof d.uptimeSeconds === 'number' && d.uptimeSeconds > 0) return d.uptimeSeconds;
+    if (d.bootTimeIso) {
+      const t = new Date(d.bootTimeIso).getTime();
+      if (!isNaN(t) && t > 0) return Date.now() - t;
     }
-    if (sortBy === 'cpu') return b.cpu - a.cpu;
-    if (sortBy === 'ram') return b.ram - a.ram;
-    if (sortBy === 'disk') return b.disk - a.disk;
-    return a.name.localeCompare(b.name);
+    if (d.uptime) {
+      let totalSeconds = 0;
+      const dMatch = d.uptime.match(/(\d+)\s*д/i);
+      const hMatch = d.uptime.match(/(\d+)\s*ч/i);
+      const mMatch = d.uptime.match(/(\d+)\s*м/i);
+      if (dMatch) totalSeconds += parseInt(dMatch[1], 10) * 86400;
+      if (hMatch) totalSeconds += parseInt(hMatch[1], 10) * 3600;
+      if (mMatch) totalSeconds += parseInt(mMatch[1], 10) * 60;
+      if (totalSeconds > 0) return totalSeconds;
+    }
+    return 0;
+  };
+
+  const handleSort = (field: MonitoringSortField) => {
+    if (sortField === field) {
+      setSortOrder(prev => (prev === 'asc' ? 'desc' : 'asc'));
+    } else {
+      setSortField(field);
+      if (field === 'cpu' || field === 'ram' || field === 'disk' || field === 'uptime') {
+        setSortOrder('desc');
+      } else {
+        setSortOrder('asc');
+      }
+    }
+  };
+
+  // Sort devices by selected column and direction
+  const sortedDevices = [...filteredDevices].sort((a, b) => {
+    let cmp = 0;
+    if (sortField === 'name') {
+      cmp = a.name.localeCompare(b.name, 'ru');
+    } else if (sortField === 'group') {
+      const gA = getDeviceGroups(a)[0] || a.group || '';
+      const gB = getDeviceGroups(b)[0] || b.group || '';
+      cmp = gA.localeCompare(gB, 'ru');
+    } else if (sortField === 'user') {
+      const uA = (a.currentUser || '').trim() || (a.rdpSessions?.[0]?.username || '');
+      const uB = (b.currentUser || '').trim() || (b.rdpSessions?.[0]?.username || '');
+      cmp = uA.localeCompare(uB, 'ru');
+    } else if (sortField === 'cpu') {
+      cmp = (a.cpu || 0) - (b.cpu || 0);
+    } else if (sortField === 'ram') {
+      cmp = (a.ram || 0) - (b.ram || 0);
+    } else if (sortField === 'disk') {
+      cmp = (a.disk || 0) - (b.disk || 0);
+    } else if (sortField === 'uptime') {
+      cmp = getDeviceUptimeValue(a) - getDeviceUptimeValue(b);
+    }
+    return sortOrder === 'asc' ? cmp : -cmp;
   });
 
   const onlineDevices = devices.filter(d => d.powerStatus === 'On');
@@ -6848,46 +6895,84 @@ function Monitoring({
             >
               <AlertTriangle size={13} /> {stressOnly ? 'Показаны перегруженные' : 'Все станции'}
             </Button>
-
-            {/* Sort selection */}
-            <select
-              className="text-input"
-              value={sortBy}
-              onChange={e => setSortBy(e.target.value as any)}
-              style={{ height: '34px', minWidth: '150px' }}
-            >
-              <option value="stress">По уровню нагрузки</option>
-              <option value="cpu">По загрузке ЦП</option>
-              <option value="ram">По использованию ОЗУ</option>
-              <option value="disk">По заполнению диска</option>
-              <option value="name">По алфавиту (A-Z)</option>
-            </select>
           </div>
         </div>
 
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th>Рабочая станция</th>
-                <th>Группа / Локация</th>
-                <th>Пользователь / RDP</th>
-                <th style={{ width: '170px' }}>Загрузка ЦП</th>
-                <th style={{ width: '170px' }}>Использование ОЗУ</th>
-                <th style={{ width: '170px' }}>Системный диск C:</th>
-                <th>Uptime / Связь</th>
-                <th>Действие</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sortedDevices.length === 0 ? (
-                <tr>
-                  <td colSpan={8} style={{ textAlign: 'center', padding: '36px', color: 'var(--muted)' }}>
-                    {loading ? 'Загрузка телеметрии станций...' : 'Станций по выбранным фильтрам не найдено'}
-                  </td>
-                </tr>
-              ) : (
-                sortedDevices.map(d => {
+        {(() => {
+          const renderSortHeader = (title: string, field: MonitoringSortField, customStyle?: React.CSSProperties) => {
+            const isActive = sortField === field;
+            return (
+              <th
+                key={field}
+                style={{ cursor: 'pointer', userSelect: 'none', ...customStyle }}
+                onClick={() => handleSort(field)}
+                className={`sortable-th ${isActive ? 'active-sort' : ''}`}
+                title={`Сортировать по столбцу «${title}» (${isActive ? (sortOrder === 'asc' ? 'сейчас: по возрастанию ▲' : 'сейчас: по убыванию ▼') : 'нажмите для сортировки'})`}
+              >
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', width: '100%', justifyContent: 'space-between' }}>
+                  <span>{title}</span>
+                  <span
+                    className={`sort-arrows-btn ${isActive ? 'active' : ''}`}
+                    style={{
+                      display: 'inline-flex',
+                      flexDirection: 'column',
+                      gap: '1px',
+                      padding: '2px 4px',
+                      borderRadius: '4px',
+                      background: isActive ? 'var(--blue-soft)' : 'transparent',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <ArrowUp
+                      size={10}
+                      strokeWidth={isActive && sortOrder === 'asc' ? 3 : 2}
+                      style={{
+                        color: isActive && sortOrder === 'asc' ? 'var(--blue)' : 'var(--muted)',
+                        opacity: isActive && sortOrder === 'asc' ? 1 : 0.35,
+                        transform: isActive && sortOrder === 'asc' ? 'scale(1.2)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                    />
+                    <ArrowDown
+                      size={10}
+                      strokeWidth={isActive && sortOrder === 'desc' ? 3 : 2}
+                      style={{
+                        color: isActive && sortOrder === 'desc' ? 'var(--blue)' : 'var(--muted)',
+                        opacity: isActive && sortOrder === 'desc' ? 1 : 0.35,
+                        transform: isActive && sortOrder === 'desc' ? 'scale(1.2)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                    />
+                  </span>
+                </div>
+              </th>
+            );
+          };
+
+          return (
+            <div className="table-wrap">
+              <table>
+                <thead>
+                  <tr>
+                    {renderSortHeader('Рабочая станция', 'name')}
+                    {renderSortHeader('Группа / Локация', 'group')}
+                    {renderSortHeader('Пользователь / RDP', 'user')}
+                    {renderSortHeader('Загрузка ЦП', 'cpu', { width: '170px' })}
+                    {renderSortHeader('Использование ОЗУ', 'ram', { width: '170px' })}
+                    {renderSortHeader('Системный диск C:', 'disk', { width: '170px' })}
+                    {renderSortHeader('Uptime / Связь', 'uptime')}
+                    <th style={{ width: '90px', textAlign: 'center' }}>Действие</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {sortedDevices.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} style={{ textAlign: 'center', padding: '36px', color: 'var(--muted)' }}>
+                        {loading ? 'Загрузка телеметрии станций...' : 'Станций по выбранным фильтрам не найдено'}
+                      </td>
+                    </tr>
+                  ) : (
+                    sortedDevices.map(d => {
                   const devGroups = getDeviceGroups(d);
                   const isOnline = d.powerStatus === 'On';
                   const cpuClass = d.cpu >= 80 ? 'critical' : d.cpu >= 60 ? 'warning' : 'normal';
@@ -7051,7 +7136,9 @@ function Monitoring({
             </tbody>
           </table>
         </div>
-      </section>
+      );
+    })()}
+  </section>
 
       {/* EXPORT TO EXCEL MODAL */}
       {showExportModal && (

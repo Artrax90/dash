@@ -761,6 +761,34 @@
   margin-top: 2px;
 }
 
+/* Monitoring Table Column Header Sorting */
+.sortable-th {
+  cursor: pointer !important;
+  user-select: none;
+  transition: background-color 0.15s ease, color 0.15s ease;
+  position: relative;
+}
+.sortable-th:hover {
+  background-color: var(--surface-2);
+  color: var(--ink);
+}
+.sortable-th:hover .sort-arrows-btn:not(.active) svg {
+  opacity: 0.75 !important;
+}
+.sortable-th.active-sort {
+  color: var(--blue) !important;
+  font-weight: 600;
+}
+.sort-arrows-btn {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+}
+.sort-arrows-btn.active {
+  background: var(--blue-soft) !important;
+}
+
 /* Interactive Dropdowns & Popovers */
 .dropdown-menu {
   position: absolute;
