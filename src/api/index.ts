@@ -1409,7 +1409,7 @@ export const systemApi = {
     } catch {}
     return {
       status: 'online',
-      version: '2.9.6',
+      version: '2.9.7',
       database: {
         type: 'sqlite',
         dialect: 'sqlite',

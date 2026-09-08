@@ -153,7 +153,7 @@ async def test_agent_heartbeat_new_device_registration():
             }
             res = await agent_heartbeat(payload, req, db)
             assert res["status"] == "ok"
-            assert res["latestVersion"] == "2.9.6"
+            assert res["latestVersion"] == "2.9.7"
         finally:
             await db.execute(delete(Device).where(Device.id == test_dev_id))
             await db.commit()

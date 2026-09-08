@@ -413,7 +413,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.6"
+    agentVersion = "2.9.7"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -757,7 +757,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.6'
+`$AgentVersion = '2.9.7'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
@@ -776,9 +776,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.6") {
+function Update-AgentService([string]`$targetVer = "2.9.7") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.6"
+        `$targetVer = "2.9.7"
     }
     try {
         # 1. Report update in progress
@@ -1912,10 +1912,21 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                     }
 
                     `$pRamMb = 0
-                    if (`$p.WorkingSet64) { `$pRamMb = [int][math]::Round(`$p.WorkingSet64 / 1MB, 0) }
+                    `$wsVal = 0
+                    if (`$p.WorkingSet64) {
+                        `$pRamMb = [int][math]::Round(`$p.WorkingSet64 / 1MB, 0)
+                        `$wsVal = [int64]`$p.WorkingSet64
+                    }
                     `$pName = `$p.ProcessName
                     if (-not `$pName.EndsWith(".exe")) { `$pName = `$pName + ".exe" }
-                    `$pUser = if (`$p.UserName) { (`$p.UserName -split '\\')[-1] } else { if (`$p.SessionId -eq 0) { "SYSTEM" } else { if (`$user) { `$user } else { "User" } } }
+                    `$pUser = "SYSTEM"
+                    if (`$p.UserName) {
+                        `$pUser = (`$p.UserName -split '\\')[-1]
+                    } elseif (`$p.SessionId -ne 0 -and `$user) {
+                        `$pUser = `$user
+                    } elseif (`$p.SessionId -ne 0) {
+                        `$pUser = "User"
+                    }
 
                     `$calculatedProcs += [PSCustomObject]@{
                         pid = `$p.Id
@@ -1926,7 +1937,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                         diskIo = "0.1 MB/s"
                         user = `$pUser
                         status = "Running"
-                        workingSet = (if (`$p.WorkingSet64) { `$p.WorkingSet64 } else { 0 })
+                        workingSet = `$wsVal
                     }
                 }
 
@@ -1948,6 +1959,27 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                 }
             }
         } catch {}
+
+        if (-not `$procList -or `$procList.Count -eq 0) {
+            try {
+                `$fallbackProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 0 } | Sort-Object WorkingSet64 -Descending | Select-Object -First 50
+                foreach (`$fp in `$fallbackProcs) {
+                    `$fRam = 0
+                    if (`$fp.WorkingSet64) { `$fRam = [int][math]::Round(`$fp.WorkingSet64 / 1MB, 0) }
+                    `$fName = `$fp.ProcessName
+                    if (-not `$fName.EndsWith(".exe")) { `$fName = `$fName + ".exe" }
+                    `$procList += @{
+                        pid = `$fp.Id
+                        name = `$fName
+                        cpu = "0.0"
+                        ram = `$fRam
+                        diskIo = "0.1 MB/s"
+                        user = if (`$fp.SessionId -eq 0) { "SYSTEM" } else { if (`$user) { `$user } else { "User" } }
+                        status = "Running"
+                    }
+                }
+            } catch {}
+        }
 
         `$liveRdp = Get-LiveRdpSessions
 
@@ -2278,7 +2310,9 @@ try {
                                     if (`$subParts.Length -ge 4 -and `$subParts[3]) { `$remHostVal = `$subParts[3].Trim() }
                                     if (`$subParts.Length -ge 5 -and `$subParts[4]) { `$clientIpVal = `$subParts[4].Trim() }
                                 }
-                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal; processName = (if (`$subParts -and `$subParts.Length -ge 5 -and `$subParts[4]) { `$subParts[4].Trim() } else { "" }) }
+                                `$procNameVal = ""
+                                if (`$subParts -and `$subParts.Length -ge 5 -and `$subParts[4]) { `$procNameVal = `$subParts[4].Trim() }
+                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal; processName = `$procNameVal }
                                 Execute-PowerCommand `$cmdAction `$true `$cmdObj
                             }
                         }
@@ -2680,6 +2714,29 @@ function Get-InstallerLiveSessions() {
 }
 
 $initRdp = Get-InstallerLiveSessions
+$initProcs = @()
+try {
+    $rawProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Id -gt 0 }
+    if ($rawProcs) {
+        $sortedProcs = $rawProcs | Sort-Object WorkingSet64 -Descending
+        foreach ($p in $sortedProcs) {
+            $pRamMb = 0
+            if ($p.WorkingSet64) { $pRamMb = [int][math]::Round($p.WorkingSet64 / 1MB, 0) }
+            $pName = $p.ProcessName
+            if (-not $pName.EndsWith(".exe")) { $pName = $pName + ".exe" }
+            $initProcs += @{
+                pid = $p.Id
+                name = $pName
+                cpu = "0.0"
+                ram = $pRamMb
+                diskIo = "0.1 MB/s"
+                user = if ($p.SessionId -eq 0) { "SYSTEM" } else { if ($user) { $user } else { "User" } }
+                status = "Running"
+            }
+        }
+    }
+} catch {}
+
 $heartbeatPayload = @{
     deviceId = $deviceId
     hostname = $hostname
@@ -2697,10 +2754,12 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.6"
+    agentVersion = "2.9.7"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
+    processes = @($initProcs)
+    topProcesses = @($initProcs)
     drives = $initLogicalDisks
     metrics = @{
         cpu = $initCpu
