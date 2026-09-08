@@ -2234,6 +2234,12 @@ function Devices({
   const [tcIsProbing, setTcIsProbing] = useState(false);
   const [tcProbeResult, setTcProbeResult] = useState<{ success: boolean; message: string; online: boolean; suggestedCommand?: string } | null>(null);
   const [tcIsSaving, setTcIsSaving] = useState(false);
+  const [agentGroup, setAgentGroup] = useState<string>(() => {
+    if (hasRestrictedScope && allowedGroupsList.length > 0) return allowedGroupsList[0];
+    return (initialFilter?.group && initialFilter.group !== 'ALL') ? initialFilter.group : 'Office';
+  });
+  const [agentCustomGroup, setAgentCustomGroup] = useState('');
+  const [isCustomAgentGroup, setIsCustomAgentGroup] = useState(false);
 
   const handleProbeTc = async () => {
     if (!tcIp.trim()) {
@@ -3010,15 +3016,62 @@ function Devices({
               </div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
+                <div style={{ background: 'var(--surface-2)', padding: '12px 14px', borderRadius: '8px', border: '1px solid var(--line)' }}>
+                  <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>
+                    Целевая группа для нового ПК:
+                  </label>
+                  {!isCustomAgentGroup ? (
+                    <div style={{ display: 'flex', gap: '8px' }}>
+                      <select
+                        className="text-input"
+                        value={agentGroup}
+                        onChange={e => {
+                          if (e.target.value === '__NEW__') {
+                            setIsCustomAgentGroup(true);
+                            setAgentCustomGroup('');
+                          } else {
+                            setAgentGroup(e.target.value);
+                          }
+                        }}
+                        style={{ flex: 1, height: '36px', fontSize: '12px', padding: '0 8px' }}
+                      >
+                        <option value="">(Без группы / По умолчанию)</option>
+                        {existingFleetGroups.map(grp => (
+                          <option key={grp} value={grp}>{grp}</option>
+                        ))}
+                        {!hasRestrictedScope && <option value="__NEW__">+ Ввести другую группу...</option>}
+                      </select>
+                    </div>
+                  ) : (
+                    <div style={{ display: 'flex', gap: '6px' }}>
+                      <input
+                        className="text-input"
+                        placeholder="Название группы..."
+                        value={agentCustomGroup}
+                        onChange={e => setAgentCustomGroup(e.target.value)}
+                        autoFocus
+                        style={{ flex: 1 }}
+                      />
+                      <Button onClick={() => setIsCustomAgentGroup(false)} style={{ padding: '0 8px', fontSize: '11px' }}>
+                        К списку
+                      </Button>
+                    </div>
+                  )}
+                  <small style={{ color: 'var(--muted)', fontSize: '11px', display: 'block', marginTop: '6px' }}>
+                    При выполнении команды агент автоматически зарегистрирует компьютер в выбранную группу.
+                  </small>
+                </div>
+
                 {(() => {
                   const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
                   const serverHost = window.location.hostname || 'localhost';
                   const srvUrl = `http://${serverHost}:${effectivePort}`;
-                  const psCmd = defaultGroup
-                    ? `irm "${srvUrl}/install.ps1?group=${encodeURIComponent(defaultGroup)}&server_url=${encodeURIComponent(srvUrl)}" | iex`
+                  const effectiveGroup = isCustomAgentGroup ? agentCustomGroup.trim() : agentGroup.trim();
+                  const psCmd = effectiveGroup
+                    ? `irm "${srvUrl}/install.ps1?group=${encodeURIComponent(effectiveGroup)}&server_url=${encodeURIComponent(srvUrl)}" | iex`
                     : `irm "${srvUrl}/install.ps1?server_url=${encodeURIComponent(srvUrl)}" | iex`;
-                  const shCmd = defaultGroup
-                    ? `curl -fsSL "${srvUrl}/install.sh?group=${encodeURIComponent(defaultGroup)}&server_url=${encodeURIComponent(srvUrl)}" | sudo bash`
+                  const shCmd = effectiveGroup
+                    ? `curl -fsSL "${srvUrl}/install.sh?group=${encodeURIComponent(effectiveGroup)}&server_url=${encodeURIComponent(srvUrl)}" | sudo bash`
                     : `curl -fsSL "${srvUrl}/install.sh?server_url=${encodeURIComponent(srvUrl)}" | sudo bash`;
                   return (
                     <>
@@ -4318,42 +4371,52 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
 
       {showHealthModal && (
         <div className="modal-backdrop" onClick={() => setShowHealthModal(false)}>
-          <div className="modal-card" style={{ maxWidth: '640px', width: '92vw' }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-                <ShieldCheck size={20} style={{ color: device.healthStatus === 'Healthy' ? 'var(--green)' : (device.healthStatus === 'Warning' ? 'var(--yellow)' : 'var(--red)') }} />
-                Диагностика здоровья узла · {device.name}
-              </h3>
+          <div className="modal-card health-modal-card" style={{ maxWidth: '660px', width: '92vw' }} onClick={e => e.stopPropagation()}>
+            <div className="modal-header" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', paddingBottom: '14px', marginBottom: '16px', borderBottom: '1px solid var(--line)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                <div style={{
+                  width: '36px',
+                  height: '36px',
+                  borderRadius: '10px',
+                  display: 'grid',
+                  placeItems: 'center',
+                  background: device.healthStatus === 'Healthy' ? 'var(--green-soft)' : (device.healthStatus === 'Warning' ? 'var(--orange-soft)' : 'var(--red-soft)'),
+                  color: device.healthStatus === 'Healthy' ? 'var(--green)' : (device.healthStatus === 'Warning' ? 'var(--orange)' : 'var(--red)')
+                }}>
+                  <ShieldCheck size={20} />
+                </div>
+                <div>
+                  <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600, color: 'var(--ink)' }}>
+                    Диагностика здоровья узла · {device.name}
+                  </h3>
+                  <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>
+                    {device.ip || '0.0.0.0'} · ID: {device.id} · {device.group || 'Без группы'}
+                  </div>
+                </div>
+              </div>
               <button className="modal-close" onClick={() => setShowHealthModal(false)}><X size={16} /></button>
             </div>
-            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+
+            <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', maxHeight: '72vh', overflowY: 'auto' }}>
               {/* Overall status badge & summary */}
-              <div style={{
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-                padding: '12px 16px',
-                borderRadius: '10px',
-                background: device.healthStatus === 'Healthy' ? 'rgba(16, 185, 129, 0.08)' : (device.healthStatus === 'Warning' ? 'rgba(245, 158, 11, 0.08)' : 'rgba(239, 68, 68, 0.08)'),
-                border: `1px solid ${device.healthStatus === 'Healthy' ? 'rgba(16, 185, 129, 0.25)' : (device.healthStatus === 'Warning' ? 'rgba(245, 158, 11, 0.25)' : 'rgba(239, 68, 68, 0.25)')}`
-              }}>
+              <div className={`health-status-banner ${device.healthStatus === 'Healthy' ? 'healthy' : (device.healthStatus === 'Warning' ? 'warning' : 'critical')}`}>
                 <div>
-                  <div style={{ fontWeight: 600, fontSize: '13px' }}>Текущий статус здоровья</div>
+                  <div style={{ fontWeight: 600, fontSize: '13px', color: 'var(--ink)' }}>Текущий статус здоровья</div>
                   <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '2px' }}>
                     {device.healthStatus === 'Healthy' 
                       ? 'Все подсистемы работают в штатном режиме, расхождений и инцидентов нет.' 
                       : (device.healthStatus === 'Warning' ? 'Обнаружены предупреждения или отклонения в конфигурации/нагрузке.' : 'Зафиксировано критическое состояние узла.')}
                   </div>
                 </div>
-                <span className={`badge ${device.healthStatus === 'Healthy' ? 'match' : (device.healthStatus === 'Warning' ? 'warning' : 'mismatch')}`} style={{ fontSize: '12px', padding: '5px 12px' }}>
+                <span className={`badge ${device.healthStatus === 'Healthy' ? 'match' : (device.healthStatus === 'Warning' ? 'warning' : 'mismatch')}`} style={{ fontSize: '12px', padding: '5px 12px', flexShrink: 0 }}>
                   {device.healthStatus === 'Healthy' ? '🟢 В норме (100%)' : (device.healthStatus === 'Warning' ? '🟠 Внимание' : '🔴 Ошибка (Critical)')}
                 </span>
               </div>
 
               {/* 1. Hardware Baseline check */}
-              <div style={{ border: '1px solid var(--line)', borderRadius: '10px', padding: '14px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <div style={{ fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <div className="health-section-card">
+                <div className="health-section-header">
+                  <div className="health-section-title">
                     <Cpu size={16} style={{ color: 'var(--blue)' }} /> Аппаратный эталон (Baseline)
                   </div>
                   <span className={`badge ${activeMismatches.length === 0 ? 'match' : 'mismatch'}`}>
@@ -4361,18 +4424,18 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   </span>
                 </div>
                 {activeMismatches.length === 0 ? (
-                  <div style={{ fontSize: '12px', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Check size={15} style={{ color: 'var(--green)' }} />
-                    Аппаратная конфигурация полностью совпадает с утвержденным эталоном. USB-накопители исключены из эталона.
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--panel)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
+                    <Check size={16} style={{ color: 'var(--green)', flexShrink: 0 }} />
+                    <span>Аппаратная конфигурация полностью совпадает с утвержденным эталоном. USB-накопители исключены из эталона.</span>
                   </div>
                 ) : (
                   <div>
-                    <div style={{ fontSize: '12px', color: 'var(--red)', marginBottom: '8px' }}>
+                    <div style={{ fontSize: '12px', color: 'var(--red)', marginBottom: '8px', fontWeight: 500 }}>
                       Несовпадение оборудования с эталоном:
                     </div>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', marginBottom: '10px' }}>
                       {activeMismatches.map(m => (
-                        <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11px', background: 'var(--surface-2)', padding: '6px 10px', borderRadius: '6px' }}>
+                        <div key={m.id} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', fontSize: '11.5px', background: 'var(--panel)', padding: '8px 12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
                           <span><strong>{m.component}</strong> ({m.changeType})</span>
                           <span className="mono">{m.previousValue || '—'} → <strong style={{ color: 'var(--red)' }}>{m.currentValue || '—'}</strong></span>
                         </div>
@@ -4391,9 +4454,9 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
               </div>
 
               {/* 2. Active Alerts check */}
-              <div style={{ border: '1px solid var(--line)', borderRadius: '10px', padding: '14px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <div style={{ fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <div className="health-section-card">
+                <div className="health-section-header">
+                  <div className="health-section-title">
                     <AlertTriangle size={16} style={{ color: deviceAlerts.length > 0 ? 'var(--yellow)' : 'var(--green)' }} /> 
                     Инциденты и оповещения (Alerts)
                   </div>
@@ -4402,20 +4465,20 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   </span>
                 </div>
                 {deviceAlerts.length === 0 ? (
-                  <div style={{ fontSize: '12px', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: '6px' }}>
-                    <Check size={15} style={{ color: 'var(--green)' }} />
-                    Нет незакрытых инцидентов для данной рабочей станции.
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', display: 'flex', alignItems: 'center', gap: '8px', background: 'var(--panel)', padding: '10px 12px', borderRadius: '8px', border: '1px solid var(--line)' }}>
+                    <Check size={16} style={{ color: 'var(--green)', flexShrink: 0 }} />
+                    <span>Нет незакрытых инцидентов для данной рабочей станции.</span>
                   </div>
                 ) : (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: '8px' }}>
                     {deviceAlerts.map(a => (
-                      <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 10px', background: 'var(--surface-2)', borderRadius: '6px', fontSize: '12px' }}>
+                      <div key={a.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 12px', background: 'var(--panel)', borderRadius: '8px', border: '1px solid var(--line)', fontSize: '12px' }}>
                         <div>
-                          <div><strong>{a.type}</strong>: {a.description}</div>
-                          <div style={{ fontSize: '11px', color: 'var(--muted)' }}>{a.time} · {a.severity}</div>
+                          <div><strong style={{ color: 'var(--ink)' }}>{a.type}</strong>: {a.description}</div>
+                          <div style={{ fontSize: '11px', color: 'var(--muted)', marginTop: '2px' }}>{a.time} · {a.severity}</div>
                         </div>
                         <Button 
-                          style={{ padding: '3px 8px', fontSize: '11px' }} 
+                          style={{ padding: '4px 10px', fontSize: '11px' }} 
                           icon={<Check size={12} />} 
                           onClick={async () => {
                             await alertsApi.resolve(a.id);
@@ -4432,31 +4495,55 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
               </div>
 
               {/* 3. Resources Utilization check */}
-              <div style={{ border: '1px solid var(--line)', borderRadius: '10px', padding: '14px' }}>
-                <div style={{ fontWeight: 600, fontSize: '13px', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '10px' }}>
-                  <Activity size={16} style={{ color: 'var(--blue)' }} /> Текущая нагрузка на ресурсы
+              <div className="health-section-card">
+                <div className="health-section-header">
+                  <div className="health-section-title">
+                    <Activity size={16} style={{ color: 'var(--blue)' }} /> Текущая нагрузка на ресурсы
+                  </div>
+                  <span style={{ fontSize: '11px', color: 'var(--muted)' }}>Порог предупреждения: 90%</span>
                 </div>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: '12px' }}>
-                  <div style={{ padding: '8px', background: 'var(--surface-2)', borderRadius: '8px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>Загрузка ЦП</div>
-                    <div style={{ fontSize: '18px', fontWeight: 700, color: (device.cpu || 0) >= 90 ? 'var(--red)' : 'var(--ink)' }}>{device.cpu || 0}%</div>
-                    <div style={{ fontSize: '10px', color: 'var(--muted)' }}>Порог: 90%</div>
+                <div className="health-metrics-grid">
+                  <div className="health-metric-tile">
+                    <div className="health-metric-label">Загрузка ЦП</div>
+                    <div className="health-metric-value" style={{ color: (device.cpu || 0) >= 90 ? 'var(--red)' : ((device.cpu || 0) >= 70 ? 'var(--orange)' : 'var(--ink)') }}>
+                      {device.cpu || 0}%
+                    </div>
+                    <div className="health-metric-bar">
+                      <div className="health-metric-bar-fill" style={{ width: `${Math.min(100, Math.max(2, device.cpu || 0))}%`, background: (device.cpu || 0) >= 90 ? 'var(--red)' : ((device.cpu || 0) >= 70 ? 'var(--orange)' : 'var(--blue)') }} />
+                    </div>
+                    <div className="health-metric-sub">
+                      {(device.cpu || 0) >= 90 ? '🔴 Перегрузка' : '🟢 В норме'}
+                    </div>
                   </div>
-                  <div style={{ padding: '8px', background: 'var(--surface-2)', borderRadius: '8px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>Память ОЗУ</div>
-                    <div style={{ fontSize: '18px', fontWeight: 700, color: (device.ram || 0) >= 90 ? 'var(--red)' : 'var(--ink)' }}>{device.ram || 0}%</div>
-                    <div style={{ fontSize: '10px', color: 'var(--muted)' }}>Порог: 90%</div>
+                  <div className="health-metric-tile">
+                    <div className="health-metric-label">Память ОЗУ</div>
+                    <div className="health-metric-value" style={{ color: (device.ram || 0) >= 90 ? 'var(--red)' : ((device.ram || 0) >= 70 ? 'var(--orange)' : 'var(--ink)') }}>
+                      {device.ram || 0}%
+                    </div>
+                    <div className="health-metric-bar">
+                      <div className="health-metric-bar-fill" style={{ width: `${Math.min(100, Math.max(2, device.ram || 0))}%`, background: (device.ram || 0) >= 90 ? 'var(--red)' : ((device.ram || 0) >= 70 ? 'var(--orange)' : 'var(--blue)') }} />
+                    </div>
+                    <div className="health-metric-sub">
+                      {(device.ram || 0) >= 90 ? '🔴 Перегрузка' : '🟢 В норме'}
+                    </div>
                   </div>
-                  <div style={{ padding: '8px', background: 'var(--surface-2)', borderRadius: '8px', textAlign: 'center' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--muted)' }}>Диск C:</div>
-                    <div style={{ fontSize: '18px', fontWeight: 700, color: (device.disk || 0) >= 90 ? 'var(--red)' : 'var(--ink)' }}>{device.disk || 0}%</div>
-                    <div style={{ fontSize: '10px', color: 'var(--muted)' }}>Порог: 90%</div>
+                  <div className="health-metric-tile">
+                    <div className="health-metric-label">Диск C:</div>
+                    <div className="health-metric-value" style={{ color: (device.disk || 0) >= 90 ? 'var(--red)' : ((device.disk || 0) >= 70 ? 'var(--orange)' : 'var(--ink)') }}>
+                      {device.disk || 0}%
+                    </div>
+                    <div className="health-metric-bar">
+                      <div className="health-metric-bar-fill" style={{ width: `${Math.min(100, Math.max(2, device.disk || 0))}%`, background: (device.disk || 0) >= 90 ? 'var(--red)' : ((device.disk || 0) >= 70 ? 'var(--orange)' : 'var(--blue)') }} />
+                    </div>
+                    <div className="health-metric-sub">
+                      {(device.disk || 0) >= 90 ? '🔴 Мало места' : '🟢 В норме'}
+                    </div>
                   </div>
                 </div>
               </div>
             </div>
 
-            <div className="modal-actions" style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+            <div className="modal-actions" style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid var(--line)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
               <div>
                 {device.healthStatus !== 'Healthy' && (
                   <Button

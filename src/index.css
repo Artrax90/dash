@@ -3,8 +3,8 @@
 @tailwind components;
 @tailwind utilities;
 
-:root { font-family: 'DM Sans', sans-serif; color: #172230; background: #f4f7fb; font-synthesis: none; --ink:#172230; --muted:#718096; --line:#e4eaf1; --panel:#fff; --blue:#4278dc; --blue-soft:#edf3ff; --green:#27a879; --green-soft:#e8f8f1; --orange:#d88a32; --orange-soft:#fff4e5; --red:#d95b5b; --red-soft:#fff0f0; --sidebar:#111c2b; }
-* { box-sizing: border-box; } body { margin: 0; min-width: 320px; } button, input, select { font: inherit; } button { cursor: pointer; } .app { min-height:100vh; background:#f4f7fb; color:var(--ink); display:flex; } .app.dark { --ink:#e9eef6; --muted:#9aa9bc; --line:#29384b; --panel:#192635; --blue-soft:#22385a; --green-soft:#173e35; --orange-soft:#49371f; --red-soft:#432c31; background:#111b28; } /* ====================================================
+:root { font-family: 'DM Sans', sans-serif; color: #172230; background: #f4f7fb; font-synthesis: none; --ink:#172230; --muted:#718096; --line:#e4eaf1; --panel:#fff; --surface:#f8fafc; --surface-2:#f1f5f9; --blue:#4278dc; --blue-soft:#edf3ff; --green:#27a879; --green-soft:#e8f8f1; --orange:#d88a32; --orange-soft:#fff4e5; --red:#d95b5b; --red-soft:#fff0f0; --sidebar:#111c2b; }
+* { box-sizing: border-box; } body { margin: 0; min-width: 320px; } button, input, select { font: inherit; } button { cursor: pointer; } .app { min-height:100vh; background:#f4f7fb; color:var(--ink); display:flex; } .app.dark { --ink:#e9eef6; --muted:#9aa9bc; --line:#29384b; --panel:#192635; --surface:#1e2c3d; --surface-2:#24354a; --blue-soft:#22385a; --green-soft:#173e35; --orange-soft:#49371f; --red-soft:#432c31; background:#111b28; } /* ====================================================
    MODERN PREMIUM SIDEBAR DESIGN SYSTEM
 ==================================================== */
 .sidebar {
@@ -579,12 +579,12 @@
 .modal-backdrop {
   position: fixed;
   inset: 0;
-  background: rgba(15, 23, 36, 0.62);
-  backdrop-filter: blur(5px);
-  -webkit-backdrop-filter: blur(5px);
+  background: rgba(15, 23, 36, 0.72);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
   display: grid;
   place-items: center;
-  z-index: 90;
+  z-index: 999;
   animation: modalBackdropFadeIn 0.24s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
@@ -597,6 +597,168 @@
   box-shadow: 0 24px 60px rgba(0, 0, 0, 0.3);
   animation: modalContentPopIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   will-change: transform, opacity;
+}
+
+/* Universal Opaque Modal Card */
+.modal-card {
+  background: var(--panel) !important;
+  color: var(--ink);
+  width: min(640px, calc(100% - 32px));
+  border-radius: 14px;
+  border: 1px solid var(--line);
+  padding: 24px 26px;
+  box-shadow: 0 28px 70px rgba(0, 0, 0, 0.4), 0 0 0 1px rgba(255, 255, 255, 0.05);
+  animation: modalContentPopIn 0.28s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+  will-change: transform, opacity;
+  position: relative;
+  z-index: 1000;
+  box-sizing: border-box;
+}
+
+.modal-card .modal-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.modal-card .modal-header h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.modal-card .modal-close {
+  background: transparent;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.15s ease;
+}
+
+.modal-card .modal-close:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+/* Dedicated Health Diagnostics Modal Styles */
+.health-modal-card {
+  max-width: 660px;
+  width: min(660px, calc(100% - 32px));
+  background: var(--panel) !important;
+}
+
+.health-status-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 18px;
+  border-radius: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.health-status-banner.healthy {
+  background: rgba(16, 185, 129, 0.09);
+  border-color: rgba(16, 185, 129, 0.28);
+}
+
+.health-status-banner.warning {
+  background: rgba(245, 158, 11, 0.10);
+  border-color: rgba(245, 158, 11, 0.28);
+}
+
+.health-status-banner.critical {
+  background: rgba(239, 68, 68, 0.10);
+  border-color: rgba(239, 68, 68, 0.28);
+}
+
+.health-section-card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.02);
+}
+
+.health-section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+.health-section-title {
+  font-weight: 600;
+  font-size: 13px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--ink);
+}
+
+.health-metrics-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 12px;
+}
+
+.health-metric-tile {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 14px;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.03);
+}
+
+.health-metric-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.health-metric-value {
+  font-size: 24px;
+  font-weight: 700;
+  font-family: 'DM Mono', monospace;
+  line-height: 1.15;
+}
+
+.health-metric-bar {
+  width: 100%;
+  height: 6px;
+  border-radius: 3px;
+  background: var(--line);
+  overflow: hidden;
+  margin-top: 4px;
+}
+
+.health-metric-bar-fill {
+  height: 100%;
+  border-radius: 3px;
+  transition: width 0.3s ease;
+}
+
+.health-metric-sub {
+  font-size: 10.5px;
+  color: var(--muted);
+  margin-top: 2px;
 }
 
 /* Interactive Dropdowns & Popovers */
