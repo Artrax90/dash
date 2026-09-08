@@ -1303,7 +1303,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 device.os_version = hb_os_ver
 
             if "processes" in payload and isinstance(payload["processes"], list) and len(payload["processes"]) > 0:
-                from backend.app.api.v1.devices import device_live_processes
+                from backend.app.api.v1.devices import device_live_processes, save_device_processes
                 procs = []
                 for p in payload["processes"]:
                     if isinstance(p, dict):
@@ -1329,9 +1329,18 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         except Exception:
                             pass
 
-                for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None), device_id, (device_id.upper() if device_id else None)):
+                idx_keys = {
+                    device.id, (device.id.upper() if device.id else None), (device.id.lower() if device.id else None),
+                    device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None),
+                    device.name, (device.name.upper() if device.name else None), (device.name.lower() if device.name else None),
+                    device_id, (device_id.upper() if device_id else None), (device_id.lower() if device_id else None),
+                    payload.get("hostname"), (payload.get("hostname").upper() if payload.get("hostname") else None), (payload.get("hostname").lower() if payload.get("hostname") else None),
+                    payload.get("name"), (payload.get("name").upper() if payload.get("name") else None), (payload.get("name").lower() if payload.get("name") else None)
+                }
+                for k in idx_keys:
                     if k:
                         device_live_processes[k] = procs
+                save_device_processes(device_live_processes)
 
             # Live reported logical drives / partitions
             raw_drives = payload.get("drives") or payload.get("logicalDrives") or payload.get("partitions")
@@ -1713,14 +1722,30 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
     if device_id:
         keys_to_check.add(device_id)
         keys_to_check.add(device_id.upper())
+        keys_to_check.add(device_id.lower())
     if payload.get("hostname"):
         keys_to_check.add(payload.get("hostname"))
+        keys_to_check.add(payload.get("hostname").upper())
+        keys_to_check.add(payload.get("hostname").lower())
+    if payload.get("name"):
+        keys_to_check.add(payload.get("name"))
+        keys_to_check.add(payload.get("name").upper())
+        keys_to_check.add(payload.get("name").lower())
     if payload.get("mac"):
         keys_to_check.add(payload.get("mac"))
         keys_to_check.add(payload.get("mac").upper())
     if device:
         keys_to_check.add(device.id)
-        keys_to_check.add(device.hostname)
+        keys_to_check.add(device.id.upper())
+        keys_to_check.add(device.id.lower())
+        if device.hostname:
+            keys_to_check.add(device.hostname)
+            keys_to_check.add(device.hostname.upper())
+            keys_to_check.add(device.hostname.lower())
+        if device.name:
+            keys_to_check.add(device.name)
+            keys_to_check.add(device.name.upper())
+            keys_to_check.add(device.name.lower())
         if device.mac_address:
             keys_to_check.add(device.mac_address)
             keys_to_check.add(device.mac_address.upper())
@@ -1730,7 +1755,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             pending_cmds.extend(pending_device_commands[k])
             pending_device_commands[k].clear()
 
-    # Filter pending commands by TTL (commands expire after 60s) and fresh boot protection
+    # Filter pending commands by TTL (commands expire after 600s / 10m) and fresh boot protection
     now_ts = time.time()
     is_fresh_boot = False
     if uptime_val and ("Только что" in str(uptime_val) or "0м" in str(uptime_val) or "0ч 0м" in str(uptime_val) or "0ч 1м" in str(uptime_val)):
@@ -1747,8 +1772,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             except Exception:
                 c_time = now_ts
 
-        # 1. Expire stale commands older than 60 seconds
-        if (now_ts - c_time) > 60:
+        # 1. Expire stale commands older than 600 seconds (10 minutes)
+        if (now_ts - c_time) > 600:
             print(f"[Command Expired] Dropped stale command {c.get('action')} ({cid}) for {device_id} (age: {int(now_ts - c_time)}s)")
             continue
 

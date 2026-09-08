@@ -1,7 +1,7 @@
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Query, Response
 from fastapi.responses import Response, StreamingResponse
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import select, func, delete, or_, and_
@@ -58,10 +58,94 @@ def save_device_power_logs(logs: Dict[str, List[Dict[str, Any]]]):
 
 # Persistent storage of device-specific power and execution events
 device_power_logs: Dict[str, List[Dict[str, Any]]] = load_device_power_logs()
-# In-memory storage of live reported processes per device
-device_live_processes: Dict[str, List[Dict[str, Any]]] = {}
+
+DEVICE_PROCESSES_FILE = os.path.join(settings.DATA_DIR, "device_processes.json")
+
+def load_device_processes() -> Dict[str, List[Dict[str, Any]]]:
+    if os.path.exists(DEVICE_PROCESSES_FILE):
+        try:
+            with open(DEVICE_PROCESSES_FILE, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                if isinstance(data, dict):
+                    res = {}
+                    for k, v in data.items():
+                        if isinstance(v, list):
+                            res[k] = v
+                            res[k.upper()] = v
+                            res[k.lower()] = v
+                    return res
+        except Exception as e:
+            print(f"Error loading device processes: {e}")
+    return {}
+
+def save_device_processes(procs: Dict[str, List[Dict[str, Any]]]):
+    try:
+        os.makedirs(settings.DATA_DIR, exist_ok=True)
+        tmp_file = DEVICE_PROCESSES_FILE + ".tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(procs, f, ensure_ascii=False, indent=2)
+        if os.path.exists(DEVICE_PROCESSES_FILE):
+            os.replace(tmp_file, DEVICE_PROCESSES_FILE)
+        else:
+            os.rename(tmp_file, DEVICE_PROCESSES_FILE)
+    except Exception as e:
+        print(f"Error saving device processes: {e}")
+
+# Persistent storage of live reported processes per device
+device_live_processes: Dict[str, List[Dict[str, Any]]] = load_device_processes()
 # In-memory storage of live reported logical drives per device
 device_drives_cache: Dict[str, List[Dict[str, Any]]] = {}
+
+async def find_device_resilient(db: AsyncSession, identifier: str) -> Tuple[Optional[Device], Optional[Dict[str, Any]]]:
+    """
+    Resiliently find a device by ID, hostname, name, or IP (case-insensitively).
+    If not found in the current SQLAlchemy DB session, falls back to load_devices().
+    Returns: (device_orm_object_or_none, device_dict_or_none)
+    """
+    if not identifier:
+        return None, None
+    clean_id = str(identifier).strip()
+    clean_lower = clean_id.lower()
+
+    # 1. Search in SQLAlchemy ORM
+    try:
+        res = await db.execute(
+            select(Device).where(
+                or_(
+                    Device.id == clean_id,
+                    func.lower(Device.id) == clean_lower,
+                    Device.hostname == clean_id,
+                    func.lower(Device.hostname) == clean_lower,
+                    Device.name == clean_id,
+                    func.lower(Device.name) == clean_lower,
+                    Device.ip_address == clean_id
+                )
+            )
+        )
+        dev = res.scalars().first()
+        if dev:
+            return dev, None
+    except Exception as e:
+        print(f"[find_device_resilient ORM error] {e}")
+
+    # 2. Fallback to load_devices() cache (same mechanism Telegram uses)
+    try:
+        from backend.app.api.v1.telegram import load_devices
+        all_devs = load_devices()
+        for d in all_devs:
+            if not isinstance(d, dict):
+                continue
+            if (
+                str(d.get("id", "")).lower() == clean_lower or
+                str(d.get("name", "")).lower() == clean_lower or
+                str(d.get("hostname", "")).lower() == clean_lower or
+                str(d.get("ip", "")).strip() == clean_id
+            ):
+                return None, d
+    except Exception as e:
+        print(f"[find_device_resilient load_devices error] {e}")
+
+    return None, None
 # In-memory storage of fleet telemetry points
 fleet_telemetry_history: List[Dict[str, Any]] = []
 # In-memory storage of per-device telemetry points
@@ -1405,10 +1489,12 @@ async def get_device_telemetry_history(
 
 @router.get("/{device_id}")
 async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device).where(Device.id == device_id))
-    device = result.scalar_one_or_none()
-    if not device:
+    device, dev_dict = await find_device_resilient(db, device_id)
+    if not device and not dev_dict:
         raise HTTPException(status_code=404, detail="Device not found")
+    
+    if not device:
+        return dev_dict
     
     data = format_device_summary(device)
 
@@ -1513,76 +1599,46 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
 
     # Fetch live reported processes
     reported_procs = None
-    for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None)):
+    keys_to_search = [
+        device.id, device.id.upper(), device.id.lower(),
+        device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None),
+        device.name, (device.name.upper() if device.name else None), (device.name.lower() if device.name else None),
+        device_id, device_id.upper(), device_id.lower()
+    ]
+    for k in keys_to_search:
         if k and k in device_live_processes and device_live_processes[k]:
             reported_procs = device_live_processes[k]
             break
 
-    if reported_procs:
-        data["processes"] = reported_procs
-    elif device.power_status != PowerStatus.ON:
-        data["processes"] = []
-    else:
-        is_linux = "LINUX" in str(device.os_type).upper() or "UBUNTU" in str(device.os_type).upper() or "DEBIAN" in str(device.os_type).upper()
-        if is_linux:
-            data["processes"] = [
-                {"pid": 1, "name": "systemd", "cpu": "0.1", "ram": 28, "diskIo": "0.0 MB/s", "user": "root", "status": "Running"},
-                {"pid": 412, "name": "systemd-journald", "cpu": "0.2", "ram": 45, "diskIo": "0.1 MB/s", "user": "root", "status": "Running"},
-                {"pid": 620, "name": "sshd", "cpu": "0.1", "ram": 18, "diskIo": "0.0 MB/s", "user": "root", "status": "Running"},
-                {"pid": 890, "name": "workstation-manager-agent.service (python3)", "cpu": "0.4", "ram": 38, "diskIo": "0.1 MB/s", "user": "root", "status": "Running"},
-                {"pid": 1120, "name": "dockerd", "cpu": "0.8", "ram": 140, "diskIo": "0.3 MB/s", "user": "root", "status": "Running"},
-                {"pid": 1450, "name": "containerd", "cpu": "0.5", "ram": 85, "diskIo": "0.1 MB/s", "user": "root", "status": "Running"},
-                {"pid": 2040, "name": "bash", "cpu": "0.0", "ram": 12, "diskIo": "0.0 MB/s", "user": device.current_user or "root", "status": "Running"},
-                {"pid": 2210, "name": "kswapd0", "cpu": "0.0", "ram": 0, "diskIo": "0.0 MB/s", "user": "root", "status": "Running"}
-            ]
-        else:
-            data["processes"] = [
-                {"pid": 4, "name": "System / NT Kernel & System", "cpu": "0.5", "ram": 135, "diskIo": "0.2 MB/s", "user": "SYSTEM", "status": "Running"},
-                {"pid": 1842, "name": "WorkstationManagerAgent.exe", "cpu": "0.3", "ram": 44, "diskIo": "0.1 MB/s", "user": "SYSTEM", "status": "Running"},
-                {"pid": 2904, "name": "dwm.exe (Desktop Window Manager)", "cpu": "0.8", "ram": 190, "diskIo": "0.0 MB/s", "user": device.current_user or "LocalUser", "status": "Running"},
-                {"pid": 3110, "name": "explorer.exe (Windows Shell)", "cpu": "0.6", "ram": 220, "diskIo": "0.3 MB/s", "user": device.current_user or "LocalUser", "status": "Running"},
-                {"pid": 6102, "name": "svchost.exe (LocalSystemNetworkRestricted)", "cpu": "0.2", "ram": 98, "diskIo": "0.1 MB/s", "user": "NETWORK SERVICE", "status": "Running"}
-            ]
-
+    data["processes"] = reported_procs if reported_procs else []
     return data
 
 @router.get("/{device_id}/processes")
 async def get_device_processes(device_id: str, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
-    device = result.scalar_one_or_none()
-    if not device:
+    device, dev_dict = await find_device_resilient(db, device_id)
+    if not device and not dev_dict:
         raise HTTPException(status_code=404, detail="Device not found")
     
     reported_procs = None
-    for k in (device.id, device.id.upper(), device.id.lower(), device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None)):
+    keys_to_search = [device_id, device_id.upper(), device_id.lower()]
+    if device:
+        keys_to_search.extend([
+            device.id, device.id.upper(), device.id.lower(),
+            device.hostname, (device.hostname.upper() if device.hostname else None), (device.hostname.lower() if device.hostname else None),
+            device.name, (device.name.upper() if device.name else None), (device.name.lower() if device.name else None)
+        ])
+    if dev_dict:
+        for k in ["id", "hostname", "name"]:
+            val = dev_dict.get(k)
+            if val:
+                keys_to_search.extend([val, str(val).upper(), str(val).lower()])
+
+    for k in keys_to_search:
         if k and k in device_live_processes and device_live_processes[k]:
             reported_procs = device_live_processes[k]
             break
 
-    if reported_procs:
-        return reported_procs
-    elif device.power_status != PowerStatus.ON:
-        return []
-    
-    is_linux = "LINUX" in str(device.os_type).upper() or "UBUNTU" in str(device.os_type).upper() or "DEBIAN" in str(device.os_type).upper()
-    if is_linux:
-        return [
-            {"pid": 1, "name": "systemd", "cpu": "0.1", "ram": 28, "diskIo": "0.0 MB/s", "user": "root", "status": "Running"},
-            {"pid": 412, "name": "systemd-journald", "cpu": "0.2", "ram": 45, "diskIo": "0.1 MB/s", "user": "root", "status": "Running"},
-            {"pid": 620, "name": "sshd", "cpu": "0.1", "ram": 18, "diskIo": "0.0 MB/s", "user": "root", "status": "Running"},
-            {"pid": 890, "name": "workstation-manager-agent.service (python3)", "cpu": "0.4", "ram": 38, "diskIo": "0.1 MB/s", "user": "root", "status": "Running"},
-            {"pid": 1120, "name": "dockerd", "cpu": "0.8", "ram": 140, "diskIo": "0.3 MB/s", "user": "root", "status": "Running"},
-            {"pid": 1450, "name": "containerd", "cpu": "0.5", "ram": 85, "diskIo": "0.1 MB/s", "user": "root", "status": "Running"},
-            {"pid": 2040, "name": "bash", "cpu": "0.0", "ram": 12, "diskIo": "0.0 MB/s", "user": device.current_user or "root", "status": "Running"},
-            {"pid": 2210, "name": "kswapd0", "cpu": "0.0", "ram": 0, "diskIo": "0.0 MB/s", "user": "root", "status": "Running"}
-        ]
-    return [
-        {"pid": 4, "name": "System / NT Kernel & System", "cpu": "0.5", "ram": 135, "diskIo": "0.2 MB/s", "user": "SYSTEM", "status": "Running"},
-        {"pid": 1842, "name": "WorkstationManagerAgent.exe", "cpu": "0.3", "ram": 44, "diskIo": "0.1 MB/s", "user": "SYSTEM", "status": "Running"},
-        {"pid": 2904, "name": "dwm.exe (Desktop Window Manager)", "cpu": "0.8", "ram": 190, "diskIo": "0.0 MB/s", "user": device.current_user or "LocalUser", "status": "Running"},
-        {"pid": 3110, "name": "explorer.exe (Windows Shell)", "cpu": "0.6", "ram": 220, "diskIo": "0.3 MB/s", "user": device.current_user or "LocalUser", "status": "Running"},
-        {"pid": 6102, "name": "svchost.exe (LocalSystemNetworkRestricted)", "cpu": "0.2", "ram": 98, "diskIo": "0.1 MB/s", "user": "NETWORK SERVICE", "status": "Running"}
-    ]
+    return reported_procs if reported_procs else []
 
 @router.put("/{device_id}")
 async def update_device(device_id: str, payload: Dict[str, Any], request: Request, db: AsyncSession = Depends(get_db)):
@@ -1931,59 +1987,68 @@ async def wake_device(device_id: str, request: Request, db: AsyncSession = Depen
     initiator = urllib.parse.unquote(raw_user) if "%" in raw_user else raw_user
     source = body.get("source", "MANUAL")
 
-    result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
-    device = result.scalar_one_or_none()
-    if not device:
+    device, dev_dict = await find_device_resilient(db, device_id)
+    if not device and not dev_dict:
         # Fallback broadcast
         await wol_service.send_magic_packet("00:1B:44:11:3A:41")
         return {"status": "success", "message": f"WoL packet sent for {device_id}"}
+
+    dev_id = device.id if device else dev_dict.get("id", device_id)
+    dev_name = (device.name if device else dev_dict.get("name")) or dev_id
+    dev_host = (device.hostname if device else dev_dict.get("hostname")) or dev_name
+    dev_ip = device.ip_address if device else (dev_dict.get("ip") or dev_dict.get("ip_address"))
+    dev_mac = device.mac_address if device else (dev_dict.get("mac") or dev_dict.get("mac_address"))
+    dev_broadcast = device.broadcast_ip if device else dev_dict.get("broadcast_ip")
     
     # Collect all known physical MAC addresses (Ethernet, Wi-Fi, etc.)
     macs_to_wake = set()
-    if device.mac_address and device.mac_address != "00:00:00:00:00:00":
-        macs_to_wake.add(device.mac_address)
+    if dev_mac and dev_mac != "00:00:00:00:00:00":
+        macs_to_wake.add(dev_mac)
 
     # Check hardware specs
-    hw_res = await db.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == device.id))
-    hw_model = hw_res.scalar_one_or_none()
-    if hw_model and hw_model.raw_spec and isinstance(hw_model.raw_spec, dict):
-        nets = hw_model.raw_spec.get("network", [])
-        if isinstance(nets, list):
-            for n in nets:
-                if isinstance(n, dict):
-                    m = n.get("mac") or n.get("macAddress")
-                    if m and m != "00:00:00:00:00:00":
-                        macs_to_wake.add(m)
+    if device:
+        hw_res = await db.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == device.id))
+        hw_model = hw_res.scalar_one_or_none()
+        if hw_model and hw_model.raw_spec and isinstance(hw_model.raw_spec, dict):
+            nets = hw_model.raw_spec.get("network", [])
+            if isinstance(nets, list):
+                for n in nets:
+                    if isinstance(n, dict):
+                        m = n.get("mac") or n.get("macAddress")
+                        if m and m != "00:00:00:00:00:00":
+                            macs_to_wake.add(m)
 
     success = False
     for mac in macs_to_wake:
         res = await wol_service.send_magic_packet(
             mac_address=mac,
-            broadcast_ip=device.broadcast_ip,
-            ip_address=device.ip_address
+            broadcast_ip=dev_broadcast,
+            ip_address=dev_ip
         )
         if res:
             success = True
 
-    device.power_status = PowerStatus.BOOTING
+    if device:
+        device.power_status = PowerStatus.BOOTING
     from backend.app.api.v1.agents import clear_pending_power_commands
-    clear_pending_power_commands(device.id)
-    if device.hostname:
-        clear_pending_power_commands(device.hostname)
+    clear_pending_power_commands(dev_id)
+    if dev_host:
+        clear_pending_power_commands(dev_host)
 
     log_device_power_event(
-        device_id=device.id,
+        device_id=dev_id,
         action="WAKE",
-        details=f"Magic Packet отправлен на MAC {device.mac_address}",
+        details=f"Magic Packet отправлен на MAC {dev_mac}",
         status="Success" if success else "Failed",
         initiator=initiator,
         source=source,
-        device_name=device.name
+        device_name=dev_name
     )
-    await db.commit()
-    await ws_manager.broadcast_event("device.waking", {"deviceId": device.id, "deviceName": device.name, "mac": device.mac_address, "macs": list(macs_to_wake)})
-    await ws_manager.broadcast_event("device.updated", format_device_summary(device))
-    return {"status": "success" if success else "failed", "deviceId": device.id, "macsDispatched": list(macs_to_wake)}
+    if device:
+        await db.commit()
+        await ws_manager.broadcast_event("device.waking", {"deviceId": dev_id, "deviceName": dev_name, "mac": dev_mac, "macs": list(macs_to_wake)})
+        await ws_manager.broadcast_event("device.updated", format_device_summary(device))
+    return {"status": "success" if success else "failed", "deviceId": dev_id, "macsDispatched": list(macs_to_wake)}
 
 @router.get("/{device_id}/power-logs")
 async def get_device_power_logs(device_id: str, db: AsyncSession = Depends(get_db)):
@@ -2131,94 +2196,101 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
             detail="Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения и не может отправлять команды управления питанием."
         )
 
-    result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
-    device = result.scalar_one_or_none()
-    if not device:
+    device, dev_dict = await find_device_resilient(db, device_id)
+    if not device and not dev_dict:
         raise HTTPException(status_code=404, detail="Device not found")
+
+    dev_id = device.id if device else dev_dict.get("id", device_id)
+    dev_name = (device.name if device else dev_dict.get("name")) or dev_id
+    dev_host = (device.hostname if device else dev_dict.get("hostname")) or dev_name
+    dev_ip = device.ip_address if device else (dev_dict.get("ip") or dev_dict.get("ip_address"))
+    dev_mac = device.mac_address if device else (dev_dict.get("mac") or dev_dict.get("mac_address"))
+    dev_broadcast = device.broadcast_ip if device else dev_dict.get("broadcast_ip")
 
     from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
 
     # 1. Send direct LAN UDP signal for instant 0-latency execution strictly to this device
-    if device.ip_address:
+    if dev_ip:
         send_direct_lan_power_signal(
-            ip_address=device.ip_address,
+            ip_address=dev_ip,
             action=action,
-            device_id=device.id,
-            mac_address=device.mac_address,
-            hostname=device.hostname
+            device_id=dev_id,
+            mac_address=dev_mac,
+            hostname=dev_host or dev_name
         )
 
-    # 2. Queue command for heartbeat fallback
+    # 2. Queue command for heartbeat fallback across all device aliases
+    target_keys = {k for k in [dev_id, dev_host, dev_name, device_id] if k}
+
     if action == "WAKE":
         await wol_service.send_magic_packet(
-            mac_address=device.mac_address,
-            broadcast_ip=device.broadcast_ip,
-            ip_address=device.ip_address
+            mac_address=dev_mac,
+            broadcast_ip=dev_broadcast,
+            ip_address=dev_ip
         )
-        device.power_status = PowerStatus.BOOTING
+        if device:
+            device.power_status = PowerStatus.BOOTING
     elif action in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
-        queue_device_command(device.id, action, force=force, reason=reason)
-        if device.hostname and device.hostname != device.id:
-            queue_device_command(device.hostname, action, force=force, reason=reason)
-        device.power_status = PowerStatus.OFF
-        device.agent_status = AgentStatus.DISCONNECTED
+        for tk in target_keys:
+            queue_device_command(tk, action, force=force, reason=reason)
+        if device:
+            device.power_status = PowerStatus.OFF
+            device.agent_status = AgentStatus.DISCONNECTED
+            try:
+                from backend.app.services.alert_engine import alert_engine
+                await alert_engine.trigger_device_offline(
+                    session=db,
+                    device=device,
+                    reason=f"Удаленное выключение станции {dev_name} (инициатор: {initiator})"
+                )
+            except Exception:
+                pass
         try:
             from backend.app.services.scheduler_service import scheduler_service
-            scheduler_service.set_power_grace(device.id, 45.0)
-            if device.hostname:
-                scheduler_service.set_power_grace(device.hostname, 45.0)
-        except Exception:
-            pass
-        try:
-            from backend.app.services.alert_engine import alert_engine
-            await alert_engine.trigger_device_offline(
-                session=db,
-                device=device,
-                reason=f"Удаленное выключение станции {device.name or device.hostname or device.id} (инициатор: {initiator})"
-            )
+            for tk in target_keys:
+                scheduler_service.set_power_grace(tk, 45.0)
         except Exception:
             pass
     elif action in ["REBOOT", "RESTART"]:
-        queue_device_command(device.id, "REBOOT", force=force, reason=reason)
-        if device.hostname and device.hostname != device.id:
-            queue_device_command(device.hostname, "REBOOT", force=force, reason=reason)
-        device.power_status = PowerStatus.OFF
+        for tk in target_keys:
+            queue_device_command(tk, "REBOOT", force=force, reason=reason)
+        if device:
+            device.power_status = PowerStatus.OFF
         try:
             from backend.app.services.scheduler_service import scheduler_service
-            scheduler_service.set_power_grace(device.id, 45.0)
-            if device.hostname:
-                scheduler_service.set_power_grace(device.hostname, 45.0)
+            for tk in target_keys:
+                scheduler_service.set_power_grace(tk, 45.0)
         except Exception:
             pass
     elif action in ["SLEEP", "HIBERNATE", "LOGOFF"]:
-        queue_device_command(device.id, action, force=force, reason=reason)
-        if device.hostname and device.hostname != device.id:
-            queue_device_command(device.hostname, action, force=force, reason=reason)
+        for tk in target_keys:
+            queue_device_command(tk, action, force=force, reason=reason)
 
-    target_desc = f"на {device.ip_address}" if device.ip_address else f"на {device.name}"
+    target_desc = f"на {dev_ip}" if dev_ip else f"на {dev_name}"
     detail_msg = f"Команда отправлена по LAN {target_desc}"
     if action == "FORCE_SHUTDOWN":
         detail_msg = f"Аварийный сигнал питания отправлен {target_desc}"
 
     log_device_power_event(
-        device_id=device.id,
+        device_id=dev_id,
         action=action,
         details=detail_msg,
         status="Success",
         initiator=initiator,
         source=source,
-        device_name=device.name
+        device_name=dev_name
     )
 
-    await db.commit()
-    await ws_manager.broadcast_event("device.powerAction", {
-        "deviceId": device.id,
-        "action": action,
-        "status": "queued",
-        "deviceName": device.name
-    })
-    await ws_manager.broadcast_event("device.updated", format_device_summary(device))
-    return {"status": "success", "action": action, "deviceId": device.id, "deviceName": device.name}
+    if device:
+        await db.commit()
+        await ws_manager.broadcast_event("device.powerAction", {
+            "deviceId": dev_id,
+            "action": action,
+            "status": "queued",
+            "deviceName": dev_name
+        })
+        await ws_manager.broadcast_event("device.updated", format_device_summary(device))
+    return {"status": "success", "action": action, "deviceId": dev_id, "deviceName": dev_name}
 
 @router.post("/{device_id}/maintenance")
 async def toggle_maintenance(device_id: str, db: AsyncSession = Depends(get_db)):

@@ -2049,6 +2049,18 @@ function DeviceTable({
   const [sortField, setSortField] = useState<DeviceSortField | null>(null);
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('asc');
 
+  const [localPageSize, setLocalPageSize] = useState<number>(() => {
+    if (compact) return pageSize || 8;
+    const saved = localStorage.getItem('wm_devices_page_size');
+    if (saved) {
+      const parsed = parseInt(saved, 10);
+      if (parsed > 0) return parsed;
+    }
+    return pageSize || 20;
+  });
+
+  const effectivePageSize = compact ? (pageSize || 8) : localPageSize;
+
   const handleSort = (field: DeviceSortField) => {
     if (sortField === field) {
       setSortOrder(prev => (prev === 'asc' ? 'desc' : 'asc'));
@@ -2106,7 +2118,7 @@ function DeviceTable({
     });
   }, [devices, sortField, sortOrder]);
 
-  const totalPages = Math.max(1, Math.ceil(sortedDevices.length / pageSize));
+  const totalPages = Math.max(1, Math.ceil(sortedDevices.length / effectivePageSize));
 
   useEffect(() => {
     if (currentPage > totalPages) {
@@ -2114,8 +2126,8 @@ function DeviceTable({
     }
   }, [sortedDevices.length, totalPages, currentPage]);
 
-  const startIndex = (currentPage - 1) * pageSize;
-  const endIndex = Math.min(startIndex + pageSize, sortedDevices.length);
+  const startIndex = (currentPage - 1) * effectivePageSize;
+  const endIndex = Math.min(startIndex + effectivePageSize, sortedDevices.length);
   const pagedDevices = compact ? sortedDevices : sortedDevices.slice(startIndex, endIndex);
 
   const allSelected = pagedDevices.length > 0 && pagedDevices.every(d => selectedIds.includes(d.id));
@@ -2295,7 +2307,7 @@ function DeviceTable({
                           className="dropdown-item"
                           onClick={async () => {
                             setActiveMenuId(null);
-                            await devicesApi.powerAction(device.id, 'SHUTDOWN', false);
+                            await devicesApi.powerAction(device.id, 'SHUTDOWN', true);
                             onAction(`Команда выключения отправлена на ${device.name}`);
                           }}
                         >
@@ -2343,61 +2355,99 @@ function DeviceTable({
         </tbody>
       </table>
       {!compact && (
-        <div className="table-footer">
-          <span>{t('common.showing')} <strong>{devices.length === 0 ? 0 : startIndex + 1}–{endIndex}</strong> {t('common.ofTotal')} <strong>{devices.length}</strong> {t('common.devices')}</span>
-          <div className="pagination">
-            <button
-              disabled={currentPage <= 1}
-              onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
-            >
-              {t('common.previous')}
-            </button>
-            {totalPages <= 7 ? (
-              Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
-                <button
-                  key={p}
-                  className={p === currentPage ? 'current' : ''}
-                  onClick={() => setCurrentPage(p)}
-                >
-                  {p}
-                </button>
-              ))
-            ) : (
-              <>
-                <button
-                  className={currentPage === 1 ? 'current' : ''}
-                  onClick={() => setCurrentPage(1)}
-                >
-                  1
-                </button>
-                {currentPage > 3 && <span style={{ padding: '0 4px', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center' }}>...</span>}
-                {Array.from({ length: totalPages }, (_, i) => i + 1)
-                  .filter(p => p > 1 && p < totalPages && Math.abs(p - currentPage) <= 1)
-                  .map(p => (
+        <div className="table-footer" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: '12px' }}>
+          <div style={{ display: 'inline-flex', alignItems: 'center', gap: '14px', flexWrap: 'wrap' }}>
+            <span>{t('common.showing')} <strong>{devices.length === 0 ? 0 : startIndex + 1}–{endIndex}</strong> {t('common.ofTotal')} <strong>{devices.length}</strong> {t('common.devices')}</span>
+            <div style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '11px', color: 'var(--muted)' }}>
+              <span>На странице:</span>
+              <div style={{ display: 'inline-flex', gap: '3px', background: 'var(--blue-soft)', padding: '2px 4px', borderRadius: '6px', border: '1px solid var(--line)' }}>
+                {[10, 20, 50, 100, 999999].map(sz => {
+                  const isCur = effectivePageSize === sz;
+                  const label = sz >= 999999 ? 'Все' : String(sz);
+                  return (
                     <button
-                      key={p}
-                      className={p === currentPage ? 'current' : ''}
-                      onClick={() => setCurrentPage(p)}
+                      key={sz}
+                      type="button"
+                      onClick={() => {
+                        setLocalPageSize(sz);
+                        localStorage.setItem('wm_devices_page_size', String(sz));
+                        setCurrentPage(1);
+                      }}
+                      style={{
+                        padding: '2px 7px',
+                        fontSize: '11px',
+                        borderRadius: '4px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        fontWeight: isCur ? 700 : 500,
+                        background: isCur ? 'var(--blue)' : 'transparent',
+                        color: isCur ? '#ffffff' : 'var(--ink)',
+                        transition: 'all 0.15s ease'
+                      }}
+                      title={sz >= 999999 ? 'Показать все станции на одной странице' : `Показывать по ${sz} станций`}
                     >
-                      {p}
+                      {label}
                     </button>
-                  ))}
-                {currentPage < totalPages - 2 && <span style={{ padding: '0 4px', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center' }}>...</span>}
-                <button
-                  className={currentPage === totalPages ? 'current' : ''}
-                  onClick={() => setCurrentPage(totalPages)}
-                >
-                  {totalPages}
-                </button>
-              </>
-            )}
-            <button
-              disabled={currentPage >= totalPages}
-              onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
-            >
-              {t('common.next')}
-            </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
+          {totalPages > 1 && (
+            <div className="pagination">
+              <button
+                disabled={currentPage <= 1}
+                onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+              >
+                {t('common.previous')}
+              </button>
+              {totalPages <= 7 ? (
+                Array.from({ length: totalPages }, (_, i) => i + 1).map(p => (
+                  <button
+                    key={p}
+                    className={p === currentPage ? 'current' : ''}
+                    onClick={() => setCurrentPage(p)}
+                  >
+                    {p}
+                  </button>
+                ))
+              ) : (
+                <>
+                  <button
+                    className={currentPage === 1 ? 'current' : ''}
+                    onClick={() => setCurrentPage(1)}
+                  >
+                    1
+                  </button>
+                  {currentPage > 3 && <span style={{ padding: '0 4px', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center' }}>...</span>}
+                  {Array.from({ length: totalPages }, (_, i) => i + 1)
+                    .filter(p => p > 1 && p < totalPages && Math.abs(p - currentPage) <= 1)
+                    .map(p => (
+                      <button
+                        key={p}
+                        className={p === currentPage ? 'current' : ''}
+                        onClick={() => setCurrentPage(p)}
+                      >
+                        {p}
+                      </button>
+                    ))}
+                  {currentPage < totalPages - 2 && <span style={{ padding: '0 4px', color: 'var(--muted)', display: 'inline-flex', alignItems: 'center' }}>...</span>}
+                  <button
+                    className={currentPage === totalPages ? 'current' : ''}
+                    onClick={() => setCurrentPage(totalPages)}
+                  >
+                    {totalPages}
+                  </button>
+                </>
+              )}
+              <button
+                disabled={currentPage >= totalPages}
+                onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+              >
+                {t('common.next')}
+              </button>
+            </div>
+          )}
         </div>
       )}
     </div>
@@ -7968,7 +8018,7 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
           ...prev
         ]);
       } else if (action === 'Shutdown' || action === 'SHUTDOWN') {
-        await devicesApi.powerAction(device.id, 'SHUTDOWN', false, { user: currentAdminName, source: 'MANUAL' });
+        await devicesApi.powerAction(device.id, 'SHUTDOWN', true, { user: currentAdminName, source: 'MANUAL' });
         notify(`Команда штатного выключения отправлена на ${device.name}!`);
         setDevicePowerLogs(prev => [
           {
