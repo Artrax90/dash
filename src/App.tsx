@@ -17466,20 +17466,21 @@ function SettingsPage({
       {showResetDbModal && (
         <div
           className="modal-backdrop"
-          style={{ zIndex: 9999, background: 'rgba(0, 0, 0, 0.78)', backdropFilter: 'blur(8px)' }}
+          style={{ zIndex: 9999, background: 'rgba(0, 0, 0, 0.65)', backdropFilter: 'blur(4px)' }}
           onClick={() => !isResettingDb && setShowResetDbModal(false)}
         >
           <div
-            className="modal-card"
+            className="confirm-modal"
             style={{
               maxWidth: '520px',
               width: '92%',
-              background: 'var(--panel, #0f172a)',
-              border: '1px solid rgba(239, 68, 68, 0.4)',
-              boxShadow: '0 25px 60px -15px rgba(239, 68, 68, 0.25), 0 10px 30px rgba(0,0,0,0.8)',
+              background: 'var(--panel)',
+              border: '1px solid var(--line)',
+              boxShadow: '0 20px 50px rgba(0, 0, 0, 0.25)',
               borderRadius: '14px',
               padding: '24px',
-              color: 'var(--text, #f1f5f9)'
+              color: 'var(--ink)',
+              textAlign: 'left'
             }}
             onClick={e => e.stopPropagation()}
           >
@@ -17488,9 +17489,9 @@ function SettingsPage({
                 width: '44px',
                 height: '44px',
                 borderRadius: '10px',
-                background: 'rgba(239, 68, 68, 0.15)',
-                border: '1px solid rgba(239, 68, 68, 0.3)',
-                color: '#ef4444',
+                background: 'var(--red-soft)',
+                border: '1px solid rgba(217, 91, 91, 0.35)',
+                color: 'var(--red)',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
@@ -17499,28 +17500,28 @@ function SettingsPage({
                 <AlertTriangle size={24} />
               </div>
               <div>
-                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: '#f87171' }}>
+                <h3 style={{ margin: 0, fontSize: '18px', fontWeight: 700, color: 'var(--ink)' }}>
                   Полное обнуление базы данных
                 </h3>
-                <p style={{ margin: '4px 0 0 0', fontSize: '12.5px', color: 'var(--muted, #94a3b8)' }}>
+                <p style={{ margin: '4px 0 0 0', fontSize: '12.5px', color: 'var(--muted)' }}>
                   Это действие необратимо и приведет к полной очистке всех данных системы.
                 </p>
               </div>
             </div>
 
             <div style={{
-              background: 'rgba(239, 68, 68, 0.08)',
-              border: '1px solid rgba(239, 68, 68, 0.2)',
+              background: 'var(--red-soft)',
+              border: '1px solid rgba(217, 91, 91, 0.25)',
               borderRadius: '8px',
               padding: '12px 14px',
-              fontSize: '12.5px',
+              fontSize: '13px',
               lineHeight: 1.6,
               marginBottom: '18px',
-              color: '#fca5a5'
+              color: 'var(--ink)'
             }}>
-              <strong>Будут безвозвратно удалены:</strong>
-              <ul style={{ margin: '6px 0 0 0', paddingLeft: '18px' }}>
-                <li>Все рабочие станции, тонкие клиенты и телеметрия (0 ПК)</li>
+              <strong style={{ color: 'var(--red)', display: 'block', marginBottom: '4px' }}>Будут безвозвратно удалены:</strong>
+              <ul style={{ margin: '0', paddingLeft: '18px', color: 'var(--ink)' }}>
+                <li>Все рабочие станции, тонкие клиенты и телеметрия ({deviceCount} ПК)</li>
                 <li>Все группы, корпусы, этажи и кабинеты</li>
                 <li>Все инциденты, эталоны оборудования и история процессов</li>
                 <li>Расписания включения/выключения и токены агентов</li>
@@ -17534,7 +17535,9 @@ function SettingsPage({
                 gap: '10px',
                 fontSize: '13px',
                 cursor: 'pointer',
-                userSelect: 'none'
+                userSelect: 'none',
+                color: 'var(--ink)',
+                fontWeight: 500
               }}>
                 <input
                   type="checkbox"
@@ -17544,7 +17547,7 @@ function SettingsPage({
                 />
                 <span>Сохранить текущую учетную запись администратора</span>
               </label>
-              <div style={{ fontSize: '11px', color: 'var(--muted, #94a3b8)', marginTop: '4px', marginLeft: '26px' }}>
+              <div style={{ fontSize: '11.5px', color: 'var(--muted)', marginTop: '4px', marginLeft: '26px', lineHeight: 1.4 }}>
                 {keepAdminOnReset
                   ? 'Вы останетесь в системе, но весь парк ПК, группы и настройки очистятся.'
                   : '⚠️ Будут удалены все аккаунты, система перейдет в режим первого запуска (создание администратора заново).'}
@@ -17552,8 +17555,20 @@ function SettingsPage({
             </div>
 
             <div style={{ marginBottom: '20px' }}>
-              <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, marginBottom: '8px' }}>
-                Для подтверждения введите фразу: <span style={{ color: '#f87171', fontFamily: 'DM Mono, monospace', background: 'rgba(239,68,68,0.15)', padding: '2px 6px', borderRadius: '4px' }}>УДАЛИТЬ ВСЕ ДАННЫЕ</span>
+              <label style={{ display: 'block', fontSize: '12.5px', fontWeight: 600, marginBottom: '8px', color: 'var(--ink)' }}>
+                Для подтверждения введите фразу:{' '}
+                <span style={{
+                  color: 'var(--red)',
+                  fontFamily: 'DM Mono, monospace',
+                  fontWeight: 700,
+                  background: 'var(--red-soft)',
+                  border: '1px solid rgba(217, 91, 91, 0.2)',
+                  padding: '2px 8px',
+                  borderRadius: '4px',
+                  letterSpacing: '0.5px'
+                }}>
+                  УДАЛИТЬ ВСЕ ДАННЫЕ
+                </span>
               </label>
               <input
                 type="text"
@@ -17565,8 +17580,12 @@ function SettingsPage({
                 style={{
                   width: '100%',
                   fontFamily: 'DM Mono, monospace',
-                  borderColor: resetPhraseInput.trim().toUpperCase() === 'УДАЛИТЬ ВСЕ ДАННЫЕ' ? '#ef4444' : undefined,
-                  background: 'rgba(0, 0, 0, 0.25)'
+                  borderColor: resetPhraseInput.trim().toUpperCase() === 'УДАЛИТЬ ВСЕ ДАННЫЕ' ? 'var(--red)' : 'var(--line)',
+                  background: 'var(--surface-2)',
+                  color: 'var(--ink)',
+                  padding: '9px 12px',
+                  fontSize: '13px',
+                  borderRadius: '8px'
                 }}
               />
             </div>
@@ -17581,7 +17600,7 @@ function SettingsPage({
                 disabled={isResettingDb || resetPhraseInput.trim().toUpperCase() !== 'УДАЛИТЬ ВСЕ ДАННЫЕ'}
                 icon={isResettingDb ? <LoaderCircle size={14} className="spin" /> : <Trash2 size={14} />}
                 style={{
-                  background: resetPhraseInput.trim().toUpperCase() === 'УДАЛИТЬ ВСЕ ДАННЫЕ' ? '#dc2626' : undefined,
+                  background: resetPhraseInput.trim().toUpperCase() === 'УДАЛИТЬ ВСЕ ДАННЫЕ' ? 'var(--red)' : undefined,
                   color: '#ffffff',
                   fontWeight: 600
                 }}
