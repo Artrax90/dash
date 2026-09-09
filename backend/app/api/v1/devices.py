@@ -130,7 +130,7 @@ def is_local_machine(dev: Optional[Any] = None, dev_dict: Optional[Dict[str, Any
         pass
     return False
 
-def get_local_live_processes(limit: int = 150) -> List[Dict[str, Any]]:
+def get_local_live_processes(limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Sample real live running processes directly from the local host operating system."""
     procs = []
     try:
@@ -158,7 +158,9 @@ def get_local_live_processes(limit: int = 150) -> List[Dict[str, Any]]:
             except Exception:
                 continue
         procs.sort(key=lambda x: (float(x["cpu"]), x["ram"]), reverse=True)
-        return procs[:limit]
+        if limit is not None and limit > 0:
+            return procs[:limit]
+        return procs
     except Exception as e:
         print(f"Error collecting local live processes: {e}")
         return []

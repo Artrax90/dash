@@ -413,7 +413,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.7"
+    agentVersion = "2.9.8"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -757,7 +757,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.7'
+`$AgentVersion = '2.9.8'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
@@ -776,9 +776,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.7") {
+function Update-AgentService([string]`$targetVer = "2.9.8") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.7"
+        `$targetVer = "2.9.8"
     }
     try {
         # 1. Report update in progress
@@ -1962,7 +1962,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
 
         if (-not `$procList -or `$procList.Count -eq 0) {
             try {
-                `$fallbackProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 0 } | Sort-Object WorkingSet64 -Descending | Select-Object -First 50
+                `$fallbackProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { `$_.Id -gt 0 } | Sort-Object WorkingSet64 -Descending
                 foreach (`$fp in `$fallbackProcs) {
                     `$fRam = 0
                     if (`$fp.WorkingSet64) { `$fRam = [int][math]::Round(`$fp.WorkingSet64 / 1MB, 0) }
@@ -2754,7 +2754,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.7"
+    agentVersion = "2.9.8"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
