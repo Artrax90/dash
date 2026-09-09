@@ -322,5 +322,63 @@ async def test_report_inventory_auto_creates_device_if_missing():
             await db.execute(delete(Device).where(Device.id == test_dev_id))
             await db.commit()
 
+def test_powershell_endpoints_return_utf8_bom_and_valid_ast():
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+    import subprocess
+    import tempfile
+    import os
+
+    client = TestClient(app)
+
+    # 1. /install.ps1
+    res_inst = client.get("/install.ps1?token=wm_tok_test_123")
+    assert res_inst.status_code == 200
+    assert res_inst.content.startswith(b"\xef\xbb\xbf"), "Installer script must start with UTF-8 BOM"
+
+    with tempfile.NamedTemporaryFile(suffix=".ps1", delete=False) as f:
+        f.write(res_inst.content)
+        temp_inst = f.name
+    try:
+        check_ast = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+             f"$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile('{temp_inst}', [ref]$t, [ref]$e) | Out-Null; Write-Host $e.Count"],
+            capture_output=True, text=False
+        )
+        assert check_ast.returncode == 0
+        out_str = check_ast.stdout.decode("ascii", errors="ignore").strip()
+        assert out_str == "0", f"Installer AST had errors: {out_str}"
+    finally:
+        if os.path.exists(temp_inst):
+            os.remove(temp_inst)
+
+    # 2. /agent.ps1 (service script)
+    res_svc = client.get("/agent.ps1")
+    assert res_svc.status_code == 200
+    assert res_svc.content.startswith(b"\xef\xbb\xbf"), "Service script must start with UTF-8 BOM"
+
+    with tempfile.NamedTemporaryFile(suffix=".ps1", delete=False) as f:
+        f.write(res_svc.content)
+        temp_svc = f.name
+    try:
+        check_ast = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+             f"$t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseFile('{temp_svc}', [ref]$t, [ref]$e) | Out-Null; Write-Host $e.Count"],
+            capture_output=True, text=False
+        )
+        assert check_ast.returncode == 0
+        out_str = check_ast.stdout.decode("ascii", errors="ignore").strip()
+        assert out_str == "0", f"Service script AST had errors: {out_str}"
+    finally:
+        if os.path.exists(temp_svc):
+            os.remove(temp_svc)
+
+    # 3. /install.bat must include BOM injection guard
+    res_bat = client.get("/install.bat?token=wm_tok_test_123")
+    assert res_bat.status_code == 200
+    bat_text = res_bat.text
+    assert "0xEF" in bat_text and "0xBB" in bat_text and "0xBF" in bat_text
+
+
 
 
