@@ -278,4 +278,48 @@ async def test_windows_batch_installer_cyrillic_group():
     raw_h = res.raw_headers
     assert raw_h is not None
 
+@pytest.mark.anyio
+async def test_report_inventory_auto_creates_device_if_missing():
+    """Verify that report_inventory gracefully handles a device that is not yet in the DB (foreign key safety)."""
+    from backend.app.api.v1.agents import report_inventory
+    from backend.app.db.session import AsyncSessionLocal
+    from backend.app.models.device import Device
+    from backend.app.models.hardware import HardwareSpecModel
+    from sqlalchemy import delete, select
+    import uuid
+
+    test_dev_id = f"PC-INV-{uuid.uuid4().hex[:4].upper()}"
+    async with AsyncSessionLocal() as db:
+        try:
+            payload = {
+                "deviceId": test_dev_id,
+                "hostname": f"HOST-{test_dev_id}",
+                "ip": "172.16.44.188",
+                "hardwareSpec": {
+                    "cpu": {"model": "AMD Ryzen 5"},
+                    "ram": {"totalGb": 16}
+                }
+            }
+            res = await report_inventory(payload, db)
+            assert res["status"] == "received"
+            assert res["deviceId"] == test_dev_id
+
+            # Device must now exist in DB
+            dev = await db.get(Device, test_dev_id)
+            assert dev is not None
+            assert dev.id == test_dev_id
+
+            # Hardware spec must also be saved
+            spec_res = await db.execute(
+                select(HardwareSpecModel).where(HardwareSpecModel.device_id == test_dev_id)
+            )
+            spec = spec_res.scalar_one_or_none()
+            assert spec is not None
+            assert spec.raw_spec["ram"]["totalGb"] == 16
+        finally:
+            await db.execute(delete(HardwareSpecModel).where(HardwareSpecModel.device_id == test_dev_id))
+            await db.execute(delete(Device).where(Device.id == test_dev_id))
+            await db.commit()
+
+
 

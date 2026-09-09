@@ -572,13 +572,37 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
         )
     )
     dev = dev_res.scalar_one_or_none()
-    real_device_id = dev.id if dev else device_id
-    dev_name = dev.name or dev.hostname or real_device_id if dev else real_device_id
+    
+    # Foreign Key Safety: If device does not exist in DB yet, create it immediately
+    if not dev:
+        clean_name = payload.get("hostname") or device_id
+        clean_ip = payload.get("ip") or payload.get("ipAddress") or "127.0.0.1"
+        clean_mac = str(payload.get("mac") or "").replace("-", ":").upper() if payload.get("mac") else "00:00:00:00:00:00"
+        dev = Device(
+            id=device_id,
+            name=clean_name,
+            hostname=payload.get("hostname") or clean_name,
+            ip_address=clean_ip,
+            mac_address=clean_mac,
+            os_type=payload.get("osType") or "Windows",
+            os_version=payload.get("osVersion") or "Windows 10",
+            agent_version=payload.get("agentVersion") or settings.LATEST_AGENT_VERSION,
+            power_status=PowerStatus.ON,
+            agent_status=AgentStatus.CONNECTED,
+            health_status=HealthStatus.HEALTHY,
+            group_name=payload.get("group") or "Office",
+            last_seen=datetime.utcnow()
+        )
+        db.add(dev)
+        await db.commit()
+        await db.refresh(dev)
 
-    if dev:
-        dev.power_status = PowerStatus.ON
-        dev.agent_status = AgentStatus.CONNECTED
-        dev.last_seen = datetime.utcnow()
+    real_device_id = dev.id
+    dev_name = dev.name or dev.hostname or real_device_id
+
+    dev.power_status = PowerStatus.ON
+    dev.agent_status = AgentStatus.CONNECTED
+    dev.last_seen = datetime.utcnow()
 
     result = await db.execute(
         select(HardwareSpecModel).where(

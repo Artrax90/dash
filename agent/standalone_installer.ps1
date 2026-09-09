@@ -427,6 +427,11 @@ Write-Host ("      [OK] Станция успешно зарегистриров
 Write-Host "[4/7] Отправка полной аппаратной спецификации на сервер..." -ForegroundColor Yellow
 $hardwarePayload = @{
     deviceId = $deviceId
+    hostname = $hostname
+    ip = $ip
+    mac = $mac
+    group = $assignedGroup
+    agentVersion = "2.9.9"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -1679,6 +1684,9 @@ function Invoke-Inventory() {
         `$hw = Get-LiveHardwareSpec
         `$invPayload = @{
             deviceId = `$DeviceId
+            hostname = `$env:COMPUTERNAME
+            mac = `$DeviceMac
+            agentVersion = `$AgentVersion
             hardwareSpec = `$hw
         }
         `$json = `$invPayload | ConvertTo-Json -Depth 5 -Compress
