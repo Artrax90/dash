@@ -400,6 +400,19 @@ def get_windows_uninstaller_ps1(base_url: str = "") -> str:
         content = f.read()
     return content.replace("__SERVER_URL__", base_url)
 
+def make_safe_attachment_header(filename: str, fallback_ascii: str = "installer") -> str:
+    """
+    Format Content-Disposition safely conforming to RFC 6266 / RFC 5987.
+    Uses pure ASCII for the fallback 'filename=' (so Starlette's latin-1 header encoding never fails)
+    and RFC 5987 UTF-8 percent-encoded 'filename*=UTF-8\'\'...' for modern browsers to display Unicode/Cyrillic names.
+    """
+    import urllib.parse
+    ascii_clean = "".join(c if c.isascii() and (c.isalnum() or c in ".-_") else "_" for c in filename).strip("._")
+    if not ascii_clean:
+        ascii_clean = fallback_ascii
+    encoded_utf8 = urllib.parse.quote(filename, safe=".-_")
+    return f'attachment; filename="{ascii_clean}"; filename*=UTF-8\'\'{encoded_utf8}'
+
 @app.get("/install.bat", response_class=PlainTextResponse)
 @app.get("/install-agent.bat", response_class=PlainTextResponse)
 @app.get("/api/v1/install.bat", response_class=PlainTextResponse)
@@ -427,7 +440,6 @@ async def get_windows_batch_installer(request: Request, token: str = "", server_
     safe_group = "".join(c for c in group if c.isalnum() or c in ("-", "_", " ")).strip()
     group_suffix = f"-{safe_group}" if safe_group else ""
     filename = f"Install-WorkstationAgent{group_suffix}.bat"
-    encoded_fn = urllib.parse.quote(filename)
 
     bat_content = f"""@echo off
 setlocal
@@ -460,7 +472,7 @@ exit /b
 """.replace("\n", "\r\n")
 
     headers = {
-        "Content-Disposition": f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_fn}'
+        "Content-Disposition": make_safe_attachment_header(filename, fallback_ascii="Install-WorkstationAgent.bat")
     }
     return PlainTextResponse(bat_content, media_type="application/x-bat", headers=headers)
 
@@ -497,8 +509,7 @@ async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", 
         safe_group = "".join(c for c in group if c.isalnum() or c in ("-", "_", " ")).strip()
         group_suffix = f"-{safe_group}" if safe_group else ""
         filename = f"Install-Agent{group_suffix}.ps1"
-        encoded_fn = urllib.parse.quote(filename)
-        headers["Content-Disposition"] = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_fn}'
+        headers["Content-Disposition"] = make_safe_attachment_header(filename, fallback_ascii="Install-Agent.ps1")
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8", headers=headers)
 
 def get_windows_agent_service_ps1(base_url: str, device_id: str = "", mac: str = "") -> str:
@@ -653,8 +664,7 @@ async def get_linux_installer(request: Request, token: str = "", server_url: str
         safe_group = "".join(c for c in group if c.isalnum() or c in ("-", "_", " ")).strip()
         group_suffix = f"_{safe_group}" if safe_group else ""
         filename = f"install_agent{group_suffix}.sh"
-        encoded_fn = urllib.parse.quote(filename)
-        headers["Content-Disposition"] = f'attachment; filename="{filename}"; filename*=UTF-8\'\'{encoded_fn}'
+        headers["Content-Disposition"] = make_safe_attachment_header(filename, fallback_ascii="install_agent.sh")
 
     return PlainTextResponse(content, media_type="text/plain; charset=utf-8", headers=headers)
 

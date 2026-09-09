@@ -258,3 +258,24 @@ async def test_process_cpu_locale_comma_handling():
             await db.execute(delete(Device).where(Device.id == test_dev_id))
             await db.commit()
 
+@pytest.mark.anyio
+async def test_windows_batch_installer_cyrillic_group():
+    """Verify that downloading batch installer with Cyrillic characters in group name works without UnicodeEncodeError."""
+    from backend.app.main import get_windows_batch_installer
+    from starlette.requests import Request
+
+    scope = {'type': 'http', 'client': ('192.168.0.237', 54321), 'headers': []}
+    req = Request(scope)
+    res = await get_windows_batch_installer(
+        request=req,
+        token="wm_tok_df78dc4b7d494c84",
+        group="МНОК / 4 этаж / 446Т",
+        server_url="http://172.19.33.68:2301"
+    )
+    assert res.status_code == 200
+    assert "Content-Disposition" in res.headers
+    # Verify Starlette raw_headers latin-1 compatibility
+    raw_h = res.raw_headers
+    assert raw_h is not None
+
+
