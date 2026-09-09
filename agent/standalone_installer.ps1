@@ -413,7 +413,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.10"
+    agentVersion = "2.9.11"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -431,7 +431,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.10"
+    agentVersion = "2.9.11"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -493,7 +493,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.10'
+`$AgentVersion = '2.9.11'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
@@ -507,9 +507,9 @@ if (-not `$createdNew) {
 
 # Native Windows administration mode - dynamic compilation disabled
 
-function Update-AgentService([string]`$targetVer = "2.9.10") {
+function Update-AgentService([string]`$targetVer = "2.9.11") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.10"
+        `$targetVer = "2.9.11"
     }
     try {
         # 1. Report update in progress
@@ -541,10 +541,7 @@ function Update-AgentService([string]`$targetVer = "2.9.10") {
         `$servicePath = Join-Path '$InstallDir' "run_service.ps1"
         `$tempPath = Join-Path '$InstallDir' "run_service_update.ps1"
 
-        `$wc = New-Object System.Net.WebClient
-        `$wc.Encoding = [System.Text.Encoding]::UTF8
-        `$wc.DownloadFile(`$serviceUrl, `$tempPath)
-        `$wc.Dispose()
+        Invoke-WebRequest -Uri `$serviceUrl -Headers @{ "X-Agent-Version" = "`$AgentVersion" } -OutFile `$tempPath -UseBasicParsing -TimeoutSec 15
 
         if ((Test-Path `$tempPath) -and (Get-Item `$tempPath).Length -gt 1000) {
             # AST verification
@@ -561,12 +558,12 @@ function Update-AgentService([string]`$targetVer = "2.9.10") {
                 }
 
                 # Start updated service
-                `$launcherVbs = Join-Path '$InstallDir' "launcher.vbs"
-                if (Test-Path `$launcherVbs) {
-                    Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$launcherVbs`"" -WindowStyle Hidden
-                } else {
-                    Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'RemoteSigned', '-File', "`"$servicePath`"") -WindowStyle Hidden
-                }
+                try { Get-ChildItem -Path '$InstallDir' -Filter "*.vbs" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
+
+                # Start updated service cleanly via powershell.exe
+                `$psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+                if (-not (Test-Path `$psExe)) { `$psExe = "powershell.exe" }
+                Start-Process -FilePath `$psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'RemoteSigned', '-File', "`"`$servicePath`"") -WindowStyle Hidden
                 exit 0
             } else {
                 Remove-Item -Path `$tempPath -Force -ErrorAction SilentlyContinue
@@ -861,7 +858,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         try { Invoke-Heartbeat `$true } catch {}
     }
     elseif (`$act -eq 'LOCK') {
-        & "`$env:SystemRoot\System32\rundll32.exe" user32.dll,LockWorkStation
+        try { & "$env:SystemRoot\System32\tsdiscon.exe" 2>`$null } catch {}
     }
 }
 
@@ -1830,15 +1827,6 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
 }
 
 
-try {
-    & netsh.exe advfirewall firewall add rule name="Workstation Manager Direct Signal (UDP 48123)" dir=in action=allow protocol=UDP localport=48123 profile=any 2>`$null | Out-Null
-} catch {}
-
-`$udpListener = `$null
-try {
-    `$udpListener = New-Object System.Net.Sockets.UdpClient 48123
-    `$udpListener.Client.ReceiveTimeout = 500
-} catch {}
 
 # Initial fast retry loop on startup (wait for network/DHCP and backend to become available)
 `$initAttempts = 0
@@ -1950,92 +1938,6 @@ try {
             }
         }
 
-        # 2. Check Direct LAN UDP Signal (port 48123)
-        if (-not `$udpListener) {
-            try {
-                `$udpListener = New-Object System.Net.Sockets.UdpClient 48123
-                `$udpListener.Client.ReceiveTimeout = 500
-            } catch {}
-        }
-        if (`$udpListener) {
-            try {
-                while (`$udpListener.Available -gt 0) {
-                    `$remoteEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
-                    `$dataBytes = `$udpListener.Receive([ref]`$remoteEp)
-                    `$msg = [System.Text.Encoding]::UTF8.GetString(`$dataBytes)
-                    if (`$msg -like "WM_CMD:*") {
-                        `$parts = `$msg.Split(":")
-                        if (`$parts.Length -ge 2) {
-                            `$cmdAction = `$parts[1].Trim()
-                            if (`$cmdAction -eq "PROBE_IP" -or `$cmdAction -eq "PROBE_NEIGHBOR") {
-                                `$targetProbeIp = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
-                                if (`$targetProbeIp) {
-                                    try {
-                                        Test-Connection -ComputerName `$targetProbeIp -Count 1 -Quiet | Out-Null
-                                        `$fMac = (Get-NetNeighbor -IPAddress `$targetProbeIp -ErrorAction SilentlyContinue | Where-Object { `$_.LinkLayerAddress -and `$_.LinkLayerAddress -ne '00-00-00-00-00-00' }).LinkLayerAddress | Select-Object -First 1
-                                        if (`$fMac) {
-                                            `$pRes = @{
-                                                ip = `$targetProbeIp
-                                                mac = `$fMac.Replace('-', ':').ToUpper()
-                                                reportedBy = `$DeviceId
-                                            }
-                                            `$pJson = `$pRes | ConvertTo-Json -Compress
-                                            `$pBytes = [System.Text.Encoding]::UTF8.GetBytes(`$pJson)
-                                            `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/probe-result")
-                                            `$pReq.Method = 'POST'
-                                            `$pReq.ContentType = 'application/json; charset=utf-8'
-                                            `$pReq.Timeout = 4000
-                                            `$pStream = `$pReq.GetRequestStream()
-                                            `$pStream.Write(`$pBytes, 0, `$pBytes.Length)
-                                            `$pStream.Close()
-                                            `$pResp = `$pReq.GetResponse()
-                                            `$pResp.Close()
-                                        }
-                                    } catch {}
-                                }
-                                continue
-                            }
-                            `$targetDevId = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
-                            `$targetMac = if (`$parts.Length -ge 4) { `$parts[3].Trim() } else { "" }
-                            `$targetHost = if (`$parts.Length -ge 5) { `$parts[4].Trim() } else { "" }
-
-                            `$isTargetMatch = `$true
-                            if (`$targetDevId -and `$targetDevId -ne "REMOTE" -and `$targetDevId -ne "0" -and `$targetMac) {
-                                `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
-                                `$tgtMacClean = `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper()
-                                `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
-
-                                if (`$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper() -or `$tgtMacClean -eq `$myMacClean -or (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName)) {
-                                    `$isTargetMatch = `$true
-                                }
-                            }
-
-                            if (`$isTargetMatch -and `$cmdAction) {
-                                `$extraArg = if (`$parts.Length -ge 6) { `$parts[5..(`$parts.Length - 1)] -join ":" } else { "" }
-                                `$sessIdVal = 0
-                                `$uNameVal = ""
-                                `$pidVal = 0
-                                `$remHostVal = ""
-                                `$clientIpVal = ""
-                                if (`$extraArg) {
-                                    `$subParts = `$extraArg.Split("|")
-                                    if (`$subParts.Length -ge 1 -and `$subParts[0]) { `$sessIdVal = `$subParts[0].Trim() }
-                                    if (`$subParts.Length -ge 2 -and `$subParts[1]) { `$uNameVal = `$subParts[1].Trim() }
-                                    if (`$subParts.Length -ge 3 -and `$subParts[2]) { `$pidVal = `$subParts[2].Trim() }
-                                    if (`$subParts.Length -ge 4 -and `$subParts[3]) { `$remHostVal = `$subParts[3].Trim() }
-                                    if (`$subParts.Length -ge 5 -and `$subParts[4]) { `$clientIpVal = `$subParts[4].Trim() }
-                                }
-                                `$procNameVal = ""
-                                if (`$subParts -and `$subParts.Length -ge 5 -and `$subParts[4]) { `$procNameVal = `$subParts[4].Trim() }
-                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal; processName = `$procNameVal }
-                                Execute-PowerCommand `$cmdAction `$true `$cmdObj
-                            }
-                        }
-                    }
-                }
-            } catch {}
-        }
-
         `$now = Get-Date
         if ((`$now - `$lastHeartbeat).TotalSeconds -ge `$script:currentInterval) {
             `$success = Invoke-Heartbeat
@@ -2094,13 +1996,12 @@ try {
         Start-Sleep -Milliseconds 800
     } catch {}
 
-    # Create launcher.vbs helper for 100% silent execution and path immunity
-    $launcherVbs = Join-Path $InstallDir "launcher.vbs"
-    $vbsCode = @"
-Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File ""$runServiceScript""", 0, False
-"@
-    Set-Content -Path $launcherVbs -Value $vbsCode -Encoding ASCII
+    # Remove any legacy launcher.vbs to prevent VBScript runtime blocks (800A0046)
+    try {
+        $oldVbs = Join-Path $InstallDir "launcher.vbs"
+        if (Test-Path $oldVbs) { Remove-Item -Path $oldVbs -Force -ErrorAction SilentlyContinue }
+        Get-ChildItem -Path $InstallDir -Filter "*.vbs" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    } catch {}
 
     # Clean legacy keys
     try {
@@ -2125,7 +2026,9 @@ WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Rem
             $taskCreated = $true
             Write-Host "      [OK] Системная служба успешно зарегистрирована (SYSTEM / Фоновый режим / Сторож 5 мин)" -ForegroundColor Green
         } catch {
-            $trCmd = "`"$env:SystemRoot\System32\wscript.exe`" `"$launcherVbs`""
+            $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+            if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
+            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"`"$runServiceScript`"`""
             & schtasks.exe /create /tn "WorkstationManagerAgent" /tr $trCmd /sc MINUTE /mo 5 /ru "SYSTEM" /f 2>&1 | Out-Null
             Write-Host "      [OK] Системная задача создана (schtasks каждые 5 мин)" -ForegroundColor Green
         }
@@ -2140,19 +2043,34 @@ WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Rem
             Remove-ItemProperty -Path "HKLM:\Software\Microsoft\Windows\CurrentVersion\Run" -Name "WorkstationManagerAgent" -ErrorAction SilentlyContinue
         } catch {}
     } else {
-        $userStartup = [Environment]::GetFolderPath("Startup")
-        if ($userStartup -and (Test-Path $userStartup)) {
-            $destVbs = Join-Path $userStartup "WorkstationManagerAgent.vbs"
-            Copy-Item -Path $launcherVbs -Destination $destVbs -Force -ErrorAction SilentlyContinue
-        }
+        try {
+            $userStartup = [Environment]::GetFolderPath("Startup")
+            if ($userStartup -and (Test-Path $userStartup)) {
+                $destVbs = Join-Path $userStartup "WorkstationManagerAgent.vbs"
+                if (Test-Path $destVbs) { Remove-Item -Path $destVbs -Force -ErrorAction SilentlyContinue }
+            }
+            $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+            if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
+            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"`"$runServiceScript`"`""
+            & schtasks.exe /create /tn "WorkstationManagerAgent_User" /tr $trCmd /sc ONLOGON /f 2>&1 | Out-Null
+        } catch {}
     }
 
     # Launch background loop immediately
-    try { & wscript.exe "$launcherVbs" } catch {}
+    # Launch background loop immediately (strictly windowless native powershell.exe or scheduled task)
     if ($IsAdmin) {
         try { Start-ScheduledTask -TaskName "WorkstationManagerAgent" -ErrorAction SilentlyContinue } catch {}
         try { & schtasks.exe /run /tn "WorkstationManagerAgent" 2>&1 | Out-Null } catch {}
     }
+    # Ensure service is actively running right now
+    try {
+        $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+        if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
+        $runningProc = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*run_service.ps1*" }
+        if (-not $runningProc) {
+            Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'RemoteSigned', '-File', "`"$runServiceScript`"") -WindowStyle Hidden
+        }
+    } catch {}
     Write-Host "      [OK] Фоновый процесс мониторинга успешно запущен в фоновом режиме." -ForegroundColor Green
 } catch {
     Write-Host ("      [*] Уведомление службы: " + $_.Exception.Message) -ForegroundColor Gray
@@ -2214,8 +2132,7 @@ try {
     # 6.5. Создание правил брандмауэра для приема Wake-on-LAN и управляющих сигналов
     try {
         New-NetFirewallRule -DisplayName "Workstation Manager Wake-on-LAN (UDP 7, 9)" -Direction Inbound -Protocol UDP -LocalPort 7,9 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
-        New-NetFirewallRule -DisplayName "Workstation Manager Direct Signal (UDP 48123)" -Direction Inbound -Protocol UDP -LocalPort 48123 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
-        Write-Host "      [OK] Брандмауэр: открыты порты UDP 7, 9 (Magic Packet) и UDP 48123 (Direct LAN Signal)." -ForegroundColor Green
+        Write-Host "      [OK] Firewall: разрешен входящий Wake-on-LAN UDP 7, 9 (Magic Packet)." -ForegroundColor Green
     } catch {}
 
     # 6.6. Включение ответа на сетевой Ping (ICMPv4 Echo-Request) в Брандмауэре Windows
@@ -2506,7 +2423,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.10"
+    agentVersion = "2.9.11"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
