@@ -436,7 +436,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.12"
+    agentVersion = "2.9.13"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -454,7 +454,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.12"
+    agentVersion = "2.9.13"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -516,10 +516,10 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.12'
+`$AgentVersion = '2.9.13'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
-`$script:currentInterval = 60
+`$script:currentInterval = 5
 
 # Dynamic config loader: read local config.json if present
 try {
@@ -582,9 +582,9 @@ Write-AgentLog "Service started. Server: `$ServerUrl, DeviceId: `$DeviceId, Vers
 
 # Native Windows administration mode - dynamic compilation disabled
 
-function Update-AgentService([string]`$targetVer = "2.9.12") {
+function Update-AgentService([string]`$targetVer = "2.9.13") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.12"
+        `$targetVer = "2.9.13"
     }
     try {
         # 1. Report update in progress
@@ -639,7 +639,7 @@ function Update-AgentService([string]`$targetVer = "2.9.12") {
                 # Start updated service cleanly via powershell.exe
                 `$psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
                 if (-not (Test-Path `$psExe)) { `$psExe = "powershell.exe" }
-                Start-Process -FilePath `$psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'RemoteSigned', '-File', "`$servicePath") -WindowStyle Hidden
+                Start-Process -FilePath `$psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`$servicePath") -WindowStyle Hidden
                 exit 0
             } else {
                 Remove-Item -Path `$tempPath -Force -ErrorAction SilentlyContinue
@@ -1922,7 +1922,23 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
     return `$false
 }
 
+try {
+    & netsh.exe advfirewall firewall add rule name="Workstation Manager Direct Signal (UDP 48123)" dir=in action=allow protocol=UDP localport=48123 profile=any 2>`$null | Out-Null
+} catch {}
 
+`$udpListener = `$null
+try {
+    `$udpListener = New-Object System.Net.Sockets.UdpClient
+    `$udpListener.Client.SetSocketOption([System.Net.Sockets.SocketOptionLevel]::Socket, [System.Net.Sockets.SocketOptionName]::ReuseAddress, `$true)
+    `$localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 48123)
+    `$udpListener.Client.Bind(`$localEp)
+    `$udpListener.Client.ReceiveTimeout = 500
+} catch {
+    try {
+        `$udpListener = New-Object System.Net.Sockets.UdpClient 48123
+        `$udpListener.Client.ReceiveTimeout = 500
+    } catch {}
+}
 
 # Initial fast retry loop on startup (wait for network/DHCP and backend to become available)
 `$initAttempts = 0
@@ -2049,6 +2065,102 @@ try {
             }
         }
 
+        # 2. Check Direct LAN UDP Signal (port 48123)
+        if (-not `$udpListener) {
+            try {
+                `$udpListener = New-Object System.Net.Sockets.UdpClient
+                `$udpListener.Client.SetSocketOption([System.Net.Sockets.SocketOptionLevel]::Socket, [System.Net.Sockets.SocketOptionName]::ReuseAddress, `$true)
+                `$localEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 48123)
+                `$udpListener.Client.Bind(`$localEp)
+                `$udpListener.Client.ReceiveTimeout = 500
+            } catch {
+                try {
+                    `$udpListener = New-Object System.Net.Sockets.UdpClient 48123
+                    `$udpListener.Client.ReceiveTimeout = 500
+                } catch {}
+            }
+        }
+        if (`$udpListener) {
+            try {
+                while (`$udpListener.Available -gt 0) {
+                    `$remoteEp = New-Object System.Net.IPEndPoint([System.Net.IPAddress]::Any, 0)
+                    `$dataBytes = `$udpListener.Receive([ref]`$remoteEp)
+                    `$msg = [System.Text.Encoding]::UTF8.GetString(`$dataBytes)
+                    if (`$msg -like "WM_CMD:*") {
+                        `$parts = `$msg.Split(":")
+                        if (`$parts.Length -ge 2) {
+                            `$cmdAction = `$parts[1].Trim()
+                            if (`$cmdAction -eq "PROBE_IP" -or `$cmdAction -eq "PROBE_NEIGHBOR") {
+                                `$targetProbeIp = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
+                                if (`$targetProbeIp) {
+                                    try {
+                                        Test-Connection -ComputerName `$targetProbeIp -Count 1 -Quiet | Out-Null
+                                        `$fMac = (Get-NetNeighbor -IPAddress `$targetProbeIp -ErrorAction SilentlyContinue | Where-Object { `$_.LinkLayerAddress -and `$_.LinkLayerAddress -ne '00-00-00-00-00-00' }).LinkLayerAddress | Select-Object -First 1
+                                        if (`$fMac) {
+                                            `$pRes = @{
+                                                ip = `$targetProbeIp
+                                                mac = `$fMac.Replace('-', ':').ToUpper()
+                                                reportedBy = `$DeviceId
+                                            }
+                                            `$pJson = `$pRes | ConvertTo-Json -Compress
+                                            `$pBytes = [System.Text.Encoding]::UTF8.GetBytes(`$pJson)
+                                            `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/probe-result")
+                                            `$pReq.Proxy = `$null
+                                            `$pReq.Method = 'POST'
+                                            `$pReq.ContentType = 'application/json; charset=utf-8'
+                                            `$pReq.Timeout = 4000
+                                            `$pStream = `$pReq.GetRequestStream()
+                                            `$pStream.Write(`$pBytes, 0, `$pBytes.Length)
+                                            `$pStream.Close()
+                                            `$pResp = `$pReq.GetResponse()
+                                            `$pResp.Close()
+                                        }
+                                    } catch {}
+                                }
+                                continue
+                            }
+                            `$targetDevId = if (`$parts.Length -ge 3) { `$parts[2].Trim() } else { "" }
+                            `$targetMac = if (`$parts.Length -ge 4) { `$parts[3].Trim() } else { "" }
+                            `$targetHost = if (`$parts.Length -ge 5) { `$parts[4].Trim() } else { "" }
+
+                            `$isTargetMatch = `$true
+                            if (`$targetDevId -and `$targetDevId -ne "REMOTE" -and `$targetDevId -ne "0" -and `$targetMac) {
+                                `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
+                                `$tgtMacClean = `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper()
+                                `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
+
+                                if (`$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper() -or `$tgtMacClean -eq `$myMacClean -or (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName)) {
+                                    `$isTargetMatch = `$true
+                                }
+                            }
+
+                            if (`$isTargetMatch -and `$cmdAction) {
+                                `$extraArg = if (`$parts.Length -ge 6) { `$parts[5..(`$parts.Length - 1)] -join ":" } else { "" }
+                                `$sessIdVal = 0
+                                `$uNameVal = ""
+                                `$pidVal = 0
+                                `$remHostVal = ""
+                                `$clientIpVal = ""
+                                if (`$extraArg) {
+                                    `$subParts = `$extraArg.Split("|")
+                                    if (`$subParts.Length -ge 1 -and `$subParts[0]) { `$sessIdVal = `$subParts[0].Trim() }
+                                    if (`$subParts.Length -ge 2 -and `$subParts[1]) { `$uNameVal = `$subParts[1].Trim() }
+                                    if (`$subParts.Length -ge 3 -and `$subParts[2]) { `$pidVal = `$subParts[2].Trim() }
+                                    if (`$subParts.Length -ge 4 -and `$subParts[3]) { `$remHostVal = `$subParts[3].Trim() }
+                                    if (`$subParts.Length -ge 5 -and `$subParts[4]) { `$clientIpVal = `$subParts[4].Trim() }
+                                }
+                                `$procNameVal = ""
+                                if (`$subParts -and `$subParts.Length -ge 5 -and `$subParts[4]) { `$procNameVal = `$subParts[4].Trim() }
+                                `$cmdObj = @{ action = `$cmdAction; sessionId = `$sessIdVal; username = `$uNameVal; pid = `$pidVal; remoteHost = `$remHostVal; clientIp = `$clientIpVal; processName = `$procNameVal }
+                                Write-AgentLog "UDP Direct Signal received: action=`$cmdAction, pid=`$pidVal, proc=`$procNameVal"
+                                Execute-PowerCommand `$cmdAction `$true `$cmdObj
+                            }
+                        }
+                    }
+                }
+            } catch {}
+        }
+
         `$now = Get-Date
         `$effectiveWait = if (`$script:wsClient -and `$script:wsClient.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
             `$script:currentInterval
@@ -2095,6 +2207,12 @@ try {
             }
         }
     } catch {}
+    try {
+        if (`$udpListener) {
+            `$udpListener.Close()
+            `$udpListener.Dispose()
+        }
+    } catch {}
 }
 "@
     [System.IO.File]::WriteAllText($runServiceScript, $serviceScriptCode, (New-Object System.Text.UTF8Encoding($true)))
@@ -2134,7 +2252,7 @@ try {
         try {
             & schtasks.exe /delete /tn "WorkstationManagerAgent" /f 2>&1 | Out-Null
             $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-            $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$runServiceScript`""
+            $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
             $triggerBoot = New-ScheduledTaskTrigger -AtStartup
             $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
             $triggerRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
@@ -2146,7 +2264,7 @@ try {
         } catch {
             $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
             if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
-            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"`"$runServiceScript`"`""
+            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$runServiceScript`"`""
             & schtasks.exe /create /tn "WorkstationManagerAgent" /tr $trCmd /sc MINUTE /mo 5 /ru "SYSTEM" /f 2>&1 | Out-Null
             Write-Host "      [OK] Системная задача создана (schtasks каждые 5 мин)" -ForegroundColor Green
         }
@@ -2169,7 +2287,7 @@ try {
             }
             $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
             if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
-            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"`"$runServiceScript`"`""
+            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$runServiceScript`"`""
             & schtasks.exe /create /tn "WorkstationManagerAgent_User" /tr $trCmd /sc ONLOGON /f 2>&1 | Out-Null
         } catch {}
     }
@@ -2186,7 +2304,7 @@ try {
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
         $runningProc = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*run_service.ps1*" }
         if (-not $runningProc) {
-            Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'RemoteSigned', '-File', "`"$runServiceScript`"") -WindowStyle Hidden
+            Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$runServiceScript`"") -WindowStyle Hidden
         }
     } catch {}
     Write-Host "      [OK] Фоновый процесс мониторинга успешно запущен в фоновом режиме." -ForegroundColor Green
@@ -2250,7 +2368,8 @@ try {
     # 6.5. Создание правил брандмауэра для приема Wake-on-LAN и управляющих сигналов
     try {
         New-NetFirewallRule -DisplayName "Workstation Manager Wake-on-LAN (UDP 7, 9)" -Direction Inbound -Protocol UDP -LocalPort 7,9 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
-        Write-Host "      [OK] Firewall: разрешен входящий Wake-on-LAN UDP 7, 9 (Magic Packet)." -ForegroundColor Green
+        New-NetFirewallRule -DisplayName "Workstation Manager Direct Signal (UDP 48123)" -Direction Inbound -Protocol UDP -LocalPort 48123 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+        Write-Host "      [OK] Брандмауэр: открыты порты UDP 7, 9 (Magic Packet) и UDP 48123 (Direct LAN Signal)." -ForegroundColor Green
     } catch {}
 
     # 6.6. Включение ответа на сетевой Ping (ICMPv4 Echo-Request) в Брандмауэре Windows
@@ -2541,7 +2660,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.12"
+    agentVersion = "2.9.13"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

@@ -38,7 +38,7 @@ async def test_heartbeat_returns_fast_interval_when_commands_pending():
                 "disk": 30
             }
             res_idle = await agent_heartbeat(payload_idle, req, db)
-            assert res_idle["heartbeatInterval"] >= 30, f"Expected normal interval, got {res_idle['heartbeatInterval']}"
+            assert res_idle["heartbeatInterval"] >= 5, f"Expected normal interval, got {res_idle['heartbeatInterval']}"
 
             # 2. Queue a command for this device
             queue_device_command(test_dev_id, "KILL_PROCESS", extra_data={"pid": 1234})
@@ -252,6 +252,33 @@ def test_standalone_installer_has_utf8_bom_and_valid_syntax():
     stdout = res.stdout.decode("utf-8", errors="replace")
     stderr = res.stderr.decode("utf-8", errors="replace")
     assert res.returncode == 0, f"PowerShell syntax validation failed:\n{stderr}\n{stdout}"
+
+
+def test_standalone_installer_has_udp_48123_listener_and_fast_interval():
+    """
+    Ensure agent/standalone_installer.ps1 contains:
+    1. Direct LAN UDP 48123 socket listener in run_service.ps1 loop for zero-latency command reception
+    2. Inbound firewall rule for UDP 48123
+    3. 5-second initial heartbeat interval ($script:currentInterval = 5)
+    4. -ExecutionPolicy Bypass for scheduled task actions, service launches, and updates
+    """
+    with open("agent/standalone_installer.ps1", "r", encoding="utf-8-sig") as f:
+        content = f.read()
+
+    # 1. UDP 48123 listener in template
+    assert "48123" in content, "Missing port 48123 in standalone_installer.ps1"
+    assert "UdpClient" in content, "Missing UdpClient listener in standalone_installer.ps1"
+    assert "WM_CMD:*" in content or 'WM_CMD:*' in content, "Missing WM_CMD message handling in UDP listener"
+
+    # 2. Firewall rule
+    assert 'Workstation Manager Direct Signal (UDP 48123)' in content, "Missing firewall rule for UDP 48123"
+
+    # 3. 5-second heartbeat interval
+    assert "`$script:currentInterval = 5" in content or "$script:currentInterval = 5" in content, "Missing 5s default interval in agent script"
+
+    # 4. ExecutionPolicy Bypass
+    assert "-ExecutionPolicy RemoteSigned" not in content, "Found -ExecutionPolicy RemoteSigned in agent installer/service, must be Bypass"
+    assert "-ExecutionPolicy Bypass" in content, "Missing -ExecutionPolicy Bypass in agent installer/service"
 
 
 
