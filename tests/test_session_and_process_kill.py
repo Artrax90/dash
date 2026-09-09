@@ -133,6 +133,7 @@ async def test_agent_heartbeat_new_device_registration():
     from backend.app.api.v1.agents import agent_heartbeat
     from backend.app.db.session import AsyncSessionLocal
     from backend.app.models.device import Device
+    from backend.app.core.config import settings
     from starlette.requests import Request
     from sqlalchemy import delete
 
@@ -153,7 +154,7 @@ async def test_agent_heartbeat_new_device_registration():
             }
             res = await agent_heartbeat(payload, req, db)
             assert res["status"] == "ok"
-            assert res["latestVersion"] == "2.9.9"
+            assert res["latestVersion"] == settings.LATEST_AGENT_VERSION
         finally:
             await db.execute(delete(Device).where(Device.id == test_dev_id))
             await db.commit()

@@ -413,7 +413,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.9"
+    agentVersion = "2.9.10"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -431,7 +431,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.9"
+    agentVersion = "2.9.10"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -465,296 +465,27 @@ try {
         }
     } catch {}
 
-    # WTS Manager C# Helper
-    $wtsManagerCsCode = @'
-using System;
-using System.Collections.Generic;
-using System.Diagnostics;
-using System.Runtime.InteropServices;
-
-public class WtsManagerService
-{
-    private static readonly IntPtr WTS_CURRENT_SERVER_HANDLE = IntPtr.Zero;
-
-    [DllImport("wtsapi32.dll", EntryPoint = "WTSEnumerateSessionsW", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool WTSEnumerateSessions(
-        IntPtr hServer,
-        [MarshalAs(UnmanagedType.U4)] int Reserved,
-        [MarshalAs(UnmanagedType.U4)] int Version,
-        ref IntPtr ppSessionInfo,
-        [MarshalAs(UnmanagedType.U4)] ref int pCount);
-
-    [DllImport("wtsapi32.dll", EntryPoint = "WTSQuerySessionInformationW", CharSet = CharSet.Unicode, SetLastError = true)]
-    private static extern bool WTSQuerySessionInformation(
-        IntPtr hServer,
-        int sessionId,
-        WTS_INFO_CLASS wtsInfoClass,
-        out IntPtr ppBuffer,
-        out int pBytesReturned);
-
-    [DllImport("wtsapi32.dll", SetLastError = true)]
-    public static extern bool WTSLogoffSession(
-        IntPtr hServer,
-        int SessionId,
-        bool bWait);
-
-    [DllImport("wtsapi32.dll", SetLastError = true)]
-    public static extern bool WTSDisconnectSession(
-        IntPtr hServer,
-        int SessionId,
-        bool bWait);
-
-    [DllImport("wtsapi32.dll")]
-    private static extern void WTSFreeMemory(IntPtr pMemory);
-
-    public enum WTS_INFO_CLASS
-    {
-        WTSInitialProgram,
-        WTSApplicationName,
-        WTSWorkingDirectory,
-        WTSOEMId,
-        WTSSessionId,
-        WTSUserName,
-        WTSWinStationName,
-        WTSDomainName,
-        WTSConnectState,
-        WTSClientBuildNumber,
-        WTSClientName,
-        WTSClientDirectory,
-        WTSClientProductId,
-        WTSClientHardwareId,
-        WTSClientAddress,
-        WTSClientDisplay,
-        WTSClientProtocolType
-    }
-
-    public enum WTS_CONNECTSTATE_CLASS
-    {
-        WTSActive,
-        WTSConnected,
-        WTSConnectQuery,
-        WTSShadow,
-        WTSDisconnected,
-        WTSIdle,
-        WTSListen,
-        WTSReset,
-        WTSDown,
-        WTSInit
-    }
-
-    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
-    private struct WTS_SESSION_INFO
-    {
-        public int SessionId;
-        [MarshalAs(UnmanagedType.LPWStr)]
-        public string pWinStationName;
-        public WTS_CONNECTSTATE_CLASS State;
-    }
-
-    [StructLayout(LayoutKind.Sequential)]
-    private struct WTS_CLIENT_ADDRESS
-    {
-        public int AddressFamily;
-        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
-        public byte[] Address;
-    }
-
-    public class SessionData
-    {
-        public int SessionId;
-        public string WinStationName;
-        public string UserName;
-        public string DomainName;
-        public string State;
-        public string ClientIp;
-    }
-
-    public static List<SessionData> GetSessions()
-    {
-        List<SessionData> list = new List<SessionData>();
-        IntPtr ppSessionInfo = IntPtr.Zero;
-        int count = 0;
-
-        if (WTSEnumerateSessions(WTS_CURRENT_SERVER_HANDLE, 0, 1, ref ppSessionInfo, ref count))
-        {
-            int dataSize = Marshal.SizeOf(typeof(WTS_SESSION_INFO));
-            long current = ppSessionInfo.ToInt64();
-
-            for (int i = 0; i < count; i++)
-            {
-                WTS_SESSION_INFO si = (WTS_SESSION_INFO)Marshal.PtrToStructure(new IntPtr(current), typeof(WTS_SESSION_INFO));
-                current += dataSize;
-
-                string userName = QuerySessionStr(si.SessionId, WTS_INFO_CLASS.WTSUserName);
-                string domainName = QuerySessionStr(si.SessionId, WTS_INFO_CLASS.WTSDomainName);
-                string winStation = QuerySessionStr(si.SessionId, WTS_INFO_CLASS.WTSWinStationName);
-                if (string.IsNullOrEmpty(winStation)) winStation = si.pWinStationName;
-                string clientIp = QuerySessionClientIp(si.SessionId);
-
-                list.Add(new SessionData
-                {
-                    SessionId = si.SessionId,
-                    WinStationName = winStation ?? "",
-                    UserName = userName ?? "",
-                    DomainName = domainName ?? "",
-                    State = si.State.ToString(),
-                    ClientIp = clientIp ?? ""
-                });
-            }
-            WTSFreeMemory(ppSessionInfo);
-        }
-        return list;
-    }
-
-    private static string QuerySessionStr(int sessionId, WTS_INFO_CLASS infoClass)
-    {
-        IntPtr buffer = IntPtr.Zero;
-        int bytesReturned = 0;
-        try
-        {
-            if (WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sessionId, infoClass, out buffer, out bytesReturned) && buffer != IntPtr.Zero)
-            {
-                return Marshal.PtrToStringUni(buffer);
-            }
-        }
-        catch { }
-        finally
-        {
-            if (buffer != IntPtr.Zero) WTSFreeMemory(buffer);
-        }
-        return "";
-    }
-
-    private static string QuerySessionClientIp(int sessionId)
-    {
-        IntPtr buffer = IntPtr.Zero;
-        int bytesReturned = 0;
-        try
-        {
-            if (WTSQuerySessionInformation(WTS_CURRENT_SERVER_HANDLE, sessionId, WTS_INFO_CLASS.WTSClientAddress, out buffer, out bytesReturned) && buffer != IntPtr.Zero)
-            {
-                WTS_CLIENT_ADDRESS addr = (WTS_CLIENT_ADDRESS)Marshal.PtrToStructure(buffer, typeof(WTS_CLIENT_ADDRESS));
-                if (addr.AddressFamily == 2 && addr.Address != null && addr.Address.Length >= 6)
-                {
-                    return string.Format("{0}.{1}.{2}.{3}", addr.Address[2], addr.Address[3], addr.Address[4], addr.Address[5]);
-                }
-            }
-        }
-        catch { }
-        finally
-        {
-            if (buffer != IntPtr.Zero) WTSFreeMemory(buffer);
-        }
-        return "";
-    }
-
-    public static int TerminateSessionProcesses(int sessionId)
-    {
-        if (sessionId <= 0 || sessionId >= 65535) return 0;
-        int count = 0;
-        try
-        {
-            Process[] procs = Process.GetProcesses();
-            foreach (Process p in procs)
-            {
-                try
-                {
-                    if (p.SessionId == sessionId)
-                    {
-                        string name = (p.ProcessName ?? "").ToLower();
-                        if (name != "csrss" && name != "winlogon" && name != "smss")
-                        {
-                            p.Kill();
-                            count++;
-                        }
-                    }
-                }
-                catch { }
-            }
-        }
-        catch { }
-        return count;
-    }
-
-    public static int LogoffUserOrSession(string targetUser, int targetSessionId, string targetClientIp = "")
-    {
-        int count = 0;
-        string cleanTargetUser = "";
-        if (!string.IsNullOrEmpty(targetUser))
-        {
-            cleanTargetUser = targetUser.Trim().ToLower();
-            int slashIdx = cleanTargetUser.IndexOf('\\');
-            if (slashIdx >= 0) cleanTargetUser = cleanTargetUser.Substring(slashIdx + 1);
-        }
-        string cleanTargetIp = (targetClientIp ?? "").Trim();
-
-        List<SessionData> sessions = GetSessions();
-        foreach (SessionData s in sessions)
-        {
-            if (s.SessionId <= 0 || s.SessionId >= 65535) continue;
-            // STRICTLY PROTECT PHYSICAL CONSOLE
-            if (!string.IsNullOrEmpty(s.WinStationName) && s.WinStationName.IndexOf("console", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-
-            bool matches = false;
-            string u = (s.UserName ?? "").Trim().ToLower();
-
-            // 1. Match by session ID
-            if (targetSessionId > 0 && targetSessionId < 100 && s.SessionId == targetSessionId)
-            {
-                matches = true;
-            }
-            // 2. Match by username
-            if (!string.IsNullOrEmpty(cleanTargetUser) && (u == cleanTargetUser || u.IndexOf(cleanTargetUser) >= 0))
-            {
-                matches = true;
-            }
-            // 3. Match by client IP
-            if (!string.IsNullOrEmpty(cleanTargetIp) && !string.IsNullOrEmpty(s.ClientIp) && s.ClientIp == cleanTargetIp)
-            {
-                matches = true;
-            }
-            // 4. If no target user, no target ID and no target IP, match any remote session
-            if (string.IsNullOrEmpty(cleanTargetUser) && (targetSessionId <= 0 || targetSessionId >= 100) && string.IsNullOrEmpty(cleanTargetIp))
-            {
-                matches = true;
-            }
-
-            if (matches)
-            {
-                // CRITICAL: NEVER call WTSDisconnectSession here, as it leaves the session alive!
-                // WTSLogoffSession terminates the session cleanly.
-                bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, false);
-                TerminateSessionProcesses(s.SessionId);
-                if (ok) count++;
-            }
-        }
-        return count;
-    }
-
-    public static int LogoffAllRemoteSessions()
-    {
-        int count = 0;
-        List<SessionData> sessions = GetSessions();
-        foreach (SessionData s in sessions)
-        {
-            if (s.SessionId <= 0 || s.SessionId >= 65535) continue;
-            if (!string.IsNullOrEmpty(s.WinStationName) && s.WinStationName.IndexOf("console", StringComparison.OrdinalIgnoreCase) >= 0) continue;
-
-            // CRITICAL: NEVER call WTSDisconnectSession here!
-            bool ok = WTSLogoffSession(WTS_CURRENT_SERVER_HANDLE, s.SessionId, false);
-            TerminateSessionProcesses(s.SessionId);
-            if (ok) count++;
-        }
-        return count;
-    }
-}
-'@
-    $wtsCsFile = Join-Path $InstallDir "WtsManager.cs"
-    [System.IO.File]::WriteAllText($wtsCsFile, $wtsManagerCsCode, [System.Text.Encoding]::UTF8)
+    # Clean up legacy WtsManager.cs if present to avoid heuristic antivirus flags
+    try {
+        $legacyCs = Join-Path $InstallDir "WtsManager.cs"
+        if (Test-Path $legacyCs) { Remove-Item -Path $legacyCs -Force -ErrorAction SilentlyContinue }
+    } catch {}
 
     # Service script
     $runServiceScript = Join-Path $InstallDir "run_service.ps1"
     $serviceScriptCode = @"
+<#
+.SYNOPSIS
+    Workstation Manager System Monitoring Agent
+.DESCRIPTION
+    Administrative background telemetry, hardware inventory and session management service.
+.NOTES
+    Author: Workstation Manager
+    Copyright (c) 2026 Sergei Eremin
+#>
+[CmdletBinding()]
+param()
+
 `$ErrorActionPreference = 'SilentlyContinue'
 `$ServerUrl = '$ServerUrl'
 if (`$ServerUrl) {
@@ -762,7 +493,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.9'
+`$AgentVersion = '2.9.10'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
@@ -774,16 +505,11 @@ if (-not `$createdNew) {
     exit
 }
 
-try {
-    `$csPath = Join-Path '$InstallDir' "WtsManager.cs"
-    if (Test-Path `$csPath) {
-        Add-Type -Path `$csPath -ErrorAction SilentlyContinue
-    }
-} catch {}
+# Native Windows administration mode - dynamic compilation disabled
 
-function Update-AgentService([string]`$targetVer = "2.9.9") {
+function Update-AgentService([string]`$targetVer = "2.9.10") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.9"
+        `$targetVer = "2.9.10"
     }
     try {
         # 1. Report update in progress
@@ -808,22 +534,25 @@ function Update-AgentService([string]`$targetVer = "2.9.9") {
     } catch {}
 
     try {
-        `$wc = New-Object System.Net.WebClient
-        `$wc.Encoding = [System.Text.Encoding]::UTF8
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
         
         `$baseHost = `$ServerUrl -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
         `$serviceUrl = "`$baseHost/api/v1/agents/service-script?deviceId=`$DeviceId&mac=`$DeviceMac"
-        `$newCode = `$wc.DownloadString(`$serviceUrl)
+        `$servicePath = Join-Path '$InstallDir' "run_service.ps1"
+        `$tempPath = Join-Path '$InstallDir' "run_service_update.ps1"
 
-        if (`$newCode -and `$newCode.Length -gt 1000) {
+        `$wc = New-Object System.Net.WebClient
+        `$wc.Encoding = [System.Text.Encoding]::UTF8
+        `$wc.DownloadFile(`$serviceUrl, `$tempPath)
+        `$wc.Dispose()
+
+        if ((Test-Path `$tempPath) -and (Get-Item `$tempPath).Length -gt 1000) {
             # AST verification
             `$tokens = `$null
             `$astErrs = `$null
-            [System.Management.Automation.Language.Parser]::ParseInput(`$newCode, [ref]`$tokens, [ref]`$astErrs) | Out-Null
+            [System.Management.Automation.Language.Parser]::ParseFile(`$tempPath, [ref]`$tokens, [ref]`$astErrs) | Out-Null
             if (-not `$astErrs -or `$astErrs.Count -eq 0) {
-                `$servicePath = Join-Path '$InstallDir' "run_service.ps1"
-                [System.IO.File]::WriteAllText(`$servicePath, `$newCode, (New-Object System.Text.UTF8Encoding(`$true)))
+                Move-Item -Path `$tempPath -Destination `$servicePath -Force -ErrorAction SilentlyContinue
 
                 # Release mutex before starting new instance
                 if (`$global:agentMutex) {
@@ -836,9 +565,11 @@ function Update-AgentService([string]`$targetVer = "2.9.9") {
                 if (Test-Path `$launcherVbs) {
                     Start-Process -FilePath "$env:SystemRoot\System32\wscript.exe" -ArgumentList "`"$launcherVbs`"" -WindowStyle Hidden
                 } else {
-                    Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$servicePath`"") -WindowStyle Hidden
+                    Start-Process -FilePath "powershell.exe" -ArgumentList @('-NoProfile', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'RemoteSigned', '-File', "`"$servicePath`"") -WindowStyle Hidden
                 }
                 exit 0
+            } else {
+                Remove-Item -Path `$tempPath -Force -ErrorAction SilentlyContinue
             }
         }
     } catch {}
@@ -898,16 +629,15 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (-not `$pName -and `$cmdObj -and `$cmdObj.clientIp -and `$cmdObj.clientIp -match '\.exe$') { `$pName = [string]`$cmdObj.clientIp }
 
         if (`$targetPid -and `$targetPid -gt 0) {
-            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /PID `$targetPid /T 2>`$null } catch {}
-            try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$targetPid" -ErrorAction SilentlyContinue).Terminate() } catch {}
             try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
+            try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$targetPid" -ErrorAction SilentlyContinue).Terminate() } catch {}
         }
         if (`$pName -and `$pName.Trim() -ne "" -and `$pName -ne "0") {
             `$pClean = `$pName.Trim()
-            if (-not `$pClean.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
-                `$pClean = `$pClean + ".exe"
+            if (`$pClean.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
+                `$pClean = `$pClean.Substring(0, `$pClean.Length - 4)
             }
-            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM `$pClean /T 2>`$null } catch {}
+            try { Get-Process -Name `$pClean -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
         }
         try { Invoke-Heartbeat `$true } catch {}
     }
@@ -948,15 +678,13 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (`$pidsToKill.Count -gt 0) {
             foreach (`$p in (`$pidsToKill | Select-Object -Unique)) {
                 if (`$p -and `$p -gt 0) {
-                    try { & "`$env:SystemRoot\System32\taskkill.exe" /F /PID `$p /T 2>`$null } catch {}
-                    try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$p" -ErrorAction SilentlyContinue).Terminate() } catch {}
                     try { Stop-Process -Id `$p -Force -ErrorAction SilentlyContinue } catch {}
+                    try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$p" -ErrorAction SilentlyContinue).Terminate() } catch {}
                 }
             }
         } else {
             # Fallback ONLY if no PID and no remote host was targeted
-            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM mstsc.exe /T 2>`$null } catch {}
-            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM msrdc.exe /T 2>`$null } catch {}
+            try { Get-Process -Name "mstsc", "msrdc" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
         }
         try { Invoke-Heartbeat `$true } catch {}
     }
@@ -979,15 +707,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (`$cmdObj -and `$cmdObj.clientIp) { `$targetClientIp = "`$(`$cmdObj.clientIp)".Trim() }
         `$sessToTarget = if (`$targetSessId -and `$targetSessId -lt 100 -and `$targetSessId -gt 0) { `$targetSessId } else { 0 }
 
-        # 1. Direct Win32 Terminal Services API Kernel Logoff via WtsManagerService
-        try {
-            if ([WtsManagerService]) {
-                [WtsManagerService]::LogoffUserOrSession(`$targetUser, `$sessToTarget, `$targetClientIp)
-                if (`$sessToTarget -eq 0 -and -not `$targetUser -and -not `$targetClientIp -and -not `$remHost) {
-                    [WtsManagerService]::LogoffAllRemoteSessions()
-                }
-            }
-        } catch {}
+# Direct logoff processed via native Windows utilities (logoff / qwinsta)
 
         # 2. Remote Server Session Termination via RPC (qwinsta /server:... & logoff /server:... /v)
         if (`$remHost) {
@@ -1098,6 +818,11 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
             try { & "`$env:SystemRoot\System32\logoff.exe" `$sId /v 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\rwinsta.exe" `$sId /v 2>`$null } catch {}
             try { & "`$env:SystemRoot\System32\reset.exe" session `$sId 2>`$null } catch {}
+            try {
+                Get-CimInstance Win32_Process -Filter "SessionId = `$sId" -ErrorAction SilentlyContinue |
+                    Where-Object { `$_.Name -notmatch '(?i)^(csrss|winlogon|smss|dwm)\.exe$' } |
+                    Stop-Process -Force -ErrorAction SilentlyContinue
+            } catch {}
         }
         foreach (`$sName in (`$namesToLogoff | Select-Object -Unique)) {
             try { & "`$env:SystemRoot\System32\logoff.exe" `$sName /v 2>`$null } catch {}
@@ -1129,9 +854,8 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
 
         foreach (`$p in (`$pidsToKill | Select-Object -Unique)) {
             if (`$p -and `$p -gt 0) {
-                try { & "`$env:SystemRoot\System32\taskkill.exe" /F /PID `$p /T 2>`$null } catch {}
-                try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$p" -ErrorAction SilentlyContinue).Terminate() } catch {}
                 try { Stop-Process -Id `$p -Force -ErrorAction SilentlyContinue } catch {}
+                try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$p" -ErrorAction SilentlyContinue).Terminate() } catch {}
             }
         }
         try { Invoke-Heartbeat `$true } catch {}
@@ -1161,31 +885,13 @@ function Get-LiveRdpSessions() {
         }
     } catch {}
 
-    # 0.1 Native WTS API Discovery (Direct Kernel API, 100% Reliable)
+    # Discover incoming RDP connection client IPs via active TCP sockets on port 3389
+    `$inboundRdpIps = @()
     try {
-        if ([WtsManagerService]) {
-            `$wList = [WtsManagerService]::GetSessions()
-            foreach (`$ws in `$wList) {
-                if (`$ws.SessionId -gt 0 -and `$ws.SessionId -lt 65535 -and `$ws.WinStationName -notmatch "(?i)console") {
-                    `$u = `$ws.UserName
-                    if (-not `$u) { `$u = `$primaryUser }
-                    if (-not `$u) { `$u = 'Unknown' }
-
-                    `$stdState = if (`$ws.State -match "(?i)Disc") { 'Disconnected' } else { 'Active' }
-                    `$sObj = @{
-                        id = `$ws.SessionId
-                        deviceId = `$DeviceId
-                        username = `$u
-                        sessionName = if (`$ws.WinStationName) { `$ws.WinStationName } else { ('rdp-tcp#' + `$ws.SessionId) }
-                        type = 'Входящий RDP'
-                        state = `$stdState
-                        idleTime = '0 мин'
-                        logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
-                        clientIp = if (`$ws.ClientIp) { `$ws.ClientIp } else { '' }
-                    }
-                    `$sessions += `$sObj
-                    `$seenIds[`$ws.SessionId] = `$true
-                }
+        `$inConns = @(Get-NetTCPConnection -LocalPort 3389 -State Established -ErrorAction SilentlyContinue)
+        foreach (`$ic in `$inConns) {
+            if (`$ic.RemoteAddress -and `$ic.RemoteAddress -notmatch '^(127\.0\.0\.1|::1|0\.0\.0\.0)$') {
+                `$inboundRdpIps += `$ic.RemoteAddress
             }
         }
     } catch {}
@@ -1243,7 +949,7 @@ function Get-LiveRdpSessions() {
                                 state = `$stdState
                                 idleTime = if (`$idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0 мин' } else { `$idle }
                                 logonTime = if (`$logon) { `$logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
-                                clientIp = ''
+                                clientIp = if (`$inboundRdpIps.Count -gt 0) { `$inboundRdpIps[0] } else { '' }
                             }
                             `$sessions += `$sObj
                             `$seenIds[`$sessId] = `$true
@@ -1295,7 +1001,7 @@ function Get-LiveRdpSessions() {
                                 state = `$stdState
                                 idleTime = '0 мин'
                                 logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
-                                clientIp = ''
+                                clientIp = if (`$inboundRdpIps.Count -gt 0) { `$inboundRdpIps[0] } else { '' }
                             }
                             `$seenIds[`$sId] = `$true
                         }
@@ -2392,7 +2098,7 @@ try {
     $launcherVbs = Join-Path $InstallDir "launcher.vbs"
     $vbsCode = @"
 Set WshShell = CreateObject("WScript.Shell")
-WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File ""$runServiceScript""", 0, False
+WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File ""$runServiceScript""", 0, False
 "@
     Set-Content -Path $launcherVbs -Value $vbsCode -Encoding ASCII
 
@@ -2409,7 +2115,7 @@ WshShell.Run "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Byp
         try {
             & schtasks.exe /delete /tn "WorkstationManagerAgent" /f 2>&1 | Out-Null
             $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-            $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
+            $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy RemoteSigned -File `"$runServiceScript`""
             $triggerBoot = New-ScheduledTaskTrigger -AtStartup
             $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
             $triggerRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
@@ -2800,7 +2506,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.9"
+    agentVersion = "2.9.10"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

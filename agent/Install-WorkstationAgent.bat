@@ -7,7 +7,7 @@ title Workstation Manager Agent Setup
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo [*] Запрос прав Администратора...
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 
@@ -21,9 +21,9 @@ echo.
 
 set "SCRIPT_DIR=%~dp0"
 if exist "%SCRIPT_DIR%standalone_installer.ps1" (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%standalone_installer.ps1"
+    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "%SCRIPT_DIR%standalone_installer.ps1"
 ) else (
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $wc = New-Object System.Net.WebClient; $wc.Encoding = [System.Text.Encoding]::UTF8; iex $wc.DownloadString('http://192.168.1.109:2301/install.ps1?token=wm_tok_live_7f8a92b3c4d5e6f7')"
+    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Install-WorkstationAgent.ps1'); (New-Object Net.WebClient).DownloadFile('http://192.168.1.109:2301/install.ps1?token=wm_tok_live_7f8a92b3c4d5e6f7', $dst); & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
 )
 
 echo.

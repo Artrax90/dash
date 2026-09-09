@@ -443,13 +443,14 @@ async def get_windows_batch_installer(request: Request, token: str = "", server_
 
     bat_content = f"""@echo off
 setlocal
+chcp 65001 >nul
 title Workstation Manager Agent Setup
 
 :: Auto-elevate to Administrator with UAC prompt
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo [*] Requesting Administrator permissions...
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 
@@ -461,7 +462,7 @@ echo.
 echo [*] Launching PowerShell Agent Setup...
 echo.
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $wc = New-Object System.Net.WebClient; $wc.Encoding = [System.Text.Encoding]::UTF8; iex $wc.DownloadString('{base_url}/install.ps1?token={effective_token}')"
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Install-WorkstationAgent.ps1'); (New-Object Net.WebClient).DownloadFile('{base_url}/install.ps1?token={effective_token}', $dst); & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
 
 echo.
 echo ==============================================================================
@@ -594,13 +595,14 @@ async def get_windows_uninstaller_batch(request: Request, server_url: str = ""):
 
     uninstaller_bat = f"""@echo off
 setlocal
+chcp 65001 >nul
 title Workstation Manager Agent Uninstaller
 
 :: Auto-elevate to Administrator with UAC prompt
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo [*] Requesting Administrator permissions...
-    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 
@@ -612,7 +614,7 @@ echo.
 echo [*] Launching PowerShell Agent Uninstaller...
 echo.
 
-powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12; $ProgressPreference = 'SilentlyContinue'; [Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $wc = New-Object System.Net.WebClient; $wc.Encoding = [System.Text.Encoding]::UTF8; iex $wc.DownloadString('{base_url}/uninstall.ps1?server_url={base_url}')"
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Uninstall-WorkstationAgent.ps1'); (New-Object Net.WebClient).DownloadFile('{base_url}/uninstall.ps1?server_url={base_url}', $dst); & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
 
 echo.
 echo ==============================================================================
