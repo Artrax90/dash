@@ -1018,8 +1018,9 @@ async def agent_websocket_endpoint(
 ):
     target_id = (deviceId or device_id or "").strip()
     target_host = (hostname or "").strip()
-    await ws_manager.register_agent(target_id, websocket, hostname=target_host)
-    print(f"[Agent WS] Agent connected: deviceId='{target_id}', host='{target_host}'")
+    clean_mac = (mac or "").strip().replace("-", ":").upper()
+    await ws_manager.register_agent(target_id, websocket, hostname=target_host, mac=clean_mac)
+    print(f"[Agent WS] Agent connected: deviceId='{target_id}', host='{target_host}', mac='{clean_mac}'")
 
     try:
         await websocket.send_json({
@@ -1028,16 +1029,21 @@ async def agent_websocket_endpoint(
             "status": "connected",
             "latestVersion": settings.LATEST_AGENT_VERSION
         })
-        if target_id and target_id in pending_device_commands:
-            cmds = list(pending_device_commands.get(target_id, []))
-            pending_device_commands[target_id] = []
-            pending_device_commands.pop(target_id.upper(), None)
-            pending_device_commands.pop(target_id.lower(), None)
-            if target_host:
-                pending_device_commands.pop(target_host, None)
-                pending_device_commands.pop(target_host.upper(), None)
-            for cmd in cmds:
-                await websocket.send_json(cmd)
+        keys_to_flush = [k for k in [target_id, target_id.upper(), target_id.lower(),
+                                     target_host, target_host.upper(), target_host.lower(),
+                                     clean_mac, clean_mac.upper()] if k]
+        flushed_cmds = []
+        seen_cmd_ids = set()
+        for k in keys_to_flush:
+            if k in pending_device_commands and pending_device_commands[k]:
+                for c in pending_device_commands[k]:
+                    cid = c.get("id")
+                    if cid and cid not in seen_cmd_ids:
+                        seen_cmd_ids.add(cid)
+                        flushed_cmds.append(c)
+                pending_device_commands[k] = []
+        for cmd in flushed_cmds:
+            await websocket.send_json(cmd)
     except Exception as e:
         print(f"[Agent WS] Welcome error: {e}")
 
@@ -1066,10 +1072,10 @@ async def agent_websocket_endpoint(
                 print(f"[Agent WS] Command {cmd_id} on {target_id}: {cmd_status}")
                 await websocket.send_json({"type": "ACK", "cmdId": cmd_id})
     except WebSocketDisconnect:
-        ws_manager.unregister_agent(target_id, hostname=target_host)
+        ws_manager.unregister_agent(target_id, hostname=target_host, mac=clean_mac)
         print(f"[Agent WS] Disconnected: {target_id} ({target_host})")
     except Exception as e:
-        ws_manager.unregister_agent(target_id, hostname=target_host)
+        ws_manager.unregister_agent(target_id, hostname=target_host, mac=clean_mac)
         print(f"[Agent WS] Connection closed: {target_id} ({e})")
 
 
@@ -1846,10 +1852,19 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             print(f"[Command Expired] Dropped stale command {c.get('action')} ({cid}) for {device_id} (age: {int(now_ts - c_time)}s)")
             continue
 
-        # 2. Prevent executing stale shutdown on fresh boot
+        # 2. Prevent executing stale shutdown on fresh boot (only drop if created before boot and not forced)
         if is_fresh_boot and c.get("action") in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
-            print(f"[Command Dropped] Dropped shutdown command {cid} for {device_id} due to fresh boot")
-            continue
+            is_stale_preboot = False
+            if boot_dt:
+                boot_ts = boot_dt.timestamp()
+                if c_time < (boot_ts - 5):
+                    is_stale_preboot = True
+            elif (now_ts - c_time) > 90:
+                is_stale_preboot = True
+
+            if is_stale_preboot and not c.get("force") and c.get("source") != "MANUAL":
+                print(f"[Command Dropped] Dropped stale pre-boot shutdown command {cid} for {device_id}")
+                continue
 
         if cid not in seen_ids:
             seen_ids.add(cid)
@@ -1857,6 +1872,12 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
     if unique_cmds:
         print(f"[Command Dispatch] Dispatched {len(unique_cmds)} commands to {device_id}: {[c['action'] for c in unique_cmds]}")
+
+    # Dynamic acceleration: if commands were dispatched or any commands remain queued,
+    # instruct the agent to poll rapidly (<= 3s) to confirm execution
+    has_remaining_queued = any(pending_device_commands.get(k) for k in keys_to_check)
+    if unique_cmds or has_remaining_queued:
+        effective_interval = min(effective_interval, 3)
 
     jitter_sec = max(2, min(6, int(effective_interval * 0.08)))
     await ws_manager.broadcast_event("agent.heartbeat", payload)

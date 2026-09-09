@@ -134,12 +134,18 @@ async def startup_event():
 
     local_now_str = get_local_now().strftime("%Y-%m-%d %H:%M:%S")
     logger.info(f"Workstation Manager database initialized. Engine: {db_type} [{conn_str}], Timezone: {tz_env} ({local_now_str})")
-    print("=" * 60)
-    print("  🚀 Workstation Manager Server Online")
-    print(f"  🗄️  Active Database Engine: {db_type}")
-    print(f"  📍 Connection Target:      {conn_str}")
-    print(f"  🕒 System Timezone:        {tz_env} ({local_now_str})")
-    print("=" * 60)
+    banner = (
+        "=" * 60 + "\n"
+        f"  [*] Workstation Manager Server Online\n"
+        f"  [*] Active Database Engine: {db_type}\n"
+        f"  [*] Connection Target:      {conn_str}\n"
+        f"  [*] System Timezone:        {tz_env} ({local_now_str})\n"
+        + "=" * 60
+    )
+    try:
+        print(banner)
+    except Exception:
+        print(banner.encode("ascii", errors="replace").decode("ascii"))
 
     # Preload device cache for instant Telegram bot and report availability
     try:

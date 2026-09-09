@@ -2352,10 +2352,9 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
             device.power_status = PowerStatus.BOOTING
     elif action in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
         for tk in target_keys:
-            queue_device_command(tk, action, force=force, reason=reason)
+            queue_device_command(tk, action, force=force, reason=reason, extra_data={"source": source})
         if device:
-            device.power_status = PowerStatus.OFF
-            device.agent_status = AgentStatus.DISCONNECTED
+            device.power_status = PowerStatus.SHUTTING_DOWN
             try:
                 from backend.app.services.alert_engine import alert_engine
                 await alert_engine.trigger_device_offline(
@@ -2373,9 +2372,9 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
             pass
     elif action in ["REBOOT", "RESTART"]:
         for tk in target_keys:
-            queue_device_command(tk, "REBOOT", force=force, reason=reason)
+            queue_device_command(tk, "REBOOT", force=force, reason=reason, extra_data={"source": source})
         if device:
-            device.power_status = PowerStatus.OFF
+            device.power_status = PowerStatus.SHUTTING_DOWN
         try:
             from backend.app.services.scheduler_service import scheduler_service
             for tk in target_keys:

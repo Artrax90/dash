@@ -413,7 +413,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.11"
+    agentVersion = "2.9.12"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -431,7 +431,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.11"
+    agentVersion = "2.9.12"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -493,7 +493,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.11'
+`$AgentVersion = '2.9.12'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
@@ -507,9 +507,9 @@ if (-not `$createdNew) {
 
 # Native Windows administration mode - dynamic compilation disabled
 
-function Update-AgentService([string]`$targetVer = "2.9.11") {
+function Update-AgentService([string]`$targetVer = "2.9.12") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.11"
+        `$targetVer = "2.9.12"
     }
     try {
         # 1. Report update in progress
@@ -590,7 +590,20 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         try {
             `$bt = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).LastBootUpTime
             if (`$bt -and ((Get-Date) - `$bt).TotalSeconds -lt 90) {
-                return
+                `$isForced = `$false
+                if (`$cmdObj -and (`$cmdObj.force -eq `$true -or `$cmdObj.source -eq 'MANUAL' -or (`$cmdObj.extra -and `$cmdObj.extra.source -eq 'MANUAL'))) {
+                    `$isForced = `$true
+                }
+                if (`$cmdObj -and `$cmdObj.createdTimestamp) {
+                    `$cmdEpoch = [double]`$cmdObj.createdTimestamp
+                    `$bootEpoch = [double]([DateTimeOffset]`$bt).ToUnixTimeSeconds()
+                    if (`$cmdEpoch -gt (`$bootEpoch - 5)) {
+                        `$isForced = `$true
+                    }
+                }
+                if (-not `$isForced) {
+                    return
+                }
             }
         } catch {}
     }
@@ -626,6 +639,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (-not `$pName -and `$cmdObj -and `$cmdObj.clientIp -and `$cmdObj.clientIp -match '\.exe$') { `$pName = [string]`$cmdObj.clientIp }
 
         if (`$targetPid -and `$targetPid -gt 0) {
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /T /PID `$targetPid 2>&1 | Out-Null } catch {}
             try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
             try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$targetPid" -ErrorAction SilentlyContinue).Terminate() } catch {}
         }
@@ -634,8 +648,10 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
             if (`$pClean.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
                 `$pClean = `$pClean.Substring(0, `$pClean.Length - 4)
             }
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /T /IM "`$pClean.exe" 2>&1 | Out-Null } catch {}
             try { Get-Process -Name `$pClean -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
         }
+        Start-Sleep -Milliseconds 150
         try { Invoke-Heartbeat `$true } catch {}
     }
     elseif (`$act -eq 'CLOSE_RDP' -or `$act -eq 'CLOSE_RDP_CLIENT' -or `$act -eq 'KILL_RDP' -or `$act -eq 'DISCONNECT_RDP') {
@@ -1864,13 +1880,21 @@ function Maintain-WebSocketConnection() {
         }
 
         `$baseWs = (`$ServerUrl -replace '(?i)^http://', 'ws://' -replace '(?i)^https://', 'wss://').TrimEnd('/')
-        `$wsEndpoint = "`$baseWs/api/v1/agents/ws?deviceId=`$DeviceId&hostname=`$env:COMPUTERNAME&mac=`$DeviceMac&token=`$Token"
+        `$encDevId = [System.Uri]::EscapeDataString([string]`$DeviceId)
+        `$encHost = [System.Uri]::EscapeDataString([string]`$env:COMPUTERNAME)
+        `$encMac = [System.Uri]::EscapeDataString([string]`$DeviceMac)
+        `$encTok = [System.Uri]::EscapeDataString([string]`$Token)
+        `$wsEndpoint = "`$baseWs/api/v1/agents/ws?deviceId=`$encDevId&hostname=`$encHost&mac=`$encMac&token=`$encTok"
         `$newWs = New-Object System.Net.WebSockets.ClientWebSocket
         `$cts = New-Object System.Threading.CancellationTokenSource
         `$cts.CancelAfter(4000)
         `$uri = New-Object System.Uri(`$wsEndpoint)
-        `$connTask = `$newWs.ConnectAsync(`$uri, `$cts.Token)
-        `$connTask.Wait()
+        try {
+            `$connTask = `$newWs.ConnectAsync(`$uri, `$cts.Token)
+            `$connTask.Wait()
+        } finally {
+            try { `$cts.Dispose() } catch {}
+        }
 
         if (`$newWs.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
             `$script:wsClient = `$newWs
@@ -1939,13 +1963,18 @@ try {
         }
 
         `$now = Get-Date
-        if ((`$now - `$lastHeartbeat).TotalSeconds -ge `$script:currentInterval) {
+        `$effectiveWait = if (`$script:wsClient -and `$script:wsClient.State -eq [System.Net.WebSockets.WebSocketState]::Open) {
+            `$script:currentInterval
+        } else {
+            [math]::Min(`$script:currentInterval, 3)
+        }
+        if ((`$now - `$lastHeartbeat).TotalSeconds -ge `$effectiveWait) {
             `$success = Invoke-Heartbeat
             if (`$success) {
                 `$lastHeartbeat = Get-Date
             } else {
-                # Fast retry in 5s if server unreachable
-                `$lastHeartbeat = `$now.AddSeconds(-(`$script:currentInterval - 5))
+                # Fast retry in 3s if server unreachable
+                `$lastHeartbeat = `$now.AddSeconds(-(`$effectiveWait - 3))
             }
         }
 
@@ -2423,7 +2452,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.11"
+    agentVersion = "2.9.12"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

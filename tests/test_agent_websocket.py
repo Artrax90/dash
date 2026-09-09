@@ -64,3 +64,49 @@ def test_agent_websocket_endpoint_ping_pong():
         data = websocket.receive_json()
         assert data.get("type") == "PONG"
 
+def test_powershell_client_websocket_real_connect():
+    import threading
+    import time
+    import uvicorn
+    import subprocess
+    import tempfile
+    import os
+
+    server_port = 2399
+    config = uvicorn.Config(app, host="127.0.0.1", port=server_port, log_level="warning")
+    server = uvicorn.Server(config)
+    t = threading.Thread(target=server.run, daemon=True)
+    t.start()
+    time.sleep(1.0)
+
+    ps_script = f"""
+$ws = New-Object System.Net.WebSockets.ClientWebSocket
+$cts = New-Object System.Threading.CancellationTokenSource
+$cts.CancelAfter(4000)
+$uri = New-Object System.Uri('ws://127.0.0.1:{server_port}/api/v1/agents/ws?deviceId=PC-PWSH-TEST')
+try {{
+    $task = $ws.ConnectAsync($uri, $cts.Token)
+    $task.Wait()
+    Write-Host ("STATE:" + $ws.State)
+}} catch {{
+    Write-Host ("ERROR:" + $_.Exception.ToString())
+}}
+"""
+    with tempfile.NamedTemporaryFile(suffix=".ps1", delete=False, mode="w", encoding="utf-8") as f:
+        f.write(ps_script)
+        temp_file = f.name
+
+    try:
+        res = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", temp_file],
+            capture_output=True, text=True
+        )
+        print("POWERSHELL STDOUT:", res.stdout)
+        print("POWERSHELL STDERR:", res.stderr)
+        assert "STATE:Open" in res.stdout, f"Expected Open state, got: {res.stdout}"
+    finally:
+        server.should_exit = True
+        if os.path.exists(temp_file):
+            os.remove(temp_file)
+
+

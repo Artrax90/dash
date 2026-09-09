@@ -35,7 +35,7 @@ class ConnectionManager:
             except Exception:
                 pass
 
-    async def register_agent(self, device_id: str, websocket: WebSocket, hostname: str = ""):
+    async def register_agent(self, device_id: str, websocket: WebSocket, hostname: str = "", mac: str = ""):
         try:
             await websocket.accept()
         except Exception:
@@ -50,13 +50,20 @@ class ConnectionManager:
             self.agent_connections[clean_host] = websocket
             self.agent_connections[clean_host.upper()] = websocket
             self.agent_connections[clean_host.lower()] = websocket
+        if mac:
+            clean_mac = mac.strip().replace("-", ":").upper()
+            self.agent_connections[clean_mac] = websocket
+            self.agent_connections[clean_mac.lower()] = websocket
 
-    def unregister_agent(self, device_id: str, hostname: str = ""):
+    def unregister_agent(self, device_id: str, hostname: str = "", mac: str = ""):
         keys_to_del = []
         if device_id:
             keys_to_del.extend([device_id, device_id.upper(), device_id.lower()])
         if hostname:
             keys_to_del.extend([hostname, hostname.upper(), hostname.lower()])
+        if mac:
+            clean_mac = mac.strip().replace("-", ":").upper()
+            keys_to_del.extend([clean_mac, clean_mac.lower()])
         for k in keys_to_del:
             self.agent_connections.pop(k, None)
 
