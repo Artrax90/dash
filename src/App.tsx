@@ -17096,6 +17096,7 @@ function SettingsPage({
   const [resetPhraseInput, setResetPhraseInput] = useState('');
   const [keepAdminOnReset, setKeepAdminOnReset] = useState(true);
   const [isResettingDb, setIsResettingDb] = useState(false);
+  const [devicesCount, setDevicesCount] = useState<number | null>(null);
 
   useEffect(() => {
     agentsApi.getSettings().then(s => {
@@ -17103,6 +17104,9 @@ function SettingsPage({
     });
     systemApi.getStatus().then(res => {
       if (res?.database) setSystemDbStatus(res.database);
+    }).catch(() => {});
+    devicesApi.list().then(devs => {
+      if (Array.isArray(devs)) setDevicesCount(devs.length);
     }).catch(() => {});
   }, []);
 
@@ -17521,7 +17525,7 @@ function SettingsPage({
             }}>
               <strong style={{ color: 'var(--red)', display: 'block', marginBottom: '4px' }}>Будут безвозвратно удалены:</strong>
               <ul style={{ margin: '0', paddingLeft: '18px', color: 'var(--ink)' }}>
-                <li>Все рабочие станции, тонкие клиенты и телеметрия ({deviceCount} ПК)</li>
+                <li>Все рабочие станции, тонкие клиенты и телеметрия ({devicesCount !== null ? `${devicesCount} ПК` : 'весь парк ПК'})</li>
                 <li>Все группы, корпусы, этажи и кабинеты</li>
                 <li>Все инциденты, эталоны оборудования и история процессов</li>
                 <li>Расписания включения/выключения и токены агентов</li>
