@@ -373,6 +373,8 @@ def resolve_request_base_url(request: Request, server_url: str = "") -> str:
     if not client_ip and request.client:
         client_ip = request.client.host
 
+    port = getattr(settings, "PORT", 2301) or 2301
+
     if client_ip and not client_ip.startswith("127."):
         import socket
         try:
@@ -381,12 +383,23 @@ def resolve_request_base_url(request: Request, server_url: str = "") -> str:
             real_ip = s.getsockname()[0]
             s.close()
             if real_ip and real_ip not in ["127.0.0.1", "0.0.0.0"] and not real_ip.startswith("172.17.") and not real_ip.startswith("172.18."):
-                port = getattr(settings, "PORT", 2301) or 2301
                 return f"http://{real_ip}:{port}"
         except Exception:
             pass
 
-    # 7. Final fallback to request.base_url
+    # 7. Auto-detect primary non-loopback LAN IP for local requests so installers point to real network address
+    import socket
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+        if lan_ip and lan_ip not in ["127.0.0.1", "0.0.0.0"] and not lan_ip.startswith("172.17.") and not lan_ip.startswith("172.18."):
+            return f"http://{lan_ip}:{port}"
+    except Exception:
+        pass
+
+    # 8. Final fallback to request.base_url
     raw_base = str(request.base_url).rstrip("/")
     return raw_base.replace("/api/v1", "").rstrip("/")
 
@@ -468,7 +481,7 @@ echo.
 echo [*] Launching PowerShell Agent Setup...
 echo.
 
-powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Install-WorkstationAgent.ps1'); (New-Object Net.WebClient).DownloadFile('{base_url}/install.ps1?token={effective_token}', $dst); $bytes = [IO.File]::ReadAllBytes($dst); if ($bytes.Length -ge 3 -and ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF)) {{ [IO.File]::WriteAllBytes($dst, ([byte[]](0xEF, 0xBB, 0xBF) + $bytes)) }}; & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
+powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Install-WorkstationAgent.ps1'); $wc = New-Object Net.WebClient; $wc.Proxy = $null; $wc.DownloadFile('{base_url}/install.ps1?token={effective_token}', $dst); $bytes = [IO.File]::ReadAllBytes($dst); if ($bytes.Length -ge 3 -and ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF)) {{ [IO.File]::WriteAllBytes($dst, ([byte[]](0xEF, 0xBB, 0xBF) + $bytes)) }}; & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
 
 echo.
 echo ==============================================================================

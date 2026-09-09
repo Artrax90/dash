@@ -21,9 +21,9 @@ echo.
 
 set "SCRIPT_DIR=%~dp0"
 if exist "%SCRIPT_DIR%standalone_installer.ps1" (
-    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File "%SCRIPT_DIR%standalone_installer.ps1"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "$p = Join-Path '%SCRIPT_DIR%' 'standalone_installer.ps1'; $b = [IO.File]::ReadAllBytes($p); if ($b.Length -ge 3 -and ($b[0] -ne 0xEF -or $b[1] -ne 0xBB -or $b[2] -ne 0xBF)) { [IO.File]::WriteAllBytes($p, ([byte[]](0xEF, 0xBB, 0xBF) + $b)) }; & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $p %*"
 ) else (
-    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Install-WorkstationAgent.ps1'); (New-Object Net.WebClient).DownloadFile('http://192.168.1.109:2301/install.ps1?token=wm_tok_live_7f8a92b3c4d5e6f7', $dst); $bytes = [IO.File]::ReadAllBytes($dst); if ($bytes.Length -ge 3 -and ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF)) { [IO.File]::WriteAllBytes($dst, ([byte[]](0xEF, 0xBB, 0xBF) + $bytes)) }; & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
+    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Install-WorkstationAgent.ps1'); $wc = New-Object Net.WebClient; $wc.Proxy = $null; $wc.DownloadFile('http://192.168.1.109:2301/install.ps1?token=wm_tok_live_7f8a92b3c4d5e6f7', $dst); $bytes = [IO.File]::ReadAllBytes($dst); if ($bytes.Length -ge 3 -and ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF)) { [IO.File]::WriteAllBytes($dst, ([byte[]](0xEF, 0xBB, 0xBF) + $bytes)) }; & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst %*; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
 )
 
 echo.

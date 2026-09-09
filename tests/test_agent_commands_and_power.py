@@ -191,6 +191,67 @@ def test_websocket_flushes_commands_queued_by_hostname():
             assert first_msg.get("pid") == 4321
     finally:
         pending_device_commands[host_name].clear()
-        pending_device_commands[dev_id].clear()
+
+def test_resolve_request_base_url_auto_resolves_lan_ip_when_localhost():
+    """
+    When accessing dashboard locally (Host: localhost:2301 or client 127.0.0.1),
+    resolve_request_base_url must resolve the machine's primary non-loopback LAN IP
+    so that downloaded installers and one-liners point to a reachable network address.
+    """
+    from backend.app.main import resolve_request_base_url
+    scope = {
+        'type': 'http',
+        'client': ('127.0.0.1', 54321),
+        'headers': [(b'host', b'localhost:2301')],
+        'server': ('127.0.0.1', 2301),
+        'scheme': 'http',
+        'path': '/api/v1/agents/install.bat'
+    }
+    req = Request(scope)
+    url = resolve_request_base_url(req)
+    assert not url.startswith("http://localhost"), f"Expected real LAN IP, but got {url}"
+    assert not url.startswith("http://127.0.0.1"), f"Expected real LAN IP, but got {url}"
+    assert ":2301" in url
+
+
+def test_service_script_template_has_proxy_null_and_dynamic_config():
+    """
+    Ensure run_service.ps1 template contains Proxy = $null for WebRequest and ClientWebSocket
+    to prevent WPAD / proxy hangs on corporate networks, and reads config.json dynamically.
+    """
+    with open("agent/standalone_installer.ps1", "r", encoding="utf-8-sig") as f:
+        content = f.read()
+
+    # 1. WebRequest in Invoke-Heartbeat and Update-AgentService must set $req.Proxy = $null
+    assert "$req.Proxy = $null" in content or "`$req.Proxy = `$null" in content, "Missing Proxy = $null on WebRequest in agent template"
+
+    # 2. ClientWebSocket in Maintain-WebSocketConnection must set Proxy = $null
+    assert "Options.Proxy = $null" in content or "Options.Proxy = `$null" in content, "Missing Options.Proxy = $null on ClientWebSocket in agent template"
+
+
+def test_standalone_installer_has_utf8_bom_and_valid_syntax():
+    """
+    Windows PowerShell 5.1 requires UTF-8 BOM on non-ASCII scripts to parse Cyrillic correctly.
+    This test verifies that the BOM is present and PowerShell's AST parser detects 0 syntax errors.
+    """
+    import subprocess
+    installer_path = "agent/standalone_installer.ps1"
+    with open(installer_path, "rb") as f:
+        header = f.read(3)
+    assert header == b"\xef\xbb\xbf", f"standalone_installer.ps1 is missing UTF-8 BOM (got {header!r})"
+
+    # Verify syntax with PowerShell AST parser
+    ps_cmd = (
+        "$errs = $null; "
+        "[System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path 'agent/standalone_installer.ps1'), [ref]$null, [ref]$errs); "
+        "if ($errs.Count -gt 0) { $errs | ForEach-Object { Write-Error $_.Message }; exit 1 } else { Write-Host 'VALID' }"
+    )
+    import base64
+    b64 = base64.b64encode(ps_cmd.encode("utf-16le")).decode("ascii")
+    res = subprocess.run(["powershell.exe", "-NoProfile", "-EncodedCommand", b64], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    stdout = res.stdout.decode("utf-8", errors="replace")
+    stderr = res.stderr.decode("utf-8", errors="replace")
+    assert res.returncode == 0, f"PowerShell syntax validation failed:\n{stderr}\n{stdout}"
+
 
 

@@ -25,19 +25,42 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 if ($ServerUrl) {
     $ServerUrl = $ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
 }
-if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or $ServerUrl -like "*localhost*" -or $ServerUrl -like "*127.0.0.1*") {
+if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__") {
+    $foundLiveServer = $false
     try {
         $candidatePaths = @("C:\Program Files\WorkstationManagerAgent\config.json", (Join-Path $env:LOCALAPPDATA "WorkstationManagerAgent\config.json"))
         foreach ($cp in $candidatePaths) {
             if (Test-Path $cp) {
                 $prevCfg = Get-Content $cp -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
-                if ($prevCfg -and $prevCfg.server_url -and $prevCfg.server_url -notmatch "localhost|127\.0\.0\.1") {
-                    $ServerUrl = $prevCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
-                    break
+                if ($prevCfg -and $prevCfg.server_url) {
+                    $cand = $prevCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+                    try {
+                        $pProbe = [System.Net.WebRequest]::Create("$cand/api/v1/devices/stats")
+                        $pProbe.Proxy = $null
+                        $pProbe.Timeout = 1500
+                        $pResp = $pProbe.GetResponse()
+                        $pResp.Close()
+                        $ServerUrl = $cand
+                        $foundLiveServer = $true
+                        break
+                    } catch {}
                 }
             }
         }
     } catch {}
+    if (-not $foundLiveServer) {
+        # Check local host:2301
+        try {
+            $pProbe = [System.Net.WebRequest]::Create("http://127.0.0.1:2301/api/v1/devices/stats")
+            $pProbe.Proxy = $null
+            $pProbe.Timeout = 1200
+            $pResp = $pProbe.GetResponse()
+            $pResp.Close()
+            $ServerUrl = "http://127.0.0.1:2301"
+        } catch {
+            $ServerUrl = "http://localhost:2301"
+        }
+    }
 }
 if (-not $Token) { $Token = "__TOKEN__" }
 
@@ -498,12 +521,64 @@ if (`$ServerUrl) {
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
 
+# Dynamic config loader: read local config.json if present
+try {
+    `$localCfgDir = `$PSScriptRoot
+    if (-not `$localCfgDir -or -not (Test-Path `$localCfgDir)) { `$localCfgDir = '$InstallDir' }
+    `$localCfgPath = Join-Path `$localCfgDir "config.json"
+    if (Test-Path `$localCfgPath) {
+        `$dynCfg = Get-Content `$localCfgPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
+        if (`$dynCfg) {
+            if (`$dynCfg.server_url -and `$dynCfg.server_url.Trim() -ne "") {
+                `$ServerUrl = `$dynCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+            }
+            if (`$dynCfg.device_id -and `$dynCfg.device_id.Trim() -ne "") {
+                `$DeviceId = `$dynCfg.device_id.Trim()
+            }
+            if (`$dynCfg.enrollment_token -and `$dynCfg.enrollment_token.Trim() -ne "") {
+                `$Token = `$dynCfg.enrollment_token.Trim()
+            }
+        }
+    }
+} catch {}
+
+function Write-AgentLog([string]`$msg) {
+    try {
+        `$logDir = `$PSScriptRoot
+        if (-not `$logDir -or -not (Test-Path `$logDir)) {
+            `$logDir = if (Test-Path "C:\Program Files\WorkstationManagerAgent") { "C:\Program Files\WorkstationManagerAgent" } else { (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent") }
+        }
+        if (Test-Path `$logDir) {
+            `$logPath = Join-Path `$logDir "agent_service.log"
+            `$ts = (Get-Date).ToString("yyyy-MM-dd HH:mm:ss")
+            `$logLine = "[`$ts] `$msg`r`n"
+            [System.IO.File]::AppendAllText(`$logPath, `$logLine, [System.Text.Encoding]::UTF8)
+            if ((Get-Item `$logPath).Length -gt 1048576) {
+                `$oldLog = Join-Path `$logDir "agent_service.old.log"
+                Move-Item -Path `$logPath -Destination `$oldLog -Force -ErrorAction SilentlyContinue
+            }
+        }
+    } catch {}
+}
+
 `$mutexName = "Global\WorkstationManagerAgentMutex"
 `$createdNew = `$false
-`$global:agentMutex = New-Object System.Threading.Mutex(`$true, `$mutexName, [ref]`$createdNew)
+try {
+    `$global:agentMutex = New-Object System.Threading.Mutex(`$true, `$mutexName, [ref]`$createdNew)
+} catch {
+    try {
+        `$mutexName = "Local\WorkstationManagerAgentMutex"
+        `$global:agentMutex = New-Object System.Threading.Mutex(`$true, `$mutexName, [ref]`$createdNew)
+    } catch {
+        `$createdNew = `$true
+    }
+}
 if (-not `$createdNew) {
+    Write-AgentLog "Another instance of agent service is already running. Exiting."
     exit
 }
+
+Write-AgentLog "Service started. Server: `$ServerUrl, DeviceId: `$DeviceId, Version: `$AgentVersion"
 
 # Native Windows administration mode - dynamic compilation disabled
 
@@ -523,6 +598,7 @@ function Update-AgentService([string]`$targetVer = "2.9.12") {
         `$json = `$updPayload | ConvertTo-Json -Depth 3 -Compress
         `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
         `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
+        `$req.Proxy = `$null
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
         `$req.Timeout = 4000
@@ -563,7 +639,7 @@ function Update-AgentService([string]`$targetVer = "2.9.12") {
                 # Start updated service cleanly via powershell.exe
                 `$psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
                 if (-not (Test-Path `$psExe)) { `$psExe = "powershell.exe" }
-                Start-Process -FilePath `$psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'RemoteSigned', '-File', "`"`$servicePath`"") -WindowStyle Hidden
+                Start-Process -FilePath `$psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'RemoteSigned', '-File', "`$servicePath") -WindowStyle Hidden
                 exit 0
             } else {
                 Remove-Item -Path `$tempPath -Force -ErrorAction SilentlyContinue
@@ -574,6 +650,7 @@ function Update-AgentService([string]`$targetVer = "2.9.12") {
 
 function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false, `$cmdObj = `$null) {
     `$act = `$action.Trim().ToUpper()
+    Write-AgentLog "Execute-PowerCommand: action=`$act, directSignal=`$isDirectSignal"
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
         Update-AgentService "`$AgentVersion"
@@ -637,6 +714,7 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         if (`$cmdObj -and `$cmdObj.processName) { `$pName = [string]`$cmdObj.processName }
         if (-not `$pName -and `$cmdObj -and `$cmdObj.extra -and `$cmdObj.extra.processName) { `$pName = [string]`$cmdObj.extra.processName }
         if (-not `$pName -and `$cmdObj -and `$cmdObj.clientIp -and `$cmdObj.clientIp -match '\.exe$') { `$pName = [string]`$cmdObj.clientIp }
+        Write-AgentLog "KILL_PROCESS: targetPid=`$targetPid, pName=`$pName"
 
         if (`$targetPid -and `$targetPid -gt 0) {
             try { & "`$env:SystemRoot\System32\taskkill.exe" /F /T /PID `$targetPid 2>&1 | Out-Null } catch {}
@@ -1779,6 +1857,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
         `$json = `$payload | ConvertTo-Json -Depth 5 -Compress
         `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
         `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/heartbeat")
+        `$req.Proxy = `$null
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
         `$req.Timeout = 10000
@@ -1815,6 +1894,7 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                                     `$pJson = `$pRes | ConvertTo-Json -Compress
                                     `$pBytes = [System.Text.Encoding]::UTF8.GetBytes(`$pJson)
                                     `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/probe-result")
+                                    `$pReq.Proxy = `$null
                                     `$pReq.Method = 'POST'
                                     `$pReq.ContentType = 'application/json; charset=utf-8'
                                     `$pReq.Timeout = 4000
@@ -1886,6 +1966,8 @@ function Maintain-WebSocketConnection() {
         `$encTok = [System.Uri]::EscapeDataString([string]`$Token)
         `$wsEndpoint = "`$baseWs/api/v1/agents/ws?deviceId=`$encDevId&hostname=`$encHost&mac=`$encMac&token=`$encTok"
         `$newWs = New-Object System.Net.WebSockets.ClientWebSocket
+        `$newWs.Options.Proxy = `$null
+        `$newWs.Options.KeepAliveInterval = [System.TimeSpan]::FromSeconds(20)
         `$cts = New-Object System.Threading.CancellationTokenSource
         `$cts.CancelAfter(4000)
         `$uri = New-Object System.Uri(`$wsEndpoint)
@@ -1902,9 +1984,14 @@ function Maintain-WebSocketConnection() {
             `$script:wsSegment = New-Object "System.ArraySegment[byte]" (,`$script:wsBuffer)
             `$script:wsReceiveTask = `$script:wsClient.ReceiveAsync(`$script:wsSegment, [System.Threading.CancellationToken]::None)
             `$script:lastWsPing = Get-Date
+            Write-AgentLog "WebSocket real-time connection established"
             return `$true
+        } else {
+            try { `$newWs.Dispose() } catch {}
         }
-    } catch {}
+    } catch {
+        if (`$newWs) { try { `$newWs.Dispose() } catch {} }
+    }
     return `$false
 }
 
@@ -1996,6 +2083,7 @@ try {
                 `$offJson = `$offPayload | ConvertTo-Json -Compress
                 `$offBytes = [System.Text.Encoding]::UTF8.GetBytes(`$offJson)
                 `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/power-event")
+                `$pReq.Proxy = `$null
                 `$pReq.Method = 'POST'
                 `$pReq.ContentType = 'application/json; charset=utf-8'
                 `$pReq.Timeout = 1500
@@ -2020,7 +2108,8 @@ try {
             $_.CommandLine -like "*WorkstationManagerAgent*" -or
             $_.CommandLine -like "*launcher.vbs*"
         } | ForEach-Object {
-            Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue
+            try { & taskkill.exe /F /T /PID $_.ProcessId 2>&1 | Out-Null } catch {}
+            try { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue } catch {}
         }
         Start-Sleep -Milliseconds 800
     } catch {}
@@ -2085,11 +2174,11 @@ try {
         } catch {}
     }
 
-    # Launch background loop immediately
     # Launch background loop immediately (strictly windowless native powershell.exe or scheduled task)
     if ($IsAdmin) {
         try { Start-ScheduledTask -TaskName "WorkstationManagerAgent" -ErrorAction SilentlyContinue } catch {}
         try { & schtasks.exe /run /tn "WorkstationManagerAgent" 2>&1 | Out-Null } catch {}
+        Start-Sleep -Milliseconds 1200
     }
     # Ensure service is actively running right now
     try {
