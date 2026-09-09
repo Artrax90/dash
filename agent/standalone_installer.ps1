@@ -1,4 +1,4 @@
-# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
 $embeddedServer = "__SERVER_URL__"
 $embeddedToken = "__TOKEN__"
 
@@ -413,7 +413,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.8"
+    agentVersion = "2.9.9"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -757,7 +757,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.8'
+`$AgentVersion = '2.9.9'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 60
@@ -776,9 +776,9 @@ try {
     }
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.8") {
+function Update-AgentService([string]`$targetVer = "2.9.9") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.8"
+        `$targetVer = "2.9.9"
     }
     try {
         # 1. Report update in progress
@@ -1947,10 +1947,11 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                 # Sort primarily by CPU % descending, secondarily by RAM
                 `$sorted = `$calculatedProcs | Sort-Object @{Expression={ `$_.cpuVal }; Descending=`$true}, @{Expression={ `$_.workingSet }; Descending=`$true}
                 foreach (`$item in `$sorted) {
+                    `$procCpuStr = if (`$item.cpu -is [double] -or `$item.cpu -is [float]) { `$item.cpu.ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture) } else { [string]`$item.cpu }
                     `$procList += @{
                         pid = `$item.pid
                         name = `$item.name
-                        cpu = "`$(`$item.cpu)"
+                        cpu = `$procCpuStr
                         ram = `$item.ram
                         diskIo = `$item.diskIo
                         user = `$item.user
@@ -2718,19 +2719,56 @@ $initProcs = @()
 try {
     $rawProcs = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Id -gt 0 }
     if ($rawProcs) {
-        $sortedProcs = $rawProcs | Sort-Object WorkingSet64 -Descending
-        foreach ($p in $sortedProcs) {
+        $snap1 = @{}
+        $t1 = [datetime]::UtcNow
+        foreach ($p in $rawProcs) {
+            if ($p.CPU) { $snap1[$p.Id] = [double]$p.CPU }
+        }
+        Start-Sleep -Milliseconds 200
+        $rawProcs2 = Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Id -gt 0 }
+        $t2 = [datetime]::UtcNow
+        $dt = ($t2 - $t1).TotalSeconds
+        if ($dt -lt 0.15) { $dt = 0.2 }
+        $cores = [System.Environment]::ProcessorCount
+        if (-not $cores -or $cores -lt 1) { $cores = 1 }
+
+        $calcProcs = @()
+        foreach ($p in $rawProcs2) {
+            $pCpu = 0.0
+            if ($p.CPU -and $snap1.ContainsKey($p.Id)) {
+                $delta = [double]$p.CPU - [double]$snap1[$p.Id]
+                if ($delta -gt 0.0) {
+                    $pCpu = [math]::Round([math]::Min(100.0, [math]::Max(0.0, ($delta / ($dt * $cores)) * 100.0)), 1)
+                }
+            }
             $pRamMb = 0
-            if ($p.WorkingSet64) { $pRamMb = [int][math]::Round($p.WorkingSet64 / 1MB, 0) }
+            $ws = 0
+            if ($p.WorkingSet64) {
+                $pRamMb = [int][math]::Round($p.WorkingSet64 / 1MB, 0)
+                $ws = [int64]$p.WorkingSet64
+            }
             $pName = $p.ProcessName
             if (-not $pName.EndsWith(".exe")) { $pName = $pName + ".exe" }
-            $initProcs += @{
+            $u = if ($p.SessionId -eq 0) { "SYSTEM" } else { if ($user) { $user } else { "User" } }
+            $calcProcs += [PSCustomObject]@{
                 pid = $p.Id
                 name = $pName
-                cpu = "0.0"
+                cpu = $pCpu
                 ram = $pRamMb
+                ws = $ws
+                user = $u
+            }
+        }
+        $sortedProcs = $calcProcs | Sort-Object @{Expression={ $_.cpu }; Descending=$true}, @{Expression={ $_.ws }; Descending=$true}
+        foreach ($p in $sortedProcs) {
+            $cStr = if ($p.cpu -is [double] -or $p.cpu -is [float]) { $p.cpu.ToString('0.0', [System.Globalization.CultureInfo]::InvariantCulture) } else { [string]$p.cpu }
+            $initProcs += @{
+                pid = $p.pid
+                name = $p.name
+                cpu = $cStr
+                ram = $p.ram
                 diskIo = "0.1 MB/s"
-                user = if ($p.SessionId -eq 0) { "SYSTEM" } else { if ($user) { $user } else { "User" } }
+                user = $p.user
                 status = "Running"
             }
         }
@@ -2754,7 +2792,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.8"
+    agentVersion = "2.9.9"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

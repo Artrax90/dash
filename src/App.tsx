@@ -569,7 +569,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.9.8</span>
+            <span>v2.9.9</span>
           </div>
         </div>
       </div>
@@ -643,7 +643,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.9.8</span>
+          <span style={{ color: '#475569' }}>v2.9.9</span>
         </div>
       </div>
     </div>
@@ -5482,11 +5482,11 @@ function DeviceMonitoringTab({
         aVal = Number(aVal) || 0;
         bVal = Number(bVal) || 0;
       } else if (processSortKey === 'cpu') {
-        aVal = parseFloat(aVal) || 0;
-        bVal = parseFloat(bVal) || 0;
+        aVal = parseFloat(String(aVal || '0').replace(',', '.').replace(/[^0-9.]/g, '')) || 0;
+        bVal = parseFloat(String(bVal || '0').replace(',', '.').replace(/[^0-9.]/g, '')) || 0;
       } else if (processSortKey === 'diskIo') {
-        aVal = parseFloat(String(aVal).replace(/[^0-9.]/g, '')) || 0;
-        bVal = parseFloat(String(bVal).replace(/[^0-9.]/g, '')) || 0;
+        aVal = parseFloat(String(aVal || '0').replace(',', '.').replace(/[^0-9.]/g, '')) || 0;
+        bVal = parseFloat(String(bVal || '0').replace(',', '.').replace(/[^0-9.]/g, '')) || 0;
       } else {
         aVal = String(aVal || '').toLowerCase();
         bVal = String(bVal || '').toLowerCase();
@@ -6306,10 +6306,15 @@ function DeviceMonitoringTab({
                       <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                         <span className="mono" style={{ width: '42px', fontWeight: 600 }}>{proc.cpu}%</span>
                         <div className="telemetry-progress-track" style={{ width: '60px', height: '5px' }}>
-                          <div
-                            className={`telemetry-progress-fill ${parseFloat(proc.cpu) > 30 ? 'critical' : parseFloat(proc.cpu) > 10 ? 'warning' : 'normal'}`}
-                            style={{ width: `${Math.min(100, parseFloat(proc.cpu) * 2)}%` }}
-                          />
+                          {(() => {
+                            const cpuNum = parseFloat(String(proc.cpu || '0').replace(',', '.')) || 0;
+                            return (
+                              <div
+                                className={`telemetry-progress-fill ${cpuNum > 30 ? 'critical' : cpuNum > 10 ? 'warning' : 'normal'}`}
+                                style={{ width: `${Math.min(100, cpuNum * 2)}%` }}
+                              />
+                            );
+                          })()}
                         </div>
                       </div>
                     </td>
@@ -17456,7 +17461,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.9.8 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.9.9 · © 2026 Сергей Ерёмин
               </span>
 
             </div>

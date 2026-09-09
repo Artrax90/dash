@@ -153,7 +153,7 @@ async def test_agent_heartbeat_new_device_registration():
             }
             res = await agent_heartbeat(payload, req, db)
             assert res["status"] == "ok"
-            assert res["latestVersion"] == "2.9.8"
+            assert res["latestVersion"] == "2.9.9"
         finally:
             await db.execute(delete(Device).where(Device.id == test_dev_id))
             await db.commit()
@@ -200,3 +200,61 @@ async def test_agent_py_endpoint():
     assert res.status_code == 200
     assert "AGENT_VERSION" in res.body.decode("utf-8")
     assert "SHUTDOWN" in res.body.decode("utf-8")
+
+@pytest.mark.anyio
+async def test_process_cpu_locale_comma_handling():
+    """Verify that process CPU with comma separator (Russian locale) is cleanly parsed without zeroing."""
+    from backend.app.api.v1.agents import agent_heartbeat
+    from backend.app.api.v1.devices import device_live_processes
+    from backend.app.db.session import AsyncSessionLocal
+    from starlette.requests import Request
+    import uuid
+
+    test_dev_id = f"PC-TEST-CPU-{uuid.uuid4().hex[:6].upper()}"
+    async with AsyncSessionLocal() as db:
+        try:
+            scope = {'type': 'http', 'client': ('127.0.0.1', 54321), 'headers': []}
+            req = Request(scope)
+            payload = {
+                "deviceId": test_dev_id,
+                "hostname": test_dev_id,
+                "ip": "127.0.0.1",
+                "cpu": 15,
+                "ram": 45,
+                "disk": 50,
+                "processes": [
+                    {
+                        "pid": 1234,
+                        "name": "chrome.exe",
+                        "cpu": "5,4",
+                        "ram": 450,
+                        "diskIo": "0.5 MB/s",
+                        "user": "User",
+                        "status": "Running"
+                    },
+                    {
+                        "pid": 5678,
+                        "name": "code.exe",
+                        "cpu": "12.8%",
+                        "ram": 800,
+                        "diskIo": "1.2 MB/s",
+                        "user": "User",
+                        "status": "Running"
+                    }
+                ]
+            }
+            res = await agent_heartbeat(payload, req, db)
+            assert res["status"] == "ok"
+            procs = device_live_processes.get(test_dev_id, [])
+            assert len(procs) == 2
+            p_chrome = next(p for p in procs if p["pid"] == 1234)
+            p_code = next(p for p in procs if p["pid"] == 5678)
+            assert float(p_chrome["cpu"]) > 0.0
+            assert float(p_chrome["cpu"]) == 5.4
+            assert float(p_code["cpu"]) == 12.8
+        finally:
+            from sqlalchemy import delete
+            from backend.app.models.device import Device
+            await db.execute(delete(Device).where(Device.id == test_dev_id))
+            await db.commit()
+

@@ -131,18 +131,30 @@ def is_local_machine(dev: Optional[Any] = None, dev_dict: Optional[Dict[str, Any
     return False
 
 def get_local_live_processes(limit: Optional[int] = None) -> List[Dict[str, Any]]:
-    """Sample real live running processes directly from the local host operating system."""
+    """Sample real live running processes directly from the local host operating system with 2-pass CPU measurement."""
     procs = []
     try:
         import psutil
-        for p in psutil.process_iter(['pid', 'name', 'cpu_percent', 'memory_info', 'username', 'status']):
+        import time
+        # psutil requires a delta or two passes to calculate non-zero cpu_percent
+        # Pass 1: seed initial cpu_times
+        tracked_procs = []
+        for p in psutil.process_iter(['pid', 'name', 'memory_info', 'username', 'status']):
+            try:
+                p.cpu_percent(None)
+                tracked_procs.append(p)
+            except Exception:
+                continue
+        # Brief interval for real CPU delta
+        time.sleep(0.15)
+        for p in tracked_procs:
             try:
                 info = p.info
                 pid = info.get('pid') or 0
                 if pid <= 0:
                     continue
                 name = info.get('name') or 'unknown'
-                cpu = round(float(info.get('cpu_percent') or 0.0), 1)
+                cpu = round(float(p.cpu_percent(None) or 0.0), 1)
                 mem_info = info.get('memory_info')
                 ram_mb = round(mem_info.rss / (1024 * 1024)) if mem_info else 0
                 user = (info.get('username') or 'SYSTEM').split('\\')[-1]
@@ -238,7 +250,7 @@ def record_telemetry_snapshot(
     if top_processes and isinstance(top_processes, list):
         for p in top_processes[:3]:
             try:
-                c_val = float(str(p.get("cpu", "0")).replace("%", "").strip())
+                c_val = float(str(p.get("cpu", "0")).replace("%", "").replace(",", ".").strip())
             except Exception:
                 c_val = 0.0
             try:
@@ -1458,12 +1470,12 @@ async def get_device_telemetry_history(
     if live_raw and isinstance(live_raw, list):
         sorted_live = sorted(
             live_raw,
-            key=lambda x: float(str(x.get("cpu", 0)).replace("%", "").strip() or 0),
+            key=lambda x: float(str(x.get("cpu", 0)).replace("%", "").replace(",", ".").strip() or 0),
             reverse=True
         )
         for p in sorted_live[:3]:
             try:
-                c_v = float(str(p.get("cpu", 0)).replace("%", "").strip())
+                c_v = float(str(p.get("cpu", 0)).replace("%", "").replace(",", ".").strip())
             except Exception:
                 c_v = 0.0
             try:

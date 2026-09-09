@@ -1327,7 +1327,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                     if isinstance(p, dict):
                         p_copy = dict(p)
                         try:
-                            c_val = float(str(p_copy.get("cpu", 0)).replace("%", "").strip())
+                            c_raw = str(p_copy.get("cpu", 0)).replace("%", "").replace(",", ".").strip()
+                            c_val = float(c_raw) if c_raw else 0.0
                             p_copy["cpu"] = str(round(min(100.0, max(0.0, c_val)), 1))
                         except Exception:
                             p_copy["cpu"] = "0.0"
