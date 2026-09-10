@@ -596,7 +596,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.9.15</span>
+            <span>v2.9.16</span>
           </div>
         </div>
       </div>
@@ -670,7 +670,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.9.15</span>
+          <span style={{ color: '#475569' }}>v2.9.16</span>
         </div>
       </div>
     </div>
@@ -5670,15 +5670,19 @@ function DeviceMonitoringTab({
   const systemPhysical = physicalStorage.find(ps => {
     if (!systemDrive) return false;
     const psModel = (ps.model || ps.name || '').trim().toLowerCase();
-    if (systemDrive.physicalModel && (
-      systemDrive.physicalModel.toLowerCase() === psModel ||
-      systemDrive.physicalModel.toLowerCase().includes(psModel) ||
-      psModel.includes(systemDrive.physicalModel.toLowerCase())
+    const drvModel = (systemDrive.physicalModel || '').trim().toLowerCase();
+    const psSerial = (ps.serialNumber || '').trim();
+    const drvSerial = (systemDrive.serialNumber || '').trim();
+    const psDiskIndex = typeof ps.diskIndex === 'number' ? ps.diskIndex : (typeof ps.diskNumber === 'number' ? ps.diskNumber : undefined);
+
+    if (drvSerial && psSerial && drvSerial.toLowerCase() === psSerial.toLowerCase()) return true;
+    if (drvModel && psModel && (
+      drvModel === psModel ||
+      drvModel.includes(psModel) ||
+      psModel.includes(drvModel)
     )) return true;
-    if (systemDrive.serialNumber && ps.serialNumber && systemDrive.serialNumber.trim() === ps.serialNumber.trim()) return true;
-    if (typeof systemDrive.diskNumber === 'number' && systemDrive.diskNumber >= 0) {
-      const psIdx = physicalStorage.indexOf(ps);
-      if (psIdx === systemDrive.diskNumber) return true;
+    if (typeof systemDrive.diskNumber === 'number' && psDiskIndex !== undefined) {
+      if (systemDrive.diskNumber === psDiskIndex) return true;
     }
     return false;
   }) || physicalStorage[0];
@@ -5720,7 +5724,81 @@ function DeviceMonitoringTab({
     }> = [];
     const assignedDriveLetters = new Set<string>();
 
-    // 1. Map physical storage devices from hardware spec
+    // 1. Calculate best physical storage drive for each partition using strict scoring
+    const partitionToPhysicalMap = new Map<string, number>();
+
+    deviceDrives.forEach(drv => {
+      let bestPsIdx = -1;
+      let bestScore = -1;
+
+      physicalStorage.forEach((ps, pIdx) => {
+        const psModel = (ps.model || ps.name || '').trim().toLowerCase();
+        const drvModel = (drv.physicalModel || '').trim().toLowerCase();
+        const psSerial = (ps.serialNumber || '').trim();
+        const drvSerial = (drv.serialNumber || '').trim();
+        const psDiskIndex = typeof ps.diskIndex === 'number' ? ps.diskIndex : (typeof ps.diskNumber === 'number' ? ps.diskNumber : undefined);
+
+        let score = 0;
+
+        // Exact Serial Number Match (highest confidence)
+        if (psSerial && drvSerial && psSerial.toLowerCase() === drvSerial.toLowerCase()) {
+          score += 100;
+        }
+
+        // Physical Model Match
+        if (psModel && drvModel) {
+          if (psModel === drvModel) {
+            score += 80;
+          } else if (psModel.includes(drvModel) || drvModel.includes(psModel)) {
+            score += 60;
+          }
+        }
+
+        // Hardware Disk Index / Number Match
+        if (typeof drv.diskNumber === 'number' && drv.diskNumber >= 0) {
+          if (psDiskIndex !== undefined) {
+            if (drv.diskNumber === psDiskIndex) {
+              score += 50;
+            }
+          } else if (drv.diskNumber === pIdx && !drvModel) {
+            score += 20;
+          }
+        }
+
+        // USB Removable Match
+        const isUsb = Boolean(
+          (ps.type && ps.type.toLowerCase().includes('usb')) ||
+          (ps.busType && ps.busType.toLowerCase().includes('usb')) ||
+          psModel.includes('usb') ||
+          ps.isRemovable
+        );
+        const drvIsUsb = Boolean(
+          drv.driveType === 'USB' ||
+          drv.isRemovable ||
+          (drv.volumeName && drv.volumeName.toLowerCase().includes('usb')) ||
+          (drv.busType && drv.busType.toLowerCase().includes('usb'))
+        );
+        if (isUsb && drvIsUsb) {
+          score += 15;
+        }
+
+        // Penalty if drvModel exists and completely contradicts psModel
+        if (drvModel && psModel && !psModel.includes(drvModel) && !drvModel.includes(psModel)) {
+          score -= 70;
+        }
+
+        if (score > bestScore && score > 0) {
+          bestScore = score;
+          bestPsIdx = pIdx;
+        }
+      });
+
+      if (bestPsIdx !== -1) {
+        partitionToPhysicalMap.set(drv.device, bestPsIdx);
+      }
+    });
+
+    // 2. Map physical storage devices from hardware spec
     physicalStorage.forEach((ps, idx) => {
       const psModel = (ps.model || ps.name || `Диск #${idx + 1}`).trim();
       const isUsb = Boolean(
@@ -5742,23 +5820,7 @@ function DeviceMonitoringTab({
       // Find partitions belonging to this physical drive
       const matchingPartitions = deviceDrives.filter(drv => {
         if (assignedDriveLetters.has(drv.device)) return false;
-        if (drv.physicalModel && (
-          drv.physicalModel.toLowerCase() === psModel.toLowerCase() ||
-          drv.physicalModel.toLowerCase().includes(psModel.toLowerCase()) ||
-          psModel.toLowerCase().includes(drv.physicalModel.toLowerCase())
-        )) {
-          return true;
-        }
-        if (drv.serialNumber && ps.serialNumber && drv.serialNumber.trim() === ps.serialNumber.trim()) {
-          return true;
-        }
-        if (typeof drv.diskNumber === 'number' && drv.diskNumber === idx) {
-          return true;
-        }
-        if (isUsb && (drv.driveType === 'USB' || drv.isRemovable || (drv.volumeName && drv.volumeName.toLowerCase().includes('usb')))) {
-          return true;
-        }
-        return false;
+        return partitionToPhysicalMap.get(drv.device) === idx;
       });
 
       matchingPartitions.forEach(p => assignedDriveLetters.add(p.device));
@@ -17964,7 +18026,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.9.15 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.9.16 · © 2026 Сергей Ерёмин
               </span>
 
             </div>

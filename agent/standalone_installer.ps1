@@ -300,12 +300,13 @@ try {
         }
     } catch {}
 
-    $diskDrives = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue
+    $diskDrives = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | Sort-Object Index
     $diskIdx = 0
     if ($diskDrives) {
         foreach ($d in $diskDrives) {
-            $dModel = if ($d.Model) { $d.Model.Trim() } else { "Disk $diskIdx" }
-            $dSerial = if ($d.SerialNumber) { $d.SerialNumber.Trim() } else { "DISK-SN-$diskIdx" }
+            $dIndex = if ($d.Index -ne $null) { [int]$d.Index } else { $diskIdx }
+            $dModel = if ($d.Model) { $d.Model.Trim() } else { "Disk $dIndex" }
+            $dSerial = if ($d.SerialNumber) { $d.SerialNumber.Trim() } else { "DISK-SN-$dIndex" }
             $sizeGb = [int][math]::Round($d.Size / 1GB, 0)
             $isUsb = ($d.InterfaceType -match "USB") -or ($d.PNPDeviceID -match "USB")
             $pdMatch = if ($physDisks.ContainsKey($dSerial)) { $physDisks[$dSerial] } elseif ($physDisks.ContainsKey($dModel)) { $physDisks[$dModel] } else { $null }
@@ -319,7 +320,9 @@ try {
             $dBusType = if ($isUsb) { "USB" } elseif ($isNvme) { "NVMe" } elseif ($pBus -match "IDE") { "SATA" } elseif ($pBus) { $pBus } else { "SATA" }
 
             $disks += @{
-                id = "disk-" + $diskIdx
+                id = "disk-" + $dIndex
+                diskIndex = $dIndex
+                diskNumber = $dIndex
                 name = $dModel
                 model = $dModel
                 serialNumber = $dSerial
@@ -490,7 +493,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.15"
+    agentVersion = "2.9.16"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -508,7 +511,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.15"
+    agentVersion = "2.9.16"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -570,7 +573,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.15'
+`$AgentVersion = '2.9.16'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 5
@@ -641,9 +644,9 @@ Write-AgentLog "Service started. Server: `$ServerUrl, DeviceId: `$DeviceId, Vers
 
 # Native Windows administration mode - dynamic compilation disabled
 
-function Update-AgentService([string]`$targetVer = "2.9.15") {
+function Update-AgentService([string]`$targetVer = "2.9.16") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.15"
+        `$targetVer = "2.9.16"
     }
     try {
         # 1. Report update in progress
@@ -1427,12 +1430,13 @@ function Get-LiveHardwareSpec() {
             }
         } catch {}
 
-        `$pDisks = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue
+        `$pDisks = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue | Sort-Object Index
         `$dIdx = 0
         if (`$pDisks) {
             foreach (`$d in `$pDisks) {
-                `$dModel = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIdx" }
-                `$dSerial = if (`$d.SerialNumber) { `$d.SerialNumber.Trim() } else { "DISK-SN-`$dIdx" }
+                `$dIndex = if (`$d.Index -ne `$null) { [int]`$d.Index } else { `$dIdx }
+                `$dModel = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIndex" }
+                `$dSerial = if (`$d.SerialNumber) { `$d.SerialNumber.Trim() } else { "DISK-SN-`$dIndex" }
                 `$dSizeGb = [int][math]::Round(`$d.Size / 1GB, 0)
                 `$isUsb = (`$d.InterfaceType -match "USB") -or (`$d.PNPDeviceID -match "USB")
                 `$pdMatch = if (`$physDisks.ContainsKey(`$dSerial)) { `$physDisks[`$dSerial] } elseif (`$physDisks.ContainsKey(`$dModel)) { `$physDisks[`$dModel] } else { `$null }
@@ -1446,7 +1450,9 @@ function Get-LiveHardwareSpec() {
                 `$dBusType = if (`$isUsb) { "USB" } elseif (`$isNvme) { "NVMe" } elseif (`$pBus -match "IDE") { "SATA" } elseif (`$pBus) { `$pBus } else { "SATA" }
 
                 `$liveDisks += @{
-                    id = "disk-" + `$dIdx
+                    id = "disk-" + `$dIndex
+                    diskIndex = `$dIndex
+                    diskNumber = `$dIndex
                     name = `$dModel
                     model = `$dModel
                     serialNumber = `$dSerial
@@ -2771,7 +2777,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.15"
+    agentVersion = "2.9.16"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

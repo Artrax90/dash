@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.9.15"
+AGENT_VERSION = "2.9.16"
 
 def execute_power_command(action: str, extra: dict = None):
     act = (action or "").upper().strip()
@@ -21,7 +21,7 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.9.15")
+        execute_agent_update(server_base, cfg, "2.9.16")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
@@ -841,7 +841,7 @@ def collect_hardware():
             # 5. Physical Disks
             disks_raw = run_ps_json("Get-PhysicalDisk | Select-Object FriendlyName, MediaType, BusType, OperationalStatus, HealthStatus, Size, SerialNumber | ConvertTo-Json")
             if not disks_raw:
-                disks_raw = run_ps_json("Get-CimInstance Win32_DiskDrive | Select-Object Model, InterfaceType, Size, SerialNumber, MediaType | ConvertTo-Json")
+                disks_raw = run_ps_json("Get-CimInstance Win32_DiskDrive | Sort-Object Index | Select-Object Index, Model, InterfaceType, Size, SerialNumber, MediaType | ConvertTo-Json")
             
             disk_items = normalize_list(disks_raw)
             disks = []
@@ -852,6 +852,7 @@ def collect_hardware():
                 serial = str(d.get("SerialNumber") or f"SN-{idx}").strip()
                 bus = str(d.get("BusType") or d.get("InterfaceType") or "").upper()
                 media = str(d.get("MediaType") or "").upper()
+                d_idx = d.get("Index") if d.get("Index") is not None else idx
                 
                 # Determine accurate drive type
                 if "NVME" in bus or "NVME" in model.upper() or "SNVS" in model.upper():
@@ -862,7 +863,9 @@ def collect_hardware():
                     dtype = "HDD"
 
                 disks.append({
-                    "id": f"disk{idx}",
+                    "id": f"disk{d_idx}",
+                    "diskIndex": int(d_idx),
+                    "diskNumber": int(d_idx),
                     "model": model,
                     "serialNumber": serial,
                     "type": dtype,
@@ -1652,7 +1655,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.15"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.16"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:
