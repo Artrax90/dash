@@ -316,11 +316,33 @@ export const devicesApi = {
     }
     return wait(false);
   },
+  restore: async (id: string, targetGroup?: string): Promise<Device | undefined> => {
+    try {
+      const q = targetGroup ? `?target_group=${encodeURIComponent(targetGroup)}` : '';
+      const res = await fetch(`${API_BASE}/devices/${id}/restore${q}`, {
+        method: 'POST',
+        headers: getAuthHeaders(),
+      });
+      if (res.ok) return await res.json();
+    } catch {
+      // fallback
+    }
+    const dev = devices.find((d) => d.id === id);
+    if (dev) {
+      dev.isArchived = false;
+      dev.decommissionReason = undefined;
+      dev.decommissionComment = undefined;
+      dev.decommissionedAt = undefined;
+      dev.group = (targetGroup && targetGroup !== 'Архив') ? targetGroup : 'Default';
+      return wait(dev);
+    }
+    return wait(undefined);
+  },
   update: async (id: string, payload: Partial<Device>): Promise<Device | undefined> => {
     try {
       const res = await fetch(`${API_BASE}/devices/${id}`, {
         method: 'PUT',
-        headers: { 'Content-Type': 'application/json' },
+        headers: getAuthHeaders(),
         body: JSON.stringify(payload),
       });
       if (res.ok) return await res.json();

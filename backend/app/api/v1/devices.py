@@ -1910,8 +1910,83 @@ async def update_device(device_id: str, payload: Dict[str, Any], request: Reques
     if "heartbeatInterval" in payload:
         val = payload["heartbeatInterval"]
         device.heartbeat_interval = int(val) if val is not None and str(val).isdigit() and int(val) > 0 else None
+
+    # Check if device is being unarchived or moved out of "Архив"
+    should_unarchive = False
+    if "isArchived" in payload and payload["isArchived"] is False:
+        should_unarchive = True
+    elif "is_archived" in payload and payload["is_archived"] is False:
+        should_unarchive = True
+    elif device.is_archived and ("groups" in payload or "group" in payload):
+        new_grp = device.group_name or ""
+        if "Архив" not in new_grp and new_grp != "Архив":
+            should_unarchive = True
+
+    if should_unarchive:
+        device.is_archived = False
+        device.decommission_reason = None
+        device.decommission_comment = None
+        device.decommissioned_at = None
     
     await db.commit()
+    return format_device_summary(device)
+
+@router.post("/{device_id}/restore")
+async def restore_device(
+    device_id: str,
+    request: Request,
+    target_group: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """Restore a decommissioned device back into active service from the Archive group."""
+    raw_role = request.headers.get("X-User-Role") or ""
+    import urllib.parse
+    user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+    if user_role and user_role in ["Наблюдатель", "Observer", "Viewer"]:
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения."
+        )
+
+    result = await db.execute(
+        select(Device).where(
+            (Device.id == device_id) | 
+            (func.lower(Device.hostname) == device_id.lower()) |
+            (Device.name == device_id)
+        )
+    )
+    device = result.scalar_one_or_none()
+    if not device:
+        raise HTTPException(status_code=404, detail="Device not found")
+
+    # If parameters were not passed in query string, check if JSON body is present
+    if not target_group:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                target_group = body.get("targetGroup") or body.get("target_group")
+        except Exception:
+            pass
+
+    group = (target_group or "").strip()
+    if not group or group == "Архив":
+        group = "Default"
+
+    device.is_archived = False
+    device.decommission_reason = None
+    device.decommission_comment = None
+    device.decommissioned_at = None
+    device.group_name = group
+    
+    await db.commit()
+
+    dev_name = device.name or device.id
+    await ws_manager.broadcast({
+        "type": "DEVICE_UPDATED",
+        "device": format_device_summary(device),
+        "message": f"Рабочая станция {dev_name} возвращена из архива в группу «{group}»"
+    })
+
     return format_device_summary(device)
 
 @router.delete("/{device_id}")

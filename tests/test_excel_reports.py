@@ -496,4 +496,54 @@ async def test_device_hard_delete_for_test_machines():
         res = await session.execute(select(Device).where(Device.id == "TEST-HARD-DEL"))
         assert res.scalar_one_or_none() is None
 
+@pytest.mark.anyio
+async def test_device_restore_from_archive():
+    import httpx
+    from backend.app.main import app
+    from backend.app.db.session import AsyncSessionLocal
+    from backend.app.models.device import Device, PowerStatus, AgentStatus
+    from sqlalchemy import select, delete
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(Device).where(Device.id == "TEST-RESTORE-01"))
+        await session.commit()
+
+        dev = Device(
+            id="TEST-RESTORE-01",
+            name="Restored-PC",
+            hostname="RESTORED-HOST",
+            ip_address="192.168.10.150",
+            mac_address="AA:BB:CC:DD:EE:77",
+            group_name="Архив",
+            is_archived=True,
+            decommission_reason="Неисправность",
+            decommission_comment="заменен БП",
+            power_status=PowerStatus.OFF,
+            agent_status=AgentStatus.DISCONNECTED
+        )
+        session.add(dev)
+        await session.commit()
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        # Call restore endpoint
+        resp = await client.post(
+            "/api/v1/devices/TEST-RESTORE-01/restore",
+            params={"target_group": "Office"},
+            headers={"X-User-Role": "SuperAdmin"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("isArchived") is False
+        assert data.get("group") == "Office"
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(Device).where(Device.id == "TEST-RESTORE-01"))
+        d = res.scalar_one_or_none()
+        assert d is not None
+        assert d.is_archived is False
+        assert d.group_name == "Office"
+        assert d.decommission_reason is None
+        assert d.decommission_comment is None
+        assert d.decommissioned_at is None
+
 

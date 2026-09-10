@@ -2104,6 +2104,7 @@ function DeviceTable({
   onSelectToggle,
   onSelectAll,
   onDeleteDevice,
+  onRestoreDevice,
   onEditMetadata,
   pageSize = 8
 }: {
@@ -2115,6 +2116,7 @@ function DeviceTable({
   onSelectToggle?: (id: string) => void;
   onSelectAll?: () => void;
   onDeleteDevice?: (id: string) => void;
+  onRestoreDevice?: (id: string) => void;
   onEditMetadata?: (device: Device) => void;
   pageSize?: number;
 }) {
@@ -2423,6 +2425,18 @@ function DeviceTable({
                             }}
                           >
                             <Trash2 size={14} /> Списать / Удалить
+                          </button>
+                        )}
+                        {device.isArchived && onRestoreDevice && (
+                          <button
+                            className="dropdown-item"
+                            style={{ color: 'var(--yellow, #eab308)', fontWeight: 600 }}
+                            onClick={() => {
+                              setActiveMenuId(null);
+                              onRestoreDevice(device.id);
+                            }}
+                          >
+                            <RotateCcw size={14} /> Вернуть из архива
                           </button>
                         )}
                       </div>
@@ -2872,6 +2886,28 @@ function Devices({
     }
   };
 
+  const handleRestoreDevice = async (id: string, targetGroup?: string) => {
+    try {
+      const targetDev = items.find(d => d.id === id);
+      const devName = targetDev?.name || id;
+      const res = await devicesApi.restore(id, targetGroup || 'Default');
+      setItems(prev => prev.map(d => d.id === id ? {
+        ...d,
+        ...(res || {}),
+        isArchived: false,
+        decommissionReason: undefined,
+        decommissionComment: undefined,
+        decommissionedAt: undefined,
+        group: res?.group || 'Default',
+        groups: res?.groups || ['Default'],
+      } : d));
+      notify(`Рабочая станция ${devName} возвращена из архива в эксплуатацию!`);
+      loadFleet();
+    } catch (e: any) {
+      notify('Ошибка при возврате из архива: ' + (e?.message || 'Неизвестная ошибка'));
+    }
+  };
+
   const openEditDevice = (device: Device) => {
     setEditDeviceTarget(device);
     setEditDevName(device.name);
@@ -3075,6 +3111,7 @@ function Devices({
             onSelectToggle={handleSelectToggle}
             onSelectAll={handleSelectAll}
             onDeleteDevice={(id) => openDeleteModal(id)}
+            onRestoreDevice={(id) => handleRestoreDevice(id)}
             onEditMetadata={(d) => openEditDevice(d)}
           />
         ) : (
@@ -3111,6 +3148,16 @@ function Devices({
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
                       <span style={{ fontSize: '10px', color: 'var(--muted)' }}>Активность: {formatDeviceLastSeen(device.lastSeen, device.lastSeenIso, device.powerStatus)}</span>
                       <div style={{ display: 'flex', gap: '6px' }}>
+                        {device.isArchived && (
+                          <button
+                            className="button"
+                            style={{ padding: '5px 8px', fontSize: '10px', color: 'var(--yellow, #eab308)', borderColor: 'rgba(234, 179, 8, 0.4)' }}
+                            onClick={() => handleRestoreDevice(device.id)}
+                            title="Вернуть станцию из архива в эксплуатацию"
+                          >
+                            <RotateCcw size={12} style={{ marginRight: '4px' }} /> Из архива
+                          </button>
+                        )}
                         <button className="button" style={{ padding: '5px 8px', fontSize: '10px' }} onClick={() => onDevice(device.id)}>
                           Открыть
                         </button>
@@ -3710,6 +3757,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
   const [isSyncing, setIsSyncing] = useState(false);
   const [deviceAlerts, setDeviceAlerts] = useState<Alert[]>([]);
   const [showHealthModal, setShowHealthModal] = useState(false);
+  const [isRestoring, setIsRestoring] = useState(false);
 
   // Edit form states
   const [editName, setEditName] = useState('');
@@ -3828,6 +3876,32 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
       notify('Ошибка при списании устройства: ' + (err?.message || 'Неизвестная ошибка'));
     } finally {
       setDecomLoading(false);
+    }
+  };
+
+  const handleRestoreDevice = async () => {
+    if (!device) return;
+    setIsRestoring(true);
+    try {
+      const restored = await devicesApi.restore(device.id, 'Default');
+      if (restored) {
+        setDevice(prev => prev ? {
+          ...prev,
+          ...restored,
+          isArchived: false,
+          decommissionReason: undefined,
+          decommissionComment: undefined,
+          decommissionedAt: undefined,
+          group: restored.group || 'Default',
+          groups: restored.groups || ['Default'],
+        } : restored);
+      }
+      notify(`Рабочая станция ${device.name} возвращена из архива в эксплуатацию!`);
+      loadDeviceData();
+    } catch (e: any) {
+      notify('Ошибка при возврате из архива: ' + (e?.message || 'Неизвестная ошибка'));
+    } finally {
+      setIsRestoring(false);
     }
   };
 
@@ -4014,18 +4088,31 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
           borderRadius: '8px',
           display: 'flex',
           alignItems: 'center',
+          justifyContent: 'space-between',
           gap: '12px',
           color: 'var(--yellow, #eab308)',
+          flexWrap: 'wrap',
         }}>
-          <Archive size={22} style={{ flexShrink: 0 }} />
-          <div>
-            <strong style={{ fontSize: '14px' }}>Станция выведена из эксплуатации (в архиве)</strong>
-            <div style={{ fontSize: '12px', opacity: 0.9, marginTop: '2px', color: 'var(--text)' }}>
-              Причина: <strong>{device.decommissionReason || 'Не указана'}</strong>
-              {device.decommissionComment ? ` · Примечание: ${device.decommissionComment}` : ''}
-              {device.decommissionedAt ? ` · Дата списания: ${new Date(device.decommissionedAt).toLocaleDateString('ru-RU')}` : ''}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Archive size={22} style={{ flexShrink: 0 }} />
+            <div>
+              <strong style={{ fontSize: '14px' }}>Станция выведена из эксплуатации (в архиве)</strong>
+              <div style={{ fontSize: '12px', opacity: 0.9, marginTop: '2px', color: 'var(--text)' }}>
+                Причина: <strong>{device.decommissionReason || 'Не указана'}</strong>
+                {device.decommissionComment ? ` · Примечание: ${device.decommissionComment}` : ''}
+                {device.decommissionedAt ? ` · Дата списания: ${new Date(device.decommissionedAt).toLocaleDateString('ru-RU')}` : ''}
+              </div>
             </div>
           </div>
+          <Button
+            primary
+            icon={<RotateCcw size={14} className={isRestoring ? 'spin' : ''} />}
+            disabled={isRestoring}
+            onClick={handleRestoreDevice}
+            style={{ background: 'var(--yellow, #eab308)', color: '#000', border: 'none', fontWeight: 600 }}
+          >
+            {isRestoring ? 'Восстановление...' : 'Вернуть из архива'}
+          </Button>
         </div>
       )}
 
