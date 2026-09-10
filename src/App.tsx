@@ -1515,24 +1515,34 @@ function Dashboard({
         setSchedules(sch || []);
         setHardwareChanges(hw || []);
       }).catch(() => {});
-    }, 4000);
+    }, 12000);
+
+    // Throttled stats fetch to avoid flooding backend on rapid websocket events
+    let lastStatsFetchTime = 0;
+    const requestStatsThrottled = () => {
+      const now = Date.now();
+      if (now - lastStatsFetchTime >= 8000) {
+        lastStatsFetchTime = now;
+        dashboardApi.stats().then(setStats).catch(() => {});
+      }
+    };
 
     const unsubUpdated = wsClient.on('device.updated', (updatedDev: any) => {
       if (updatedDev && updatedDev.id) {
         setDevices(prev => prev.map(d => d.id === updatedDev.id ? { ...d, ...updatedDev } : d));
-        dashboardApi.stats().then(setStats).catch(() => {});
+        requestStatsThrottled();
       }
     });
 
     const unsubAlert = wsClient.on('alert.created', () => {
       alertsApi.list().then(setAlerts).catch(() => {});
-      dashboardApi.stats().then(setStats).catch(() => {});
+      requestStatsThrottled();
     });
 
     const unsubHw = wsClient.on('hardware.change', () => {
       hardwareApi.getChanges().then(hw => setHardwareChanges(hw || [])).catch(() => {});
       alertsApi.list().then(setAlerts).catch(() => {});
-      dashboardApi.stats().then(setStats).catch(() => {});
+      requestStatsThrottled();
     });
 
     return () => {
@@ -2764,7 +2774,7 @@ function Devices({
       devicesApi.list().then((data) => {
         setItems(data);
       }).catch(() => {});
-    }, 4000);
+    }, 12000);
 
     const unsubUpdated = wsClient.on('device.updated', (updatedDev: any) => {
       if (updatedDev && updatedDev.id) {
@@ -9666,9 +9676,17 @@ function HardwarePage({
 
   useEffect(() => {
     loadData();
-    const unsub1 = wsClient.on('hardware.change', () => loadData());
-    const unsub2 = wsClient.on('baseline.updated', () => loadData());
-    const unsub3 = wsClient.on('device.updated', () => loadData());
+    let lastReloadTime = 0;
+    const throttledLoad = () => {
+      const now = Date.now();
+      if (now - lastReloadTime >= 10000) {
+        lastReloadTime = now;
+        loadData();
+      }
+    };
+    const unsub1 = wsClient.on('hardware.change', () => throttledLoad());
+    const unsub2 = wsClient.on('baseline.updated', () => throttledLoad());
+    const unsub3 = wsClient.on('device.updated', () => throttledLoad());
     return () => {
       unsub1();
       unsub2();

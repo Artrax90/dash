@@ -1077,19 +1077,37 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
         summaries.append(item)
     return summaries
 
+_stats_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+_STATS_CACHE_TTL: float = 4.0
+
+def invalidate_device_stats_cache():
+    global _stats_cache
+    _stats_cache.clear()
+
 @router.get("/stats")
 async def get_device_stats(request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device))
-    devices = result.scalars().all()
-
-    # Scope validation: calculate stats only for permitted devices
     from backend.app.api.v1.users import get_current_user_from_request, is_superadmin_role
     from backend.app.core.scope import is_device_in_scope
 
     u = get_current_user_from_request(request)
+    allowed_scope = None
+    scope_key = "all"
     if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
-        allowed = u.get("allowedGroups", [])
-        devices = [d for d in devices if is_device_in_scope(format_device_summary(d), allowed)]
+        allowed_scope = u.get("allowedGroups", [])
+        scope_key = ",".join(sorted(allowed_scope))
+
+    now_ts = time.time()
+    cached = _stats_cache.get(scope_key)
+    if cached is not None:
+        cached_val, exp_ts = cached
+        if now_ts < exp_ts:
+            return cached_val
+
+    result = await db.execute(select(Device))
+    devices = result.scalars().all()
+
+    if allowed_scope:
+        devices = [d for d in devices if is_device_in_scope(format_device_summary(d), allowed_scope)]
 
     now_utc = datetime.utcnow()
     
@@ -1135,7 +1153,7 @@ async def get_device_stats(request: Request, db: AsyncSession = Depends(get_db))
 
     is_pg = is_postgres_url(str(engine.url))
 
-    return {
+    stats_res = {
         "total": total,
         "online": online,
         "offline": offline,
@@ -1145,6 +1163,9 @@ async def get_device_stats(request: Request, db: AsyncSession = Depends(get_db))
         "hardwareAlertsCount": 0,
         "databaseType": "postgresql" if is_pg else "sqlite",
     }
+    _stats_cache[scope_key] = (stats_res, now_ts + _STATS_CACHE_TTL)
+    return stats_res
+
 
 
 @router.get("/reports/excel")

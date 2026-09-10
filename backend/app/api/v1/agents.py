@@ -134,6 +134,36 @@ tokens_store: List[Dict[str, Any]] = load_tokens()
 fleet_arp_cache: Dict[str, Dict[str, Any]] = {}
 fleet_mac_to_ip: Dict[str, Dict[str, Any]] = {}
 
+# In-memory tracking to throttle redundant WebSocket device.updated broadcasts on identical heartbeats
+_last_device_broadcast_state: Dict[str, Dict[str, Any]] = {}
+
+def should_broadcast_device_update(device_id: str, current_state: Dict[str, Any], throttle_interval: float = 30.0) -> bool:
+    dev_key = str(device_id).upper()
+    prev = _last_device_broadcast_state.get(dev_key)
+    now_ts = time.time()
+
+    if not prev:
+        _last_device_broadcast_state[dev_key] = dict(current_state, ts=now_ts)
+        return True
+
+    # Check for significant state changes that web UI needs immediately:
+    is_changed = (
+        prev.get("ip") != current_state.get("ip")
+        or prev.get("power") != current_state.get("power")
+        or prev.get("agent") != current_state.get("agent")
+        or prev.get("rdp") != current_state.get("rdp")
+        or prev.get("sessions_count") != current_state.get("sessions_count")
+        or prev.get("health") != current_state.get("health")
+    )
+    time_elapsed = (now_ts - prev.get("ts", 0)) >= throttle_interval
+
+    if is_changed or time_elapsed:
+        _last_device_broadcast_state[dev_key] = dict(current_state, ts=now_ts)
+        return True
+
+    return False
+
+
 @router.post("/probe-result")
 async def receive_probe_result(payload: Dict[str, Any]):
     ip = payload.get("ip")
@@ -1788,8 +1818,17 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 device_name=device.name or device.hostname or device.id
             )
 
-            # Broadcast device updated event if IP/power changed
-            await ws_manager.broadcast_event("device.updated", format_device_summary(device))
+            # Broadcast device updated event if significant state changed or throttle interval elapsed
+            dev_state = {
+                "ip": device.ip_address,
+                "power": str(device.power_status),
+                "agent": str(device.agent_status),
+                "rdp": str(device.rdp_status),
+                "sessions_count": len(getattr(device, "rdp_sessions", []) or []),
+                "health": str(device.health_status),
+            }
+            if should_broadcast_device_update(device.id, dev_state):
+                await ws_manager.broadcast_event("device.updated", format_device_summary(device))
 
     # Pop pending commands for this device by checking all potential keys
     pending_cmds = []
