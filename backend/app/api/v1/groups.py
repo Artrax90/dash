@@ -335,16 +335,19 @@ async def update_building(bld_name: str, payload: Dict[str, Any]):
         save_groups(groups_store)
 
         try:
-            db = SessionLocal()
-            devices = db.query(Device).filter(Device.building == bld_name).all()
-            for d in devices:
-                d.building = new_name
-                if d.group_name and d.group_name.startswith(f"{bld_name} /"):
-                    parts = [p.strip() for p in d.group_name.split("/")]
-                    if len(parts) >= 3:
-                        d.group_name = f"{new_name} / {parts[1]} / {parts[2]}"
-            db.commit()
-            db.close()
+            from backend.app.db.session import AsyncSessionLocal
+            from backend.app.models.device import Device
+            from sqlalchemy import select
+            async with AsyncSessionLocal() as session:
+                res = await session.execute(select(Device).where(Device.building == bld_name))
+                devices = res.scalars().all()
+                for d in devices:
+                    d.building = new_name
+                    if d.group_name and d.group_name.startswith(f"{bld_name} /"):
+                        parts = [p.strip() for p in d.group_name.split("/")]
+                        if len(parts) >= 3:
+                            d.group_name = f"{new_name} / {parts[1]} / {parts[2]}"
+                await session.commit()
         except Exception as e:
             print(f"Error updating device building: {e}")
 

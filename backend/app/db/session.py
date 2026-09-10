@@ -17,12 +17,14 @@ def get_engine_options(database_url: str) -> Dict[str, Any]:
         "future": True,
     }
     if is_postgres_url(database_url):
-        # Optimized connection pooling for high concurrency (thousands of agents)
+        # Enterprise high-concurrency connection pooling (thousands of agents & dashboards)
         opts.update({
-            "pool_size": 20,
-            "max_overflow": 15,
+            "pool_size": 30,
+            "max_overflow": 20,
+            "pool_timeout": 15,
             "pool_pre_ping": True,
-            "pool_recycle": 1800,
+            "pool_recycle": 300,
+            "pool_reset_on_return": "rollback",
         })
     return opts
 
@@ -43,9 +45,16 @@ SessionLocal = AsyncSessionLocal
 Base = declarative_base()
 
 async def get_db():
-    async with AsyncSessionLocal() as session:
-        try:
-            yield session
-        finally:
-            await session.close()
+    session = AsyncSessionLocal()
+    try:
+        yield session
+        if session.in_transaction():
+            await session.commit()
+    except BaseException:
+        if session.in_transaction():
+            await session.rollback()
+        raise
+    finally:
+        await session.close()
+
 

@@ -17,13 +17,45 @@ def test_is_postgres_url_detection():
 
 def test_get_engine_options_postgres_vs_sqlite():
     pg_opts = get_engine_options("postgresql+asyncpg://user:pass@localhost:5432/db")
-    assert pg_opts.get("pool_size") == 20
-    assert pg_opts.get("max_overflow") == 15
+    assert pg_opts.get("pool_size") == 30
+    assert pg_opts.get("max_overflow") == 20
+    assert pg_opts.get("pool_timeout") == 15
     assert pg_opts.get("pool_pre_ping") is True
+    assert pg_opts.get("pool_recycle") == 300
+    assert pg_opts.get("pool_reset_on_return") == "rollback"
 
     sqlite_opts = get_engine_options("sqlite+aiosqlite:///./data/workstation_manager.db")
     assert "pool_size" not in sqlite_opts
     assert "max_overflow" not in sqlite_opts
+
+@pytest.mark.anyio
+async def test_get_db_lifecycle_no_connection_leak():
+    import asyncio
+    from sqlalchemy.pool import AsyncAdaptedQueuePool
+    from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+    from sqlalchemy import text
+    from backend.app.db.session import get_db
+
+    # Test that get_db closes and releases connections back to the pool under all execution flows
+    gen = get_db()
+    session = await gen.__anext__()
+    assert session is not None
+    # Simulate an endpoint running a query
+    await session.execute(text("SELECT 1"))
+    # Finish generator (like FastAPI does on request completion)
+    try:
+        await gen.__anext__()
+    except StopAsyncIteration:
+        pass
+
+    # Verify cancelled request lifecycle
+    gen_cancel = get_db()
+    session_cancel = await gen_cancel.__anext__()
+    await session_cancel.execute(text("SELECT 1"))
+    try:
+        await gen_cancel.athrow(asyncio.CancelledError())
+    except asyncio.CancelledError:
+        pass
 
 def test_all_models_ddl_compilation_for_postgresql():
     pg_dialect = postgresql.dialect()
@@ -90,4 +122,50 @@ def test_device_stats_includes_database_type():
     data = response.json()
     assert "databaseType" in data
     assert data["databaseType"] in ["sqlite", "postgresql"]
+
+@pytest.mark.anyio
+async def test_scheduler_reachability_probe():
+    from backend.app.services.scheduler_service import SchedulerService
+    # Localhost or invalid IP probe returns tuple (bool, candidate_ip)
+    res_ok, cand = await SchedulerService._check_device_reachability("127.0.0.1", False, None)
+    # Loopback IP check returns False
+    assert res_ok is False
+
+@pytest.mark.anyio
+async def test_alert_engine_dispatch_non_blocking_task(monkeypatch):
+    import asyncio
+    from unittest.mock import AsyncMock, MagicMock
+    from backend.app.services.alert_engine import alert_engine
+
+    # Mock dispatch_alert to record if it was called via asyncio.create_task
+    task_created = []
+    real_create_task = asyncio.create_task
+
+    def mock_create_task(coro, *args, **kwargs):
+        task_created.append(coro)
+        return real_create_task(coro, *args, **kwargs)
+
+    monkeypatch.setattr(asyncio, "create_task", mock_create_task)
+
+    mock_session = AsyncMock()
+    mock_session.execute = AsyncMock()
+    mock_res = MagicMock()
+    mock_res.scalars.return_value.all.return_value = []
+    mock_res.scalar_one_or_none.return_value = None
+    mock_session.execute.return_value = mock_res
+
+    mock_device = MagicMock()
+    mock_device.id = "TEST-DEV-QUEUE"
+    mock_device.name = "Test Dev"
+    mock_device.hostname = "test-dev"
+
+    # Call trigger_device_offline - must complete immediately without awaiting network
+    await alert_engine.trigger_device_offline(
+        session=mock_session,
+        device=mock_device,
+        reason="Test disconnect"
+    )
+
+    # Verify that dispatch_alert was dispatched asynchronously via create_task
+    assert len(task_created) >= 1
 

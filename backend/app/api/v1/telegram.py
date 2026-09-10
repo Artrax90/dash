@@ -265,14 +265,18 @@ def load_devices() -> List[Dict[str, Any]]:
             import psycopg2
             from psycopg2.extras import RealDictCursor
             url = settings.DATABASE_URL.replace("postgresql+asyncpg://", "postgresql://")
-            conn = psycopg2.connect(url)
-            cursor = conn.cursor(cursor_factory=RealDictCursor)
-            cursor.execute("SELECT * FROM devices")
-            rows = [dict(r) for r in cursor.fetchall()]
-            conn.close()
-            devs = _parse_device_rows(rows)
-            update_cached_devices(devs)
-            return devs
+            conn = None
+            try:
+                conn = psycopg2.connect(url)
+                with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                    cursor.execute("SELECT * FROM devices")
+                    rows = [dict(r) for r in cursor.fetchall()]
+                devs = _parse_device_rows(rows)
+                update_cached_devices(devs)
+                return devs
+            finally:
+                if conn:
+                    conn.close()
     except Exception:
         pass
 

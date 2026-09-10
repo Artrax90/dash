@@ -762,7 +762,7 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                 # Dispatch alert via alert engine (Telegram + Web UI) and WebSocket
                 try:
                     if is_tg_enabled:
-                        await alert_engine.dispatch_alert(alert_dict, policy=policy_dict)
+                        asyncio.create_task(alert_engine.dispatch_alert(alert_dict, policy=policy_dict))
                 except Exception as e:
                     print(f"[Alert Dispatch Error] {e}")
 
@@ -1705,7 +1705,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
                                     try:
                                         if is_tg_enabled:
-                                            await alert_engine.dispatch_alert(alert_dict, policy=policy_dict)
+                                            asyncio.create_task(alert_engine.dispatch_alert(alert_dict, policy=policy_dict))
                                     except Exception as e:
                                         print(f"[Alert Dispatch Error] {e}")
 

@@ -1,4 +1,5 @@
 from typing import Dict, Any, Optional
+import asyncio
 import httpx
 import time
 from datetime import datetime
@@ -450,7 +451,7 @@ class AlertEngine:
             # Rate-limit Telegram dispatch (max once per 60s per device)
             if is_tg_enabled and (now_ts - tracker.get("last_offline_alert_ts", 0) >= 60):
                 tracker["last_offline_alert_ts"] = now_ts
-                await cls.dispatch_alert(alert_dict, policy=policy_dict)
+                asyncio.create_task(cls.dispatch_alert(alert_dict, policy=policy_dict))
 
             if is_web_enabled:
                 await ws_manager.broadcast_event("alert.created", alert_dict)
@@ -550,7 +551,7 @@ class AlertEngine:
                     "time": now_utc.isoformat() + "Z",
                     "timestamp": now_utc.isoformat() + "Z"
                 }
-                await cls.dispatch_alert(online_dict, policy=policy_dict)
+                asyncio.create_task(cls.dispatch_alert(online_dict, policy=policy_dict))
         except Exception as err:
             print(f"[Trigger Device Online Error] {err}")
 
