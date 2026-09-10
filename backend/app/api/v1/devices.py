@@ -1252,9 +1252,11 @@ async def export_excel_report(
         alert_query = alert_query.where(AlertModel.device_id.in_(list(target_dev_ids)))
     alert_res = await db.execute(alert_query)
     raw_alerts = alert_res.scalars().all()
+    dev_name_map = {d["id"]: d.get("name", d["id"]) for d in devices_data}
     alerts_data = []
     for a in raw_alerts:
         created_iso = a.created_at.isoformat() if a.created_at else ""
+        d_name = dev_name_map.get(a.device_id, a.device_id)
         try:
             a_ts = a.created_at.replace(tzinfo=timezone.utc).timestamp()
             if start_ts <= a_ts <= end_ts:
@@ -1262,6 +1264,7 @@ async def export_excel_report(
                     "id": a.id,
                     "timestamp": created_iso,
                     "deviceId": a.device_id,
+                    "deviceName": d_name,
                     "severity": a.severity,
                     "category": a.category,
                     "description": a.description
@@ -1271,6 +1274,7 @@ async def export_excel_report(
                 "id": a.id,
                 "timestamp": created_iso,
                 "deviceId": a.device_id,
+                "deviceName": d_name,
                 "severity": a.severity,
                 "category": a.category,
                 "description": a.description
@@ -1283,10 +1287,12 @@ async def export_excel_report(
         devices=devices_data,
         telemetry_points=relevant_points,
         power_events=relevant_power_events,
-        alerts=alerts_data
+        alerts=alerts_data,
+        start_ts=start_ts,
+        end_ts=end_ts
     )
 
-    filename = f"report_{period_key}_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    filename = f"report_{period_key}_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return Response(
         content=report_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",

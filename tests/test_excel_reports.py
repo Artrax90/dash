@@ -18,7 +18,8 @@ def test_generate_monitoring_excel_report_structure():
             'ip_address': '192.168.1.50',
             'cpu': 25,
             'ram': 45,
-            'disk': 60
+            'disk': 60,
+            'assetTag': 'INV-2026-001'
         },
         {
             'id': 'PC-02',
@@ -32,7 +33,8 @@ def test_generate_monitoring_excel_report_structure():
             'ip_address': '192.168.1.51',
             'cpu': 0,
             'ram': 0,
-            'disk': 70
+            'disk': 70,
+            'assetTag': 'INV-2026-002'
         }
     ]
     
@@ -41,6 +43,7 @@ def test_generate_monitoring_excel_report_structure():
             'time': (datetime.now(timezone.utc) - timedelta(hours=i)).timestamp(),
             'timestamp': (datetime.now(timezone.utc) - timedelta(hours=i)).isoformat(),
             'deviceId': 'PC-01',
+            'deviceName': 'ARM-01',
             'cpu': 20 + i * 2,
             'ram': 40 + i,
             'disk': 60,
@@ -98,6 +101,37 @@ def test_generate_monitoring_excel_report_structure():
 
     summary_sheet = wb['Сводка и Графики']
     assert len(summary_sheet._charts) >= 1
+    # Check that A2 does not have "UTC" and is formatted with local time
+    assert "UTC" not in summary_sheet['A2'].value
+    # Check that the 12 rows have distinct time intervals
+    chart_row_times = [summary_sheet.cell(r, 1).value for r in range(10, 22)]
+    assert len(set(chart_row_times)) == 12
+
+    # Check Sheet 2 (Телеметрия): Col 2 is "ID ПК", Col 3 is "Имя ПК"
+    telem_sheet = wb['Телеметрия']
+    assert telem_sheet.cell(1, 2).value == 'ID ПК'
+    assert telem_sheet.cell(1, 3).value == 'Имя ПК'
+    assert telem_sheet.cell(2, 2).value == 'PC-01'
+    assert telem_sheet.cell(2, 3).value == 'ARM-01'
+
+    # Check Sheet 3 (События питания): Col 5 is "ID ПК", Col 6 is "Имя ПК"
+    power_sheet = wb['События питания']
+    assert power_sheet.cell(1, 5).value == 'ID ПК'
+    assert power_sheet.cell(1, 6).value == 'Имя ПК'
+    assert power_sheet.cell(2, 5).value == 'PC-01'
+    assert power_sheet.cell(2, 6).value == 'ARM-01'
+
+    # Check Sheet 4 (Алерты и Инциденты): Col 3 is "ID ПК", Col 4 is "Имя ПК"
+    alert_sheet = wb['Алерты и Инциденты']
+    assert alert_sheet.cell(1, 3).value == 'ID ПК'
+    assert alert_sheet.cell(1, 4).value == 'Имя ПК'
+    assert alert_sheet.cell(2, 3).value == 'PC-01'
+    assert alert_sheet.cell(2, 4).value == 'ARM-01'
+
+    # Check Sheet 5 (Список ПК): Col 3 is "Инвентарный №"
+    dev_sheet = wb['Список ПК']
+    assert dev_sheet.cell(1, 3).value == 'Инвентарный №'
+    assert dev_sheet.cell(2, 3).value == 'INV-2026-001'
 
 @pytest.mark.anyio
 async def test_excel_report_endpoint():
@@ -178,7 +212,7 @@ def test_generate_monitoring_excel_report_with_illegal_xml_control_characters():
     assert len(report_bytes) > 0
     wb = openpyxl.load_workbook(io.BytesIO(report_bytes))
     ws_alerts = wb['Алерты и Инциденты']
-    # Verify description is saved and illegal char was stripped
-    assert 'Netac OnlyDisk USB Device' in ws_alerts.cell(row=2, column=6).value
-    assert '\x00' not in ws_alerts.cell(row=2, column=6).value
+    # Verify description is saved and illegal char was stripped (Column 7 is description now that Device Name is Column 4)
+    assert 'Netac OnlyDisk USB Device' in ws_alerts.cell(row=2, column=7).value
+    assert '\x00' not in ws_alerts.cell(row=2, column=7).value
 
