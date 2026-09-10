@@ -5,7 +5,8 @@ import {
   LoaderCircle, LogOut, Menu, Monitor, Moon, MoreHorizontal, Network, Power, RefreshCw, Search, Send, Server,
   Settings, ShieldCheck, Sun, Tag, Terminal, UserRound, Users as UsersIcon, Wifi, X, Zap, Plus, Trash2, Play,
   Edit3, Lock, Download, Upload, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
-  Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb, Building, Layers, MapPin, FileSpreadsheet, Clock, BarChart2
+  Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb, Building, Layers, MapPin, FileSpreadsheet, Clock, BarChart2,
+  Archive
 } from 'lucide-react';
 import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, systemApi, getActiveUserName, wsClient, notificationService } from '@/api';
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
@@ -20,6 +21,15 @@ import {
   isRoomVisibleInScope
 } from '@/utils/scope';
 import { FaqModal } from './components/FaqModal';
+
+export const DECOMMISSION_REASONS = [
+  'Неисправность / Выход из строя',
+  'Плановая замена / Моральное устаревание',
+  'Разобран на комплектующие (ЗИП / Донор)',
+  'Передан в другой отдел / филиал',
+  'Утрата / Хищение',
+  'Ошибочно добавленный / Тестовый ПК (полное удаление)',
+];
 
 export function formatLocalTime(isoString?: string, fallback = '—'): string {
   if (!isoString) return fallback;
@@ -2313,11 +2323,16 @@ function DeviceTable({
                       </span>
                     </button>
                     {device.maintenance && <span className="maintenance-badge">MAINTENANCE</span>}
+                    {device.isArchived && (
+                      <span className="maintenance-badge" style={{ background: 'rgba(234, 179, 8, 0.15)', color: 'var(--yellow, #eab308)', border: '1px solid rgba(234, 179, 8, 0.3)', marginLeft: '6px' }}>
+                        АРХИВ
+                      </span>
+                    )}
                   </td>
                   <td>
                     <div style={{ display: 'flex', flexWrap: 'wrap', gap: '4px' }}>
                       {devGroups.map(g => (
-                        <span key={g} className="group-text" style={{ fontSize: '11px', padding: '2px 6px', background: 'var(--surface-2)', borderRadius: '4px', border: '1px solid var(--line)' }}>
+                        <span key={g} className="group-text" style={{ fontSize: '11px', padding: '2px 6px', background: g === 'Архив' ? 'rgba(234, 179, 8, 0.12)' : 'var(--surface-2)', color: g === 'Архив' ? 'var(--yellow, #eab308)' : 'inherit', borderRadius: '4px', border: g === 'Архив' ? '1px solid rgba(234, 179, 8, 0.3)' : '1px solid var(--line)' }}>
                           {g}
                         </span>
                       ))}
@@ -2407,7 +2422,7 @@ function DeviceTable({
                               onDeleteDevice(device.id);
                             }}
                           >
-                            <Trash2 size={14} /> Удалить из системы
+                            <Trash2 size={14} /> Списать / Удалить
                           </button>
                         )}
                       </div>
@@ -2556,6 +2571,9 @@ function Devices({
   const [showAddModal, setShowAddModal] = useState(false);
   const [editDeviceTarget, setEditDeviceTarget] = useState<Device | null>(null);
   const [deleteDeviceTarget, setDeleteDeviceTarget] = useState<string | null>(null);
+  const [decomReason, setDecomReason] = useState<string>(DECOMMISSION_REASONS[0]);
+  const [decomComment, setDecomComment] = useState<string>('');
+  const [decomLoading, setDecomLoading] = useState<boolean>(false);
 
   // Edit form state for device modal
   const [editDevName, setEditDevName] = useState('');
@@ -2818,11 +2836,40 @@ function Devices({
     loadFleet();
   };
 
+  const openDeleteModal = (id: string) => {
+    setDeleteDeviceTarget(id);
+    setDecomReason(DECOMMISSION_REASONS[0]);
+    setDecomComment('');
+  };
+
   const handleDeleteDevice = async (id: string) => {
-    await devicesApi.delete(id);
-    setItems(prev => prev.filter(d => d.id !== id));
-    notify(`Устройство ${id} удалено из реестра`);
-    setDeleteDeviceTarget(null);
+    try {
+      setDecomLoading(true);
+      const isHardDelete = decomReason === 'Ошибочно добавленный / Тестовый ПК (полное удаление)';
+      await devicesApi.delete(id, { reason: decomReason, comment: decomComment });
+      if (isHardDelete) {
+        setItems(prev => prev.filter(d => d.id !== id));
+        notify(`Устройство ${id} удалено из мониторинга`);
+      } else {
+        const targetDev = items.find(d => d.id === id);
+        const devName = targetDev?.name || id;
+        setItems(prev => prev.map(d => d.id === id ? {
+          ...d,
+          group: 'Архив',
+          groups: ['Архив'],
+          isArchived: true,
+          decommissionReason: decomReason,
+          decommissionComment: decomComment,
+        } : d));
+        notify(`Рабочая станция ${devName} списана и перенесена в группу «Архив»`);
+        loadFleet();
+      }
+      setDeleteDeviceTarget(null);
+    } catch (e: any) {
+      notify('Ошибка при списании устройства: ' + (e?.message || 'Неизвестная ошибка'));
+    } finally {
+      setDecomLoading(false);
+    }
   };
 
   const openEditDevice = (device: Device) => {
@@ -3027,7 +3074,7 @@ function Devices({
             selectedIds={selectedIds}
             onSelectToggle={handleSelectToggle}
             onSelectAll={handleSelectAll}
-            onDeleteDevice={(id) => setDeleteDeviceTarget(id)}
+            onDeleteDevice={(id) => openDeleteModal(id)}
             onEditMetadata={(d) => openEditDevice(d)}
           />
         ) : (
@@ -3518,22 +3565,110 @@ function Devices({
         </div>
       )}
 
-      {/* Delete Device Modal */}
-      {deleteDeviceTarget && (
-        <div className="modal-backdrop" onClick={() => setDeleteDeviceTarget(null)}>
-          <div className="confirm-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="confirm-icon"><Trash2 size={23} /></div>
-            <h2>Удалить станцию {devices.find(d => d.id === deleteDeviceTarget)?.name || deleteDeviceTarget}?</h2>
-            <p>Запись устройства, история алертов и эталон конфигурации будут удалены из базы данных.</p>
-            <div className="modal-actions">
-              <Button onClick={() => setDeleteDeviceTarget(null)}>{t('common.cancel')}</Button>
-              <Button primary onClick={() => handleDeleteDevice(deleteDeviceTarget)}>
-                Удалить
-              </Button>
+      {/* Delete / Decommission Device Modal */}
+      {deleteDeviceTarget && (() => {
+        const targetDev = items.find(d => d.id === deleteDeviceTarget);
+        const isHardDelete = decomReason === 'Ошибочно добавленный / Тестовый ПК (полное удаление)';
+        return (
+          <div className="modal-backdrop" onClick={() => !decomLoading && setDeleteDeviceTarget(null)}>
+            <div className="modal-card" style={{ maxWidth: '520px', textAlign: 'left' }} onClick={(e) => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', color: isHardDelete ? 'var(--red, #ef4444)' : 'var(--amber, #f59e0b)' }}>
+                  {isHardDelete ? <Trash2 size={20} /> : <Archive size={20} />}
+                  {isHardDelete ? 'Полное удаление рабочей станции' : 'Списание / Вывод из эксплуатации'}
+                </h3>
+                <button className="modal-close" onClick={() => !decomLoading && setDeleteDeviceTarget(null)} disabled={decomLoading}><X size={16} /></button>
+              </div>
+
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', paddingTop: '10px' }}>
+                <div style={{ background: 'var(--surface-hover, rgba(255,255,255,0.04))', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <div style={{ fontWeight: 600, fontSize: '14px' }}>
+                    {targetDev?.name || deleteDeviceTarget}
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <span>ID: <code>{deleteDeviceTarget}</code></span>
+                    {targetDev?.assetTag && <span>Штрих-код: <strong>{targetDev.assetTag}</strong></span>}
+                    {targetDev?.group && <span>Группа: {targetDev.group}</span>}
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '13px', fontWeight: 500 }}>
+                    Причина вывода / списания: <span style={{ color: 'var(--red, #ef4444)' }}>*</span>
+                  </label>
+                  <select
+                    className="form-control"
+                    value={decomReason}
+                    onChange={(e) => setDecomReason(e.target.value)}
+                    disabled={decomLoading}
+                    style={{ padding: '8px 10px', borderRadius: '6px', background: 'var(--surface)', border: '1px solid var(--border)', color: 'inherit' }}
+                  >
+                    {DECOMMISSION_REASONS.map(r => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '13px', fontWeight: 500 }}>
+                    Примечание / Номер акта списания (необязательно):
+                  </label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Например: Акт списания №412, сгорел сокет материнской платы"
+                    value={decomComment}
+                    onChange={(e) => setDecomComment(e.target.value)}
+                    disabled={decomLoading}
+                    style={{ padding: '8px 10px', borderRadius: '6px', background: 'var(--surface)', border: '1px solid var(--border)', color: 'inherit' }}
+                  />
+                </div>
+
+                {isHardDelete ? (
+                  <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', padding: '10px 12px', fontSize: '12px', color: 'var(--red, #ef4444)', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                    <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <div>
+                      <strong>Внимание: безвозвратное удаление!</strong><br />
+                      Данная станция будет полностью удалена из базы данных. Данные о железе не будут сохранены в отчёте «Выгрузка в Итилиум».
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.25)', borderRadius: '8px', padding: '10px 12px', fontSize: '12px', color: 'var(--blue, #3b82f6)', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                    <CheckCircle2 size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <div>
+                      <strong>Архивация для 1C:Итилиум:</strong><br />
+                      ПК автоматически перемещается в защищённую группу <strong>«Архив»</strong>. Мониторинг и алерты отключаются, а вся конфигурация сохраняется со статусом «Выведен из эксплуатации» для инвентаризации и отчётов.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+                <Button onClick={() => setDeleteDeviceTarget(null)} disabled={decomLoading}>{t('common.cancel')}</Button>
+                {isHardDelete ? (
+                  <Button
+                    style={{ background: 'var(--red, #ef4444)', color: '#fff', borderColor: 'var(--red, #ef4444)' }}
+                    icon={<Trash2 size={14} />}
+                    onClick={() => handleDeleteDevice(deleteDeviceTarget)}
+                    disabled={decomLoading}
+                  >
+                    {decomLoading ? 'Удаление...' : 'Удалить навсегда'}
+                  </Button>
+                ) : (
+                  <Button
+                    primary
+                    icon={<Archive size={14} />}
+                    onClick={() => handleDeleteDevice(deleteDeviceTarget)}
+                    disabled={decomLoading}
+                  >
+                    {decomLoading ? 'Сохранение...' : 'Списать в Архив'}
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {/* Bulk Action Confirm Modal */}
       {bulkModalAction && (
@@ -3568,6 +3703,9 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
   const [tab, setTab] = useState('Overview');
   const [showEditModal, setShowEditModal] = useState(false);
   const [showDeleteDeviceModal, setShowDeleteDeviceModal] = useState(false);
+  const [decomReason, setDecomReason] = useState<string>(DECOMMISSION_REASONS[0]);
+  const [decomComment, setDecomComment] = useState<string>('');
+  const [decomLoading, setDecomLoading] = useState<boolean>(false);
   const [isUpdatingAgent, setIsUpdatingAgent] = useState(false);
   const [isSyncing, setIsSyncing] = useState(false);
   const [deviceAlerts, setDeviceAlerts] = useState<Alert[]>([]);
@@ -3671,12 +3809,25 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
 
   const handleDeleteDevice = async () => {
     if (!device) return;
-    const ok = await devicesApi.delete(device.id);
-    if (ok) {
-      notify(`Устройство ${device.name} (${device.id}) удалено из мониторинга`);
-      onBack();
-    } else {
-      notify('Ошибка при удалении устройства');
+    try {
+      setDecomLoading(true);
+      const isHardDelete = decomReason === 'Ошибочно добавленный / Тестовый ПК (полное удаление)';
+      const ok = await devicesApi.delete(device.id, { reason: decomReason, comment: decomComment });
+      if (ok) {
+        if (isHardDelete) {
+          notify(`Устройство ${device.name} (${device.id}) удалено из мониторинга`);
+        } else {
+          notify(`Рабочая станция ${device.name} списана и переведена в группу «Архив»`);
+        }
+        setShowDeleteDeviceModal(false);
+        onBack();
+      } else {
+        notify('Ошибка при списании/удалении устройства');
+      }
+    } catch (err: any) {
+      notify('Ошибка при списании устройства: ' + (err?.message || 'Неизвестная ошибка'));
+    } finally {
+      setDecomLoading(false);
     }
   };
 
@@ -3853,6 +4004,31 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
       <button className="back-link" onClick={onBack} style={{ cursor: 'pointer' }}>
         <ChevronRight size={15} className="back-chevron" /> {t('devices.backToDevices')}
       </button>
+
+      {device.isArchived && (
+        <div style={{
+          margin: '0 0 16px 0',
+          padding: '12px 16px',
+          background: 'rgba(234, 179, 8, 0.1)',
+          border: '1px solid rgba(234, 179, 8, 0.3)',
+          borderRadius: '8px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          color: 'var(--yellow, #eab308)',
+        }}>
+          <Archive size={22} style={{ flexShrink: 0 }} />
+          <div>
+            <strong style={{ fontSize: '14px' }}>Станция выведена из эксплуатации (в архиве)</strong>
+            <div style={{ fontSize: '12px', opacity: 0.9, marginTop: '2px', color: 'var(--text)' }}>
+              Причина: <strong>{device.decommissionReason || 'Не указана'}</strong>
+              {device.decommissionComment ? ` · Примечание: ${device.decommissionComment}` : ''}
+              {device.decommissionedAt ? ` · Дата списания: ${new Date(device.decommissionedAt).toLocaleDateString('ru-RU')}` : ''}
+            </div>
+          </div>
+        </div>
+      )}
+
       <div className="detail-header">
         <div className="device-title">
           <div className="large-device-symbol"><Monitor size={24} /></div>
@@ -3907,11 +4083,15 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
           </Button>
           <Button
             icon={<Trash2 size={15} style={{ color: 'var(--red)' }} />}
-            onClick={() => setShowDeleteDeviceModal(true)}
-            title="Удалить устройство из мониторинга"
+            onClick={() => {
+              setDecomReason(DECOMMISSION_REASONS[0]);
+              setDecomComment('');
+              setShowDeleteDeviceModal(true);
+            }}
+            title="Списать в Архив или удалить устройство"
             style={{ color: 'var(--red)' }}
           >
-            Удалить
+            Списать / Удалить
           </Button>
         </div>
       </div>
@@ -4735,36 +4915,108 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
         </div>
       )}
 
-      {showDeleteDeviceModal && (
-        <div className="modal-backdrop" onClick={() => setShowDeleteDeviceModal(false)}>
-          <div className="modal-card" style={{ maxWidth: '450px' }} onClick={e => e.stopPropagation()}>
-            <div className="modal-header">
-              <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--red)' }}>
-                <Trash2 size={18} /> Удалить устройство из мониторинга?
-              </h3>
-              <button className="modal-close" onClick={() => setShowDeleteDeviceModal(false)}><X size={16} /></button>
-            </div>
-            <div className="modal-body">
-              <p style={{ fontSize: '13px', lineHeight: 1.5, margin: '0 0 10px 0' }}>
-                Вы действительно хотите удалить рабочую станцию <strong>{device.name}</strong> ({device.id})?
-              </p>
-              <p style={{ fontSize: '12px', color: 'var(--muted)', margin: 0 }}>
-                Все спецификации оборудования, аппаратный эталон и история событий питания будут полностью удалены из базы данных.
-              </p>
-            </div>
-            <div className="modal-actions" style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-              <Button onClick={() => setShowDeleteDeviceModal(false)}>Отмена</Button>
-              <Button
-                style={{ background: 'var(--red)', color: '#fff', borderColor: 'var(--red)' }}
-                icon={<Trash2 size={14} />}
-                onClick={handleDeleteDevice}
-              >
-                Удалить устройство
-              </Button>
+      {showDeleteDeviceModal && (() => {
+        const isHardDelete = decomReason === 'Ошибочно добавленный / Тестовый ПК (полное удаление)';
+        return (
+          <div className="modal-backdrop" onClick={() => !decomLoading && setShowDeleteDeviceModal(false)}>
+            <div className="modal-card" style={{ maxWidth: '520px', textAlign: 'left' }} onClick={e => e.stopPropagation()}>
+              <div className="modal-header">
+                <h3 style={{ display: 'flex', alignItems: 'center', gap: '8px', color: isHardDelete ? 'var(--red, #ef4444)' : 'var(--amber, #f59e0b)' }}>
+                  {isHardDelete ? <Trash2 size={20} /> : <Archive size={20} />}
+                  {isHardDelete ? 'Полное удаление устройства' : 'Списание / Вывод из эксплуатации'}
+                </h3>
+                <button className="modal-close" onClick={() => !decomLoading && setShowDeleteDeviceModal(false)} disabled={decomLoading}><X size={16} /></button>
+              </div>
+
+              <div className="modal-body" style={{ display: 'flex', flexDirection: 'column', gap: '14px', paddingTop: '10px' }}>
+                <div style={{ background: 'var(--surface-hover, rgba(255,255,255,0.04))', padding: '12px', borderRadius: '8px', border: '1px solid var(--border)' }}>
+                  <div style={{ fontWeight: 600, fontSize: '14px' }}>
+                    {device.name}
+                  </div>
+                  <div style={{ fontSize: '12px', color: 'var(--muted)', marginTop: '4px', display: 'flex', gap: '12px', flexWrap: 'wrap' }}>
+                    <span>ID: <code>{device.id}</code></span>
+                    {device.assetTag && <span>Штрих-код: <strong>{device.assetTag}</strong></span>}
+                    {device.group && <span>Группа: {device.group}</span>}
+                  </div>
+                </div>
+
+                <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '13px', fontWeight: 500 }}>
+                    Причина вывода / списания: <span style={{ color: 'var(--red, #ef4444)' }}>*</span>
+                  </label>
+                  <select
+                    className="form-control"
+                    value={decomReason}
+                    onChange={(e) => setDecomReason(e.target.value)}
+                    disabled={decomLoading}
+                    style={{ padding: '8px 10px', borderRadius: '6px', background: 'var(--surface)', border: '1px solid var(--border)', color: 'inherit' }}
+                  >
+                    {DECOMMISSION_REASONS.map(r => (
+                      <option key={r} value={r}>{r}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group" style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ fontSize: '13px', fontWeight: 500 }}>
+                    Примечание / Номер акта списания (необязательно):
+                  </label>
+                  <input
+                    type="text"
+                    className="form-control"
+                    placeholder="Например: Акт списания №412, сгорел сокет материнской платы"
+                    value={decomComment}
+                    onChange={(e) => setDecomComment(e.target.value)}
+                    disabled={decomLoading}
+                    style={{ padding: '8px 10px', borderRadius: '6px', background: 'var(--surface)', border: '1px solid var(--border)', color: 'inherit' }}
+                  />
+                </div>
+
+                {isHardDelete ? (
+                  <div style={{ background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', padding: '10px 12px', fontSize: '12px', color: 'var(--red, #ef4444)', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                    <AlertTriangle size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <div>
+                      <strong>Внимание: безвозвратное удаление!</strong><br />
+                      Данная станция будет полностью удалена из базы данных. Данные о железе не будут сохранены в отчёте «Выгрузка в Итилиум».
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ background: 'rgba(59, 130, 246, 0.08)', border: '1px solid rgba(59, 130, 246, 0.25)', borderRadius: '8px', padding: '10px 12px', fontSize: '12px', color: 'var(--blue, #3b82f6)', display: 'flex', gap: '8px', alignItems: 'flex-start' }}>
+                    <CheckCircle2 size={18} style={{ flexShrink: 0, marginTop: '2px' }} />
+                    <div>
+                      <strong>Архивация для 1C:Итилиум:</strong><br />
+                      ПК автоматически перемещается в защищённую группу <strong>«Архив»</strong>. Мониторинг и алерты отключаются, а вся конфигурация сохраняется со статусом «Выведен из эксплуатации» для инвентаризации и отчётов.
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              <div className="modal-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: '8px', marginTop: '16px' }}>
+                <Button onClick={() => setShowDeleteDeviceModal(false)} disabled={decomLoading}>{t('common.cancel')}</Button>
+                {isHardDelete ? (
+                  <Button
+                    style={{ background: 'var(--red, #ef4444)', color: '#fff', borderColor: 'var(--red, #ef4444)' }}
+                    icon={<Trash2 size={14} />}
+                    onClick={handleDeleteDevice}
+                    disabled={decomLoading}
+                  >
+                    {decomLoading ? 'Удаление...' : 'Удалить навсегда'}
+                  </Button>
+                ) : (
+                  <Button
+                    primary
+                    icon={<Archive size={14} />}
+                    onClick={handleDeleteDevice}
+                    disabled={decomLoading}
+                  >
+                    {decomLoading ? 'Сохранение...' : 'Списать в Архив'}
+                  </Button>
+                )}
+              </div>
             </div>
           </div>
-        </div>
-      )}
+        );
+      })()}
 
       {showHealthModal && (
         <div className="modal-backdrop" onClick={() => setShowHealthModal(false)}>

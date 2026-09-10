@@ -256,6 +256,8 @@ class SchedulerService:
                 for dev in devices:
                     if not dev.id:
                         continue
+                    if getattr(dev, 'is_archived', False) or (dev.group_name or '').strip().lower() == 'архив':
+                        continue
                     dev_key = str(dev.id).upper()
                     if now_ts < self._power_action_grace_until.get(dev_key, 0):
                         continue
@@ -288,6 +290,8 @@ class SchedulerService:
                 device_updates = []
                 for dev in devices:
                     if not dev.id:
+                        continue
+                    if getattr(dev, 'is_archived', False) or (dev.group_name or '').strip().lower() == 'архив':
                         continue
                     dev_key = str(dev.id).upper()
 

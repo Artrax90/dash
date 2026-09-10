@@ -77,6 +77,10 @@ def safe_migrate_columns_sync(connection):
             ("building", "ALTER TABLE devices ADD COLUMN building VARCHAR(100) DEFAULT ''"),
             ("floor", "ALTER TABLE devices ADD COLUMN floor VARCHAR(50) DEFAULT ''"),
             ("room", "ALTER TABLE devices ADD COLUMN room VARCHAR(100) DEFAULT ''"),
+            ("is_archived", "ALTER TABLE devices ADD COLUMN is_archived BOOLEAN DEFAULT 0"),
+            ("decommission_reason", "ALTER TABLE devices ADD COLUMN decommission_reason VARCHAR(200)"),
+            ("decommission_comment", "ALTER TABLE devices ADD COLUMN decommission_comment VARCHAR(500)"),
+            ("decommissioned_at", f"ALTER TABLE devices ADD COLUMN decommissioned_at {dt_type}"),
         ]
         
         for col_name, col_sql in column_defs:

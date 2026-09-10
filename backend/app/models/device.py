@@ -64,6 +64,10 @@ class Device(Base):
     asset_tag = Column(String(128), nullable=True, default="")
     notes = Column(String(500), nullable=True, default="")
     heartbeat_interval = Column(Integer, nullable=True, default=None) # Custom seconds override (None = use group / global default)
+    is_archived = Column(Boolean, default=False, index=True)
+    decommission_reason = Column(String(200), nullable=True, default=None)
+    decommission_comment = Column(String(500), nullable=True, default=None)
+    decommissioned_at = Column(DateTime, nullable=True, default=None)
     
     # Relationships
     hardware_spec = relationship("HardwareSpecModel", back_populates="device", uselist=False, cascade="all, delete-orphan")

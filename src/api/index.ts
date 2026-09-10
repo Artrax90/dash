@@ -292,10 +292,20 @@ export const devicesApi = {
     }
     return await res.blob();
   },
-  delete: async (id: string): Promise<boolean> => {
+  delete: async (id: string, params?: { reason?: string; comment?: string }): Promise<any> => {
     try {
-      const res = await fetch(`${API_BASE}/devices/${id}`, { method: 'DELETE' });
-      if (res.ok) return true;
+      const q = new URLSearchParams();
+      if (params?.reason) q.append('reason', params.reason);
+      if (params?.comment) q.append('comment', params.comment);
+      const url = `${API_BASE}/devices/${id}${q.toString() ? `?${q.toString()}` : ''}`;
+      const res = await fetch(url, { method: 'DELETE' });
+      if (res.ok) {
+        try {
+          return await res.json();
+        } catch {
+          return true;
+        }
+      }
     } catch {
       // fallback
     }

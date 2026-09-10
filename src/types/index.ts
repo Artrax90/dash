@@ -175,6 +175,10 @@ export interface Device {
   alertPolicy?: AlertPolicy;
   executionProfile?: ExecutionProfile;
   rdpSessions?: RdpSession[];
+  isArchived?: boolean;
+  decommissionReason?: string;
+  decommissionComment?: string;
+  decommissionedAt?: string;
 }
 
 export interface RdpSession {

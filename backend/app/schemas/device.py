@@ -138,6 +138,10 @@ class DeviceOut(DeviceBase):
     updateStatus: Optional[str] = "idle"
     maintenance: bool = False
     hardware: Optional[HardwareSpecSchema] = None
+    isArchived: Optional[bool] = False
+    decommissionReason: Optional[str] = None
+    decommissionComment: Optional[str] = None
+    decommissionedAt: Optional[str] = None
     hardwareChangesCount: int = 0
     alertPolicy: Optional[AlertPolicySchema] = None
 

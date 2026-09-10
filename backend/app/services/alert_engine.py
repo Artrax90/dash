@@ -112,6 +112,9 @@ class AlertEngine:
                         except Exception:
                             pass
 
+                    if dev_obj and (dev_obj.get("isArchived") or (dev_obj.get("group") or "").strip().lower() == "архив"):
+                        return
+
                     # Collect recipient chat IDs, filtered by scope
                     target_chats = set()
                     global_chat = str(cfg.get("chatId", "")).strip()

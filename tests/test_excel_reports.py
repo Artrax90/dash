@@ -232,7 +232,23 @@ def test_generate_itilium_excel_report():
             'ip_address': '192.168.1.50',
             'mac_address': '70:85:C2:54:1F:7D',
             'assetTag': 'INV-2026-ITIL-001',
-            'currentUser': 'Иванов И.И.'
+            'currentUser': 'Иванов И.И.',
+            'is_archived': False
+        },
+        {
+            'id': 'PC-02',
+            'name': 'ARM-02',
+            'group_name': 'Архив',
+            'power_status': 'Off',
+            'agent_status': 'Disconnected',
+            'ip_address': '192.168.1.51',
+            'mac_address': '70:85:C2:54:1F:7E',
+            'assetTag': 'INV-2026-ITIL-002',
+            'currentUser': '—',
+            'is_archived': True,
+            'decommission_reason': 'Неисправность / Выход из строя',
+            'decommission_comment': 'сгорел сокет',
+            'decommissioned_at': '10.09.2026'
         }
     ]
 
@@ -272,6 +288,14 @@ def test_generate_itilium_excel_report():
             'network': [
                 {'name': 'Realtek PCIe GbE Family Controller', 'mac': '70:85:C2:54:1F:7D', 'ip': '192.168.1.50', 'speedMbps': 1000}
             ]
+        },
+        'PC-02': {
+            'motherboard': {'manufacturer': 'Gigabyte', 'model': 'H310M', 'serialNumber': 'SN84920'},
+            'cpu': {'model': 'Intel Core i3-8100', 'cores': 4, 'threads': 4, 'baseFrequencyGhz': 3.6},
+            'ram': {'totalGb': 8},
+            'storage': [{'model': 'Crucial BX500 240GB', 'capacityGb': 240, 'mediaType': 'SSD'}],
+            'gpus': [],
+            'network': [{'name': 'Intel Ethernet', 'mac': '70:85:C2:54:1F:7E', 'ip': '192.168.1.51'}]
         }
     }
 
@@ -292,6 +316,7 @@ def test_generate_itilium_excel_report():
     headers = [sheet.cell(1, c).value for c in range(1, 20) if sheet.cell(1, c).value is not None]
     assert 'Имя ПК' in headers
     assert 'Штрих-код КЕ' in headers
+    assert 'Статус КЕ' in headers
     assert 'Инвентарный номер' not in headers
     assert 'Материнская плата' in headers
     assert 'Процессор (CPU)' in headers
@@ -299,16 +324,16 @@ def test_generate_itilium_excel_report():
     assert 'Накопители (HDD/SSD)' in headers
     assert 'Видеокарта (GPU)' in headers
 
-    # Ensure unwanted columns are removed
-    assert len(headers) == 13
+    # Ensure unwanted columns are removed and exactly 14 columns are present
+    assert len(headers) == 14
     assert 'ID станции' not in headers
-    assert 'Статус' not in headers
     assert 'Статус питания' not in headers
     assert 'Текущий пользователь' not in headers
 
-    # Value checks in row 2 (data starts immediately after row 1 headers)
+    # Value checks in row 2 (active PC)
     name_col = headers.index('Имя ПК') + 1
     inv_col = headers.index('Штрих-код КЕ') + 1
+    ke_status_col = headers.index('Статус КЕ') + 1
     mb_col = headers.index('Материнская плата') + 1
     cpu_col = headers.index('Процессор (CPU)') + 1
     ram_col = headers.index('Оперативная память (RAM)') + 1
@@ -317,12 +342,20 @@ def test_generate_itilium_excel_report():
 
     assert sheet.cell(2, name_col).value == 'ARM-01'
     assert sheet.cell(2, inv_col).value == 'INV-2026-ITIL-001'
+    assert sheet.cell(2, ke_status_col).value == 'В эксплуатации'
     assert 'PRIME B450M-K' in str(sheet.cell(2, mb_col).value)
     assert 'Ryzen 5 3600' in str(sheet.cell(2, cpu_col).value)
     assert '16 GB' in str(sheet.cell(2, ram_col).value)
     assert 'Kingston SA400' in str(sheet.cell(2, disk_col).value)
     assert 'GTX 1660' in str(sheet.cell(2, gpu_col).value)
     assert sheet.freeze_panes == 'A2'
+
+    # Value checks in row 3 (decommissioned/archived PC)
+    assert sheet.cell(3, name_col).value == 'ARM-02'
+    assert sheet.cell(3, inv_col).value == 'INV-2026-ITIL-002'
+    assert sheet.cell(3, ke_status_col).value == 'Выведен из эксплуатации (Неисправность / Выход из строя: сгорел сокет, 10.09.2026)'
+    assert 'Gigabyte' in str(sheet.cell(3, mb_col).value)
+    assert 'i3-8100' in str(sheet.cell(3, cpu_col).value)
 
 @pytest.mark.anyio
 async def test_itilium_report_endpoint():
@@ -339,5 +372,128 @@ async def test_itilium_report_endpoint():
         assert sheet.cell(1, 1).value == '№'
         headers = [sheet.cell(1, c).value for c in range(1, 20) if sheet.cell(1, c).value is not None]
         assert 'Штрих-код КЕ' in headers
+        assert 'Статус КЕ' in headers
+
+@pytest.mark.anyio
+async def test_archive_group_is_protected():
+    import httpx
+    from backend.app.main import app
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/v1/groups")
+        assert resp.status_code == 200
+        groups = resp.json()
+        assert any(g.get("name") == "Архив" for g in groups)
+
+        del_resp = await client.delete("/api/v1/groups/Архив")
+        assert del_resp.status_code == 400
+        assert "Архив" in del_resp.json().get("detail", "")
+
+@pytest.mark.anyio
+async def test_device_decommission_to_archive():
+    import httpx
+    from backend.app.main import app
+    from backend.app.db.session import AsyncSessionLocal
+    from backend.app.models.device import Device, PowerStatus, AgentStatus
+    from backend.app.models.hardware import HardwareSpecModel
+    from sqlalchemy import select, delete
+
+    async with AsyncSessionLocal() as session:
+        # Clean up any leftover test device
+        await session.execute(delete(HardwareSpecModel).where(HardwareSpecModel.device_id == "TEST-DEC-01"))
+        await session.execute(delete(Device).where(Device.id == "TEST-DEC-01"))
+        await session.commit()
+
+        # Create test device
+        dev = Device(
+            id="TEST-DEC-01",
+            name="PC-DEC-01",
+            hostname="PC-DEC-01-HOST",
+            ip_address="192.168.10.55",
+            mac_address="AA:BB:CC:DD:EE:01",
+            group_name="Бухгалтерия",
+            building="Главный корпус",
+            floor="2 этаж",
+            room="Каб. 201",
+            power_status=PowerStatus.ON,
+            agent_status=AgentStatus.CONNECTED,
+            asset_tag="INV-DEC-001"
+        )
+        spec = HardwareSpecModel(
+            device_id="TEST-DEC-01",
+            raw_spec={"motherboard": {"model": "ASUS PRIME"}}
+        )
+        session.add(dev)
+        session.add(spec)
+        await session.commit()
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.delete(
+            "/api/v1/devices/TEST-DEC-01",
+            params={
+                "reason": "Неисправность / Выход из строя",
+                "comment": "сгорел сокет материнской платы"
+            },
+            headers={"X-User-Role": "SuperAdmin"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("status") == "archived"
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(Device).where(Device.id == "TEST-DEC-01"))
+        d = res.scalar_one_or_none()
+        assert d is not None
+        assert d.is_archived is True
+        assert d.group_name == "Архив"
+        assert d.building == ""
+        assert d.decommission_reason == "Неисправность / Выход из строя"
+        assert d.decommission_comment == "сгорел сокет материнской платы"
+        assert d.decommissioned_at is not None
+
+        spec_res = await session.execute(select(HardwareSpecModel).where(HardwareSpecModel.device_id == "TEST-DEC-01"))
+        sp = spec_res.scalar_one_or_none()
+        assert sp is not None
+        assert sp.raw_spec.get("motherboard", {}).get("model") == "ASUS PRIME"
+
+@pytest.mark.anyio
+async def test_device_hard_delete_for_test_machines():
+    import httpx
+    from backend.app.main import app
+    from backend.app.db.session import AsyncSessionLocal
+    from backend.app.models.device import Device, PowerStatus, AgentStatus
+    from sqlalchemy import select, delete
+
+    async with AsyncSessionLocal() as session:
+        await session.execute(delete(Device).where(Device.id == "TEST-HARD-DEL"))
+        await session.commit()
+
+        dev = Device(
+            id="TEST-HARD-DEL",
+            name="Test-VM",
+            hostname="TEST-VM-HOST",
+            ip_address="192.168.10.99",
+            mac_address="AA:BB:CC:DD:EE:99",
+            group_name="Testing",
+            power_status=PowerStatus.OFF,
+            agent_status=AgentStatus.DISCONNECTED
+        )
+        session.add(dev)
+        await session.commit()
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.delete(
+            "/api/v1/devices/TEST-HARD-DEL",
+            params={
+                "reason": "Ошибочно добавленный / Тестовый ПК (полное удаление)"
+            },
+            headers={"X-User-Role": "SuperAdmin"}
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data.get("status") == "deleted"
+
+    async with AsyncSessionLocal() as session:
+        res = await session.execute(select(Device).where(Device.id == "TEST-HARD-DEL"))
+        assert res.scalar_one_or_none() is None
 
 

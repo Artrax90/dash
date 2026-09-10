@@ -83,6 +83,7 @@ def get_default_groups() -> List[Dict[str, Any]]:
         {"name": "Dev", "desc": "Рабочие станции разработчиков и дизайнеров", "color": "cyan", "schedule": "Dev Working Day"},
         {"name": "Accounting", "desc": "Бухгалтерия и финансовый отдел", "color": "slate", "schedule": "Без расписания"},
         {"name": "Servers", "desc": "Серверное оборудование и гипервизоры", "color": "red", "schedule": "Круглосуточно (24/7)"},
+        {"name": "Архив", "desc": "Списанное и выведенное из эксплуатации оборудование", "color": "slate", "schedule": "Без расписания", "is_system": True, "monitoring_policy": "Muted"},
     ]
 
 BACKUP_GROUPS_FILE = os.path.join(settings.DATA_DIR, "groups.backup.json")
@@ -94,6 +95,9 @@ def load_groups() -> List[Dict[str, Any]]:
             with open(GROUPS_FILE, "r", encoding="utf-8") as f:
                 data = json.load(f)
                 if isinstance(data, list):
+                    # Ensure "Архив" is always present
+                    if not any((g.get("name") or "").strip().lower() == "архив" for g in data if isinstance(g, dict)):
+                        data.append({"name": "Архив", "desc": "Списанное и выведенное из эксплуатации оборудование", "color": "slate", "schedule": "Без расписания", "is_system": True, "monitoring_policy": "Muted"})
                     # Update backup if valid
                     try:
                         with open(BACKUP_GROUPS_FILE, "w", encoding="utf-8") as bf:
@@ -110,6 +114,8 @@ def load_groups() -> List[Dict[str, Any]]:
             with open(BACKUP_GROUPS_FILE, "r", encoding="utf-8") as bf:
                 data = json.load(bf)
                 if isinstance(data, list):
+                    if not any((g.get("name") or "").strip().lower() == "архив" for g in data if isinstance(g, dict)):
+                        data.append({"name": "Архив", "desc": "Списанное и выведенное из эксплуатации оборудование", "color": "slate", "schedule": "Без расписания", "is_system": True, "monitoring_policy": "Muted"})
                     save_groups(data)
                     return data
         except Exception:
@@ -591,6 +597,8 @@ async def update_group(name: str, payload: Dict[str, Any]):
 
 @router.delete("/{name:path}")
 async def delete_group(name: str):
+    if name.strip().lower() == "архив":
+        raise HTTPException(status_code=400, detail="Системную группу 'Архив' нельзя удалить")
     idx = next((i for i, g in enumerate(groups_store) if g["name"].lower() == name.lower()), None)
     if idx is not None:
         deleted = groups_store.pop(idx)

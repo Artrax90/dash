@@ -631,6 +631,7 @@ def generate_itilium_excel_report(
         '№',
         'Имя ПК',
         'Штрих-код КЕ',
+        'Статус КЕ',
         'Расположение',
         'Группа / Отдел',
         'Материнская плата',
@@ -677,6 +678,38 @@ def generate_itilium_excel_report(
 
         grp = d.get('group_name') or d.get('group') or '—'
 
+        # Determine KE Status (Asset Status for 1C:Itilium)
+        is_archived = (
+            d.get('is_archived') is True or 
+            d.get('isArchived') is True or 
+            (d.get('group_name') or '').strip().lower() == 'архив' or 
+            (d.get('group') or '').strip().lower() == 'архив'
+        )
+        if is_archived:
+            reason = d.get('decommission_reason') or d.get('decommissionReason') or 'Неисправность / Выход из строя'
+            comment = d.get('decommission_comment') or d.get('decommissionComment')
+            dt_raw = d.get('decommissioned_at') or d.get('decommissionedAt')
+            if isinstance(dt_raw, datetime):
+                dt_str = dt_raw.astimezone().strftime('%d.%m.%Y')
+            elif isinstance(dt_raw, str) and dt_raw.strip():
+                dt_str = dt_raw.split()[0] if ' ' in dt_raw else dt_raw.strip()
+            else:
+                dt_str = datetime.now().astimezone().strftime('%d.%m.%Y')
+
+            details = []
+            if reason:
+                if comment and str(comment).strip():
+                    details.append(f"{reason}: {str(comment).strip()}")
+                else:
+                    details.append(str(reason).strip())
+            elif comment and str(comment).strip():
+                details.append(str(comment).strip())
+            details.append(dt_str)
+
+            ke_status_str = f"Выведен из эксплуатации ({', '.join(details)})"
+        else:
+            ke_status_str = "В эксплуатации"
+
         mb_str = _fmt_mb(spec)
         cpu_str = _fmt_cpu(spec, d)
         ram_str = _fmt_ram(spec, d)
@@ -690,6 +723,7 @@ def generate_itilium_excel_report(
             (idx, align_center),
             (name_val, align_left),
             (inv_num, align_center),
+            (ke_status_str, align_left),
             (location_str, align_left),
             (grp, align_left),
             (mb_str, align_left),

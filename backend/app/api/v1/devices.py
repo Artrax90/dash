@@ -588,7 +588,11 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
         "tags": d.tags or ([] if not is_agentless else ["Тонкий клиент", "Agentless"]),
         "assetTag": d.asset_tag or "",
         "notes": d.notes or "",
-        "heartbeatInterval": d.heartbeat_interval
+        "heartbeatInterval": d.heartbeat_interval,
+        "isArchived": getattr(d, 'is_archived', False) or False,
+        "decommissionReason": getattr(d, 'decommission_reason', None),
+        "decommissionComment": getattr(d, 'decommission_comment', None),
+        "decommissionedAt": (d.decommissioned_at.strftime("%d.%m.%Y %H:%M") if getattr(d, 'decommissioned_at', None) else None)
     }
 
 @router.post("/probe")
@@ -1911,7 +1915,24 @@ async def update_device(device_id: str, payload: Dict[str, Any], request: Reques
     return format_device_summary(device)
 
 @router.delete("/{device_id}")
-async def delete_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
+async def delete_device(
+    device_id: str,
+    request: Request,
+    reason: Optional[str] = None,
+    comment: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    # If parameters were not passed in query string, check if JSON body is present
+    if not reason:
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                reason = body.get("reason")
+                if not comment:
+                    comment = body.get("comment")
+        except Exception:
+            pass
+
     raw_role = request.headers.get("X-User-Role") or ""
     import urllib.parse
     user_role = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
@@ -1935,25 +1956,71 @@ async def delete_device(device_id: str, request: Request, db: AsyncSession = Dep
     dev_name = device.name or device.id
     target_id = device.id
 
-    # Clean up associated hardware, baseline, change logs and alerts
-    await db.execute(delete(HardwareSpecModel).where(HardwareSpecModel.device_id == target_id))
-    await db.execute(delete(HardwareBaselineModel).where(HardwareBaselineModel.device_id == target_id))
-    await db.execute(delete(HardwareChangeModel).where(HardwareChangeModel.device_id == target_id))
-    await db.execute(delete(AlertPolicyModel).where(AlertPolicyModel.device_id == target_id))
-    await db.delete(device)
-    await db.commit()
+    # Check if this is a hard delete (only for "Ошибочно добавленный / Тестовый ПК")
+    clean_reason = (reason or "").strip()
+    is_hard_delete = clean_reason in [
+        "Ошибочно добавленный / Тестовый ПК",
+        "Ошибочно добавленный / Тестовый ПК (полное удаление)",
+        "test_device",
+        "hard_delete"
+    ]
 
-    device_live_processes.pop(target_id, None)
-    device_live_processes.pop(target_id.upper(), None)
-    device_power_logs.pop(target_id, None)
-    device_power_logs.pop(target_id.upper(), None)
+    if is_hard_delete:
+        # Hard Delete: Clean up associated hardware, baseline, change logs and alerts
+        await db.execute(delete(HardwareSpecModel).where(HardwareSpecModel.device_id == target_id))
+        await db.execute(delete(HardwareBaselineModel).where(HardwareBaselineModel.device_id == target_id))
+        await db.execute(delete(HardwareChangeModel).where(HardwareChangeModel.device_id == target_id))
+        await db.execute(delete(AlertPolicyModel).where(AlertPolicyModel.device_id == target_id))
+        await db.delete(device)
+        await db.commit()
 
-    await ws_manager.broadcast({
-        "type": "DEVICE_DELETED",
-        "deviceId": target_id,
-        "message": f"Рабочая станция {dev_name} удалена из мониторинга"
-    })
-    return {"status": "success", "message": f"Device {dev_name} deleted successfully"}
+        device_live_processes.pop(target_id, None)
+        device_live_processes.pop(target_id.upper(), None)
+        device_power_logs.pop(target_id, None)
+        device_power_logs.pop(target_id.upper(), None)
+
+        await ws_manager.broadcast({
+            "type": "DEVICE_DELETED",
+            "deviceId": target_id,
+            "message": f"Рабочая станция {dev_name} полностью удалена из базы данных"
+        })
+        return {"status": "deleted", "mode": "hard", "message": f"Device {dev_name} deleted successfully"}
+    else:
+        # Soft Delete / Archive: Move to hardcoded "Архив" group, preserve hardware_spec for Itilium inventory!
+        effective_reason = clean_reason or "Неисправность / Выход из строя"
+        device.is_archived = True
+        device.decommission_reason = effective_reason
+        device.decommission_comment = (comment or "").strip() or None
+        device.decommissioned_at = datetime.utcnow()
+        device.group_name = "Архив"
+        device.building = ""
+        device.floor = ""
+        device.room = ""
+        device.power_status = PowerStatus.OFF
+        device.agent_status = AgentStatus.DISCONNECTED
+        device.health_status = HealthStatus.HEALTHY
+        device.uptime = "—"
+        device.uptime_seconds = 0
+
+        # Close and remove open alerts for this device
+        from backend.app.models.alert import AlertModel
+        await db.execute(delete(AlertModel).where(AlertModel.device_id == target_id))
+        await db.commit()
+
+        device_live_processes.pop(target_id, None)
+        device_live_processes.pop(target_id.upper(), None)
+
+        await ws_manager.broadcast({
+            "type": "DEVICE_DELETED",
+            "deviceId": target_id,
+            "message": f"Рабочая станция {dev_name} списана и перемещена в группу «Архив»"
+        })
+        await ws_manager.broadcast_event("device.updated", format_device_summary(device))
+        return {
+            "status": "archived",
+            "mode": "soft",
+            "message": f"Рабочая станция {dev_name} списана в архив ({effective_reason})"
+        }
 
 @router.post("/{device_id}/alert-policy")
 async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
