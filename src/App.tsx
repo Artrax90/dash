@@ -876,7 +876,7 @@ function App() {
       } catch {}
     };
 
-    const sessionCheckInterval = setInterval(checkSessionNow, 2500);
+    const sessionCheckInterval = setInterval(checkSessionNow, 20000);
     window.addEventListener('focus', checkSessionNow);
     const handleVisibilityChange = () => {
       if (document.visibilityState === 'visible') {
@@ -3835,7 +3835,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
           setDeviceAlerts(filtered);
         }
       }).catch(() => {});
-    }, 3000);
+    }, 12000);
 
     const unsubUpdated = wsClient.on('device.updated', (updatedDev: any) => {
       if (updatedDev && (updatedDev.id === deviceId || updatedDev.deviceId === deviceId)) {
@@ -5558,23 +5558,14 @@ function DeviceMonitoringTab({
 
   const loadProcesses = useCallback(async () => {
     try {
-      let procs = await devicesApi.getProcesses(device.id);
-      if ((!procs || procs.length === 0) && device.name && device.name !== device.id) {
-        procs = await devicesApi.getProcesses(device.name);
-      }
-      if ((!procs || procs.length === 0) && device.hostname && device.hostname !== device.id && device.hostname !== device.name) {
-        procs = await devicesApi.getProcesses(device.hostname);
-      }
-      if ((!procs || procs.length === 0) && (device as any).ip) {
-        procs = await devicesApi.getProcesses((device as any).ip);
-      }
+      const procs = await devicesApi.getProcesses(device.id);
       if (Array.isArray(procs) && procs.length > 0) {
         setLiveProcesses(procs);
       }
     } catch (err) {
       console.error('Failed to load processes:', err);
     }
-  }, [device.id, device.name, device.hostname, (device as any).ip]);
+  }, [device.id]);
 
   const loadHistory = useCallback(async () => {
     try {

@@ -995,19 +995,37 @@ async def create_agentless_device(payload: AgentlessDeviceCreateSchema, request:
         "device": format_device_summary(dev)
     }
 
+_devices_cache: Dict[str, Tuple[List[Dict[str, Any]], float]] = {}
+_DEVICES_CACHE_TTL: float = 3.0
+
+def invalidate_devices_cache():
+    global _devices_cache
+    _devices_cache.clear()
+
 @router.get("")
 async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
-    result = await db.execute(select(Device))
-    devices = result.scalars().all()
-
-    # Scope validation: filter devices for non-superadmin users with restricted scope
     from backend.app.api.v1.users import get_current_user_from_request, is_superadmin_role
     from backend.app.core.scope import is_device_in_scope
 
     u = get_current_user_from_request(request)
+    allowed_scope = None
+    scope_key = "all"
     if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
-        allowed = u.get("allowedGroups", [])
-        devices = [d for d in devices if is_device_in_scope(format_device_summary(d), allowed)]
+        allowed_scope = u.get("allowedGroups", [])
+        scope_key = ",".join(sorted(allowed_scope))
+
+    now_ts = time.time()
+    cached = _devices_cache.get(scope_key)
+    if cached is not None:
+        cached_val, exp_ts = cached
+        if now_ts < exp_ts:
+            return cached_val
+
+    result = await db.execute(select(Device))
+    devices = result.scalars().all()
+
+    if allowed_scope:
+        devices = [d for d in devices if is_device_in_scope(format_device_summary(d), allowed_scope)]
     
     # 1. Hardware Specs Map
     hw_res = await db.execute(select(HardwareSpecModel))
@@ -1075,6 +1093,7 @@ async def list_devices(request: Request, db: AsyncSession = Depends(get_db)):
         item["baseline"] = bl_map.get(d.id) or bl_map.get(d.id.upper()) or bl_map.get(d.id.lower())
         item["hardwareChangesCount"] = mismatch_counts.get(d.id, 0)
         summaries.append(item)
+    _devices_cache[scope_key] = (summaries, now_ts + _DEVICES_CACHE_TTL)
     return summaries
 
 _stats_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
@@ -1682,13 +1701,34 @@ async def get_device_telemetry_history(
         "hasData": has_data
     }
 
+_single_device_cache: Dict[str, Tuple[Dict[str, Any], float]] = {}
+_SINGLE_DEVICE_CACHE_TTL: float = 3.0
+
+def invalidate_single_device_cache(device_id: Optional[str] = None):
+    global _single_device_cache
+    if device_id:
+        _single_device_cache.pop(str(device_id).upper(), None)
+        _single_device_cache.pop(str(device_id).lower(), None)
+        _single_device_cache.pop(str(device_id), None)
+    else:
+        _single_device_cache.clear()
+
 @router.get("/{device_id}")
 async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
+    dev_key = str(device_id).upper()
+    now_ts = time.time()
+    cached = _single_device_cache.get(dev_key)
+    if cached is not None:
+        c_val, exp_ts = cached
+        if now_ts < exp_ts:
+            return c_val
+
     device, dev_dict = await find_device_resilient(db, device_id)
     if not device and not dev_dict:
         raise HTTPException(status_code=404, detail="Device not found")
     
     if not device:
+        _single_device_cache[dev_key] = (dev_dict, now_ts + _SINGLE_DEVICE_CACHE_TTL)
         return dev_dict
     
     data = format_device_summary(device)
@@ -1817,6 +1857,7 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
                 save_device_processes(device_live_processes)
 
     data["processes"] = reported_procs if reported_procs else []
+    _single_device_cache[dev_key] = (data, now_ts + _SINGLE_DEVICE_CACHE_TTL)
     return data
 
 @router.get("/{device_id}/processes")

@@ -562,11 +562,12 @@ async def validate_session_endpoint(request: Request):
     if not x_username:
         return {"valid": False, "active": False, "reason": "Пользователь не указан"}
 
-    file_sessions = _load_sessions()
-    if file_sessions:
-        user_active_sessions.update(file_sessions)
-
     active_sess = user_active_sessions.get(x_username)
+    if not active_sess:
+        file_sessions = _load_sessions()
+        if file_sessions:
+            user_active_sessions.update(file_sessions)
+            active_sess = user_active_sessions.get(x_username)
 
     if not token:
         return {
@@ -576,7 +577,6 @@ async def validate_session_endpoint(request: Request):
         }
 
     if not active_sess:
-        # If no session registered yet on server (e.g. initial start), register this token
         register_user_session(x_username, token)
         return {"valid": True, "active": True}
 

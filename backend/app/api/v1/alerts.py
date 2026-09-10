@@ -1,5 +1,5 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
-from typing import Dict, Any, List, Optional
+from typing import Dict, Any, List, Optional, Tuple
 import json
 import os
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,8 +42,23 @@ def save_alerts_to_file(alerts: List[Dict[str, Any]]):
 
 alerts_db: List[Dict[str, Any]] = load_alerts_from_file()
 
+_alerts_cache: Dict[str, Tuple[List[Dict[str, Any]], float]] = {}
+_ALERTS_CACHE_TTL: float = 3.0
+
+def invalidate_alerts_cache():
+    global _alerts_cache
+    _alerts_cache.clear()
+
 @router.get("")
 async def list_alerts(db: AsyncSession = Depends(get_db)):
+    import time
+    now_ts = time.time()
+    cached = _alerts_cache.get("all")
+    if cached is not None:
+        cached_val, exp_ts = cached
+        if now_ts < exp_ts:
+            return cached_val
+
     # 1. Map all devices to display friendly name / hostname
     dev_res = await db.execute(select(Device))
     dev_map = {d.id: (d.name or d.hostname or d.id) for d in dev_res.scalars().all()}
@@ -87,6 +102,7 @@ async def list_alerts(db: AsyncSession = Depends(get_db)):
                 a["device"] = dev_map.get(a.get("deviceId", ""), a.get("deviceId", "ПК"))
             combined_alerts.append(a)
             
+    _alerts_cache["all"] = (combined_alerts, now_ts + _ALERTS_CACHE_TTL)
     return combined_alerts
 
 @router.post("/{alert_id}/resolve")

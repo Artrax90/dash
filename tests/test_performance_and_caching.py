@@ -5,11 +5,24 @@ from backend.app.api.v1.devices import (
     get_device_stats,
     invalidate_device_stats_cache,
     _stats_cache,
-    _STATS_CACHE_TTL
+    _STATS_CACHE_TTL,
+    list_devices,
+    invalidate_devices_cache,
+    _devices_cache
 )
 from backend.app.api.v1.agents import (
     should_broadcast_device_update,
     _last_device_broadcast_state
+)
+from backend.app.api.v1.alerts import (
+    list_alerts,
+    invalidate_alerts_cache,
+    _alerts_cache
+)
+from backend.app.api.v1.sessions import (
+    list_sessions,
+    live_device_sessions,
+    update_device_sessions
 )
 
 @pytest.mark.anyio
@@ -85,3 +98,66 @@ def test_device_heartbeat_broadcast_throttling():
     # 7. Time elapsed > 30s with identical state -> periodic broadcast allowed (True)
     _last_device_broadcast_state[dev_id]["ts"] = time.time() - 35
     assert should_broadcast_device_update(dev_id, state_power_off) is True
+
+
+@pytest.mark.anyio
+async def test_list_sessions_fast_path_when_empty():
+    update_device_sessions("PC-NO-SESS", sessions_list=[])
+    assert "PC-NO-SESS" in live_device_sessions
+    assert live_device_sessions["PC-NO-SESS"] == []
+
+    mock_db = AsyncMock()
+    mock_db.execute = AsyncMock()
+
+    # Must return [] immediately from memory without touching db
+    res = await list_sessions(device_id="PC-NO-SESS", db=mock_db)
+    assert res == []
+    mock_db.execute.assert_not_called()
+
+
+@pytest.mark.anyio
+async def test_list_alerts_caching():
+    invalidate_alerts_cache()
+    mock_db = AsyncMock()
+    
+    mock_dev_res = MagicMock()
+    mock_dev_res.scalars.return_value.all.return_value = []
+    
+    mock_alert_res = MagicMock()
+    mock_alert_res.scalars.return_value.all.return_value = []
+    
+    mock_db.execute.side_effect = [mock_dev_res, mock_alert_res]
+
+    # First call: queries db
+    res1 = await list_alerts(db=mock_db)
+    assert mock_db.execute.call_count == 2
+    assert len(_alerts_cache) > 0
+
+    # Second call: returns cached without querying db again
+    res2 = await list_alerts(db=mock_db)
+    assert res2 == res1
+    assert mock_db.execute.call_count == 2
+
+
+@pytest.mark.anyio
+async def test_list_devices_caching():
+    invalidate_devices_cache()
+    mock_db = AsyncMock()
+    
+    mock_res = MagicMock()
+    mock_res.scalars.return_value.all.return_value = []
+    mock_db.execute.return_value = mock_res
+
+    mock_request = MagicMock()
+    mock_request.headers = {}
+    mock_request.state = MagicMock()
+
+    # First call: executes queries
+    res1 = await list_devices(mock_request, db=mock_db)
+    count_after_first = mock_db.execute.call_count
+    assert count_after_first > 0
+
+    # Second call within TTL: returns cached
+    res2 = await list_devices(mock_request, db=mock_db)
+    assert res2 == res1
+    assert mock_db.execute.call_count == count_after_first

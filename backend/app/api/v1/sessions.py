@@ -66,8 +66,6 @@ def update_device_sessions(
     for k in keys_to_index:
         live_device_sessions[k] = norm_list
 
-    print(f"[SESSIONS] update_device_sessions: device_id={device_id}, sessions_count={len(norm_list)}, keys={list(keys_to_index)}, total_keys_in_memory={len(live_device_sessions)}")
-
 @router.get("/debug")
 async def debug_sessions():
     """Debug endpoint to inspect live_device_sessions in-memory state"""
@@ -100,31 +98,36 @@ async def list_sessions(
     # 1. Direct fast-path lookup if specific deviceId requested
     if req_dev_id:
         for k in [req_dev_id, req_dev_id.upper(), req_dev_id.lower()]:
-            if k in live_device_sessions and live_device_sessions[k]:
+            if k in live_device_sessions:
                 return live_device_sessions[k]
 
-        # Check in DB if not found in memory directly
-        res = await db.execute(select(Device))
-        devices = res.scalars().all()
-        did_clean = req_dev_id.lower()
-        for d in devices:
-            if (
-                d.id.lower() == did_clean or
-                (d.hostname and d.hostname.lower() == did_clean) or
-                (d.ip_address and d.ip_address.lower() == did_clean) or
-                (d.name and d.name.lower() == did_clean)
-            ):
-                reported = (
-                    live_device_sessions.get(d.id) or
-                    live_device_sessions.get(d.id.upper()) or
-                    live_device_sessions.get(d.id.lower()) or
-                    (live_device_sessions.get(d.hostname) if d.hostname else None) or
-                    (live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
-                    (live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
-                    (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
-                    []
+        # Targeted DB lookup if not found in memory directly
+        from sqlalchemy import or_
+        res = await db.execute(
+            select(Device).where(
+                or_(
+                    Device.id == req_dev_id,
+                    Device.id == req_dev_id.upper(),
+                    Device.hostname == req_dev_id,
+                    Device.ip_address == req_dev_id,
+                    Device.name == req_dev_id
                 )
-                return reported
+            ).limit(1)
+        )
+        d = res.scalar_one_or_none()
+        if d:
+            reported = (
+                live_device_sessions.get(d.id) or
+                live_device_sessions.get(d.id.upper()) or
+                live_device_sessions.get(d.id.lower()) or
+                (live_device_sessions.get(d.hostname) if d.hostname else None) or
+                (live_device_sessions.get(d.hostname.upper()) if d.hostname else None) or
+                (live_device_sessions.get(d.hostname.lower()) if d.hostname else None) or
+                (live_device_sessions.get(d.ip_address) if d.ip_address else None) or
+                []
+            )
+            live_device_sessions[req_dev_id] = reported
+            return reported
         return []
 
     # 2. Global query: return all unique live sessions
