@@ -541,7 +541,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.13'
+`$AgentVersion = '2.9.14'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 5
@@ -554,7 +554,7 @@ try {
     if (Test-Path `$localCfgPath) {
         `$dynCfg = Get-Content `$localCfgPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
         if (`$dynCfg) {
-            if (`$dynCfg.server_url -and `$dynCfg.server_url.Trim() -ne "") {
+            if (`$dynCfg.server_url -and `$dynCfg.server_url.Trim() -ne "" -and `$dynCfg.server_url -notmatch "localhost|127\.0\.0\.1") {
                 `$ServerUrl = `$dynCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
             }
             if (`$dynCfg.device_id -and `$dynCfg.device_id.Trim() -ne "") {
@@ -563,6 +563,11 @@ try {
             if (`$dynCfg.enrollment_token -and `$dynCfg.enrollment_token.Trim() -ne "") {
                 `$Token = `$dynCfg.enrollment_token.Trim()
             }
+        }
+        # Self-heal config.json if it was previously poisoned with localhost
+        if (`$ServerUrl -and `$ServerUrl -notmatch "localhost|127\.0\.0\.1" -and `$dynCfg -and (`$dynCfg.server_url -match "localhost|127\.0\.0\.1")) {
+            `$dynCfg.server_url = "`$ServerUrl/api/v1"
+            `$dynCfg | ConvertTo-Json | Set-Content -Path `$localCfgPath -Encoding UTF8 -Force
         }
     }
 } catch {}
@@ -711,14 +716,18 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     }
 
     if (`$act -eq 'REBOOT' -or `$act -eq 'RESTART') {
+        Write-AgentLog "Executing REBOOT cascade..."
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(6) } catch {}
         try { Restart-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
+        try { Start-Process -FilePath "`$env:SystemRoot\System32\shutdown.exe" -ArgumentList "/r /f /t 0 /d p:0:0" -WindowStyle Hidden } catch {}
         & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0 /d p:0:0
     }
     elseif (`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') {
+        Write-AgentLog "Executing SHUTDOWN cascade..."
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(12) } catch {}
         try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(5) } catch {}
         try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
+        try { Start-Process -FilePath "`$env:SystemRoot\System32\shutdown.exe" -ArgumentList "/s /f /t 0 /d p:0:0" -WindowStyle Hidden } catch {}
         & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 /d p:0:0
     }
     elseif (`$act -eq 'KILL_PROCESS' -or `$act -eq 'TERMINATE_PROCESS') {
@@ -742,16 +751,16 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         Write-AgentLog "KILL_PROCESS: targetPid=`$targetPid, pName=`$pName"
 
         if (`$targetPid -and `$targetPid -gt 0) {
-            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /T /PID `$targetPid 2>&1 | Out-Null } catch {}
-            try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /PID `$targetPid /T 2>&1 | Out-Null } catch {}
             try { (Get-CimInstance Win32_Process -Filter "ProcessId = `$targetPid" -ErrorAction SilentlyContinue).Terminate() } catch {}
+            try { Stop-Process -Id `$targetPid -Force -ErrorAction SilentlyContinue } catch {}
         }
         if (`$pName -and `$pName.Trim() -ne "" -and `$pName -ne "0") {
             `$pClean = `$pName.Trim()
             if (`$pClean.EndsWith(".exe", [System.StringComparison]::OrdinalIgnoreCase)) {
                 `$pClean = `$pClean.Substring(0, `$pClean.Length - 4)
             }
-            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /T /IM "`$pClean.exe" 2>&1 | Out-Null } catch {}
+            try { & "`$env:SystemRoot\System32\taskkill.exe" /F /IM "`$pClean.exe" /T 2>&1 | Out-Null } catch {}
             try { Get-Process -Name `$pClean -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue } catch {}
         }
         Start-Sleep -Milliseconds 150
@@ -2148,15 +2157,20 @@ try {
                             `$targetMac = if (`$parts.Length -ge 4) { `$parts[3].Trim() } else { "" }
                             `$targetHost = if (`$parts.Length -ge 5) { `$parts[4].Trim() } else { "" }
 
-                            `$isTargetMatch = `$true
-                            if (`$targetDevId -and `$targetDevId -ne "REMOTE" -and `$targetDevId -ne "0" -and `$targetMac) {
-                                `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
-                                `$tgtMacClean = `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper()
-                                `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
+                            `$isTargetMatch = `$false
+                            `$myMacClean = "`$DeviceMac".Replace(":", "").Replace("-", "").Trim().ToUpper()
+                            `$tgtMacClean = `$targetMac.Replace(":", "").Replace("-", "").Trim().ToUpper()
+                            `$myHostName = `$env:COMPUTERNAME.Trim().ToUpper()
+                            `$myDevIdClean = "`$DeviceId".Trim().ToUpper()
 
-                                if (`$targetDevId.ToUpper() -eq "`$DeviceId".ToUpper() -or `$tgtMacClean -eq `$myMacClean -or (`$targetHost -and `$targetHost.ToUpper() -eq `$myHostName)) {
-                                    `$isTargetMatch = `$true
-                                }
+                            if (-not `$targetDevId -or `$targetDevId -eq "REMOTE" -or `$targetDevId -eq "0") {
+                                `$isTargetMatch = `$true
+                            } elseif (`$myDevIdClean -and `$targetDevId.ToUpper() -eq `$myDevIdClean) {
+                                `$isTargetMatch = `$true
+                            } elseif (`$tgtMacClean -and `$tgtMacClean -eq `$myMacClean) {
+                                `$isTargetMatch = `$true
+                            } elseif (`$targetHost -and `$myHostName -and `$targetHost.ToUpper() -eq `$myHostName) {
+                                `$isTargetMatch = `$true
                             }
 
                             if (`$isTargetMatch -and `$cmdAction) {
@@ -2183,7 +2197,10 @@ try {
                         }
                     }
                 }
-            } catch {}
+            } catch {
+                try { `$udpListener.Close(); `$udpListener.Dispose() } catch {}
+                `$udpListener = `$null
+            }
         }
 
         `$now = Get-Date
@@ -2272,12 +2289,20 @@ try {
 
     # Register Multi-layer Persistence (100% Hidden Background on Boot & Logon)
     if ($IsAdmin) {
+        # Open Windows Firewall rules before starting service
+        try {
+            & netsh.exe advfirewall firewall add rule name="Workstation Manager Direct Signal (UDP 48123)" dir=in action=allow protocol=UDP localport=48123 profile=any 2>&1 | Out-Null
+            New-NetFirewallRule -DisplayName "Workstation Manager Direct Signal (UDP 48123)" -Direction Inbound -Protocol UDP -LocalPort 48123 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+            New-NetFirewallRule -DisplayName "Workstation Manager Wake-on-LAN (UDP 7, 9)" -Direction Inbound -Protocol UDP -LocalPort 7,9 -Action Allow -Profile Any -ErrorAction SilentlyContinue | Out-Null
+            & netsh.exe advfirewall firewall add rule name="Workstation Manager Ping (ICMPv4-In)" protocol=icmpv4:8,any dir=in action=allow 2>&1 | Out-Null
+        } catch {}
+
         # 1. Scheduled Task: AtStartup + AtLogOn under SYSTEM (Session 0, zero desktop windows)
         $taskCreated = $false
         try {
             & schtasks.exe /delete /tn "WorkstationManagerAgent" /f 2>&1 | Out-Null
             $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-            $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
+            $taskAction = New-ScheduledTaskAction -Execute $psExe -Argument "-NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
             $triggerBoot = New-ScheduledTaskTrigger -AtStartup
             $triggerLogon = New-ScheduledTaskTrigger -AtLogOn
             $triggerRepeat = New-ScheduledTaskTrigger -Once -At (Get-Date) -RepetitionInterval (New-TimeSpan -Minutes 5) -RepetitionDuration (New-TimeSpan -Days 3650)
@@ -2289,7 +2314,7 @@ try {
         } catch {
             $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
             if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
-            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$runServiceScript`"`""
+            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
             & schtasks.exe /create /tn "WorkstationManagerAgent" /tr $trCmd /sc MINUTE /mo 5 /ru "SYSTEM" /f 2>&1 | Out-Null
             Write-Host "      [OK] Системная задача создана (schtasks каждые 5 мин)" -ForegroundColor Green
         }
@@ -2312,7 +2337,7 @@ try {
             }
             $psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
             if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
-            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"`"$runServiceScript`"`""
+            $trCmd = "`"$psExe`" -NoProfile -NonInteractive -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$runServiceScript`""
             & schtasks.exe /create /tn "WorkstationManagerAgent_User" /tr $trCmd /sc ONLOGON /f 2>&1 | Out-Null
         } catch {}
     }
@@ -2329,7 +2354,7 @@ try {
         if (-not (Test-Path $psExe)) { $psExe = "powershell.exe" }
         $runningProc = Get-CimInstance Win32_Process -Filter "Name = 'powershell.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like "*run_service.ps1*" }
         if (-not $runningProc) {
-            Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`"$runServiceScript`"") -WindowStyle Hidden
+            Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $runServiceScript) -WindowStyle Hidden
         }
     } catch {}
     Write-Host "      [OK] Фоновый процесс мониторинга успешно запущен в фоновом режиме." -ForegroundColor Green

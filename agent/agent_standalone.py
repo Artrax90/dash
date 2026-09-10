@@ -11,17 +11,17 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.9.13"
+AGENT_VERSION = "2.9.14"
 
 def execute_power_command(action: str, extra: dict = None):
-    act = str(action).upper().strip()
+    act = (action or "").upper().strip()
     print(f"[*] Executing power command: {act} (extra={extra})")
     is_win = platform.system() == "Windows"
     
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.9.13")
+        execute_agent_update(server_base, cfg, "2.9.14")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
@@ -1652,7 +1652,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.13"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.14"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:

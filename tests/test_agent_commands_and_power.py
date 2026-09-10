@@ -281,4 +281,38 @@ def test_standalone_installer_has_udp_48123_listener_and_fast_interval():
     assert "-ExecutionPolicy Bypass" in content, "Missing -ExecutionPolicy Bypass in agent installer/service"
 
 
+def test_service_startup_quoting_and_power_cascades():
+    """
+    Verify fixes for power management and process termination:
+    1. Start-Process does not contain triple-quotes for $runServiceScript
+    2. schtasks command line does not contain triple-quotes
+    3. Dynamic config loader ignores localhost/127.0.0.1 in config.json and self-heals
+    4. REBOOT and SHUTDOWN include multi-layer execution (shutdown.exe, Win32Shutdown, Restart-Computer)
+    5. KILL_PROCESS executes taskkill /F /PID ... /T and taskkill /F /IM ... /T
+    6. UDP 48123 target matching verifies device ID, MAC, and computer name
+    """
+    with open("agent/standalone_installer.ps1", "r", encoding="utf-8-sig") as f:
+        content = f.read()
 
+    # 1. No triple-quotes in Start-Process ArgumentList
+    assert '"`"$runServiceScript`""' not in content, "Found illegal nested quotes in Start-Process ArgumentList"
+    assert "Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', $runServiceScript)" in content
+
+    # 2. No triple-quotes in schtasks
+    assert '`"`"$runServiceScript`"`""' not in content, "Found illegal triple-quotes in schtasks argument"
+
+    # 3. Dynamic config loader ignores localhost
+    assert r'dynCfg.server_url -notmatch "localhost|127\.0\.0\.1"' in content, "Missing localhost protection in dynamic config loader"
+    assert "dynCfg.server_url = \"`$ServerUrl/api/v1\"" in content, "Missing self-healing config.json repair"
+
+    # 4. Power cascades
+    assert 'shutdown.exe" /r /f /t 0' in content, "Missing shutdown.exe /r reboot call"
+    assert 'shutdown.exe" /s /f /t 0' in content, "Missing shutdown.exe /s shutdown call"
+
+    # 5. Process termination
+    assert 'taskkill.exe" /F /PID `$targetPid /T' in content, "Missing taskkill /F /PID /T"
+    assert 'taskkill.exe" /F /IM "`$pClean.exe" /T' in content, "Missing taskkill /F /IM /T"
+
+    # 6. Target matching in UDP listener
+    assert '$isTargetMatch = $false' in content or '`$isTargetMatch = `$false' in content, "isTargetMatch should initialize to false before matching"
+    assert '$targetHost.ToUpper() -eq $myHostName' in content or '`$targetHost.ToUpper() -eq `$myHostName' in content, "Missing hostname matching in UDP listener"

@@ -227,7 +227,7 @@ def _parse_device_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "isOnline": is_online,
             "isAgentless": is_agentless,
             "agentStatus": "Agentless" if is_agentless else ("Connected" if is_online else "Disconnected"),
-            "agentVersion": agent_ver or "2.9.13",
+            "agentVersion": agent_ver or "2.9.14",
             "healthStatus": "Healthy" if is_online else "Offline",
             "lastSeen": last_seen_val.strftime("%H:%M:%S") if isinstance(last_seen_val, datetime) else str(last_seen_val or "—"),
             "lastSeenIso": (last_seen_val.isoformat() + "Z") if isinstance(last_seen_val, datetime) else None,

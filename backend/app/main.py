@@ -431,6 +431,15 @@ def resolve_request_base_url(request: Request, server_url: str = "") -> str:
     raw_base = str(request.base_url).rstrip("/")
     res = raw_base.replace("/api/v1", "").rstrip("/")
     if "localhost" in res or "127.0.0.1" in res or "0.0.0.0" in res:
+        try:
+            import psutil
+            for iface, addrs in psutil.net_if_addrs().items():
+                for a in addrs:
+                    if a.family == socket.AF_INET and not a.address.startswith("127.") and not a.address.startswith("169.254."):
+                        if not a.address.startswith("172.17.") and not a.address.startswith("172.18."):
+                            return f"http://{a.address}:{port}"
+        except Exception:
+            pass
         return f"http://192.168.1.109:{port}"
     return res
 
