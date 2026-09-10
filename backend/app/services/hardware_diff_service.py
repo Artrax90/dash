@@ -1,5 +1,12 @@
+import re
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+
+def clean_hw_str(val: Any) -> str:
+    """Strip null bytes and non-printable control characters from hardware descriptors."""
+    if val is None:
+        return ""
+    return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str(val)).strip()
 
 class HardwareDiffService:
     @staticmethod
@@ -155,15 +162,17 @@ class HardwareDiffService:
                     if sn not in curr_disks:
                         is_usb = is_usb_storage(d)
                         comp_name = "USB-накопитель" if is_usb else "Storage"
-                        desc = f"Извлечен съемный USB-накопитель: {d.get('model', 'USB Flash')} (S/N: {sn})" if is_usb else f"Извлечен накопитель: {d.get('model', 'Накопитель')} (S/N: {sn})"
+                        clean_model = clean_hw_str(d.get('model', 'USB Flash' if is_usb else 'Накопитель'))
+                        clean_sn = clean_hw_str(sn)
+                        desc = f"Извлечен съемный USB-накопитель: {clean_model} (S/N: {clean_sn})" if is_usb else f"Извлечен накопитель: {clean_model} (S/N: {clean_sn})"
                         changes.append({
-                            "id": f"HWC-{device_id}-{'USB' if is_usb else 'DISK'}-REM-{sn[:8]}-{ts_suffix}",
+                            "id": f"HWC-{device_id}-{'USB' if is_usb else 'DISK'}-REM-{clean_sn[:8]}-{ts_suffix}",
                             "deviceId": device_id,
                             "timestamp": now_str,
                             "component": comp_name,
                             "changeType": "REMOVED",
                             "severity": "Info" if is_usb else "Critical",
-                            "previousValue": f"{d.get('model', 'Накопитель')} (S/N: {sn})",
+                            "previousValue": f"{clean_model} (S/N: {clean_sn})",
                             "currentValue": "Отсутствует / Извлечен",
                             "description": desc,
                             "acknowledged": True if is_usb else False,
@@ -175,16 +184,18 @@ class HardwareDiffService:
                     if sn not in base_disks:
                         is_usb = is_usb_storage(d)
                         comp_name = "USB-накопитель" if is_usb else "Storage"
-                        desc = f"Подключен съемный USB-накопитель: {d.get('model', 'USB Flash')} (S/N: {sn})" if is_usb else f"Подключен новый накопитель: {d.get('model', 'Накопитель')} (S/N: {sn})"
+                        clean_model = clean_hw_str(d.get('model', 'USB Flash' if is_usb else 'Накопитель'))
+                        clean_sn = clean_hw_str(sn)
+                        desc = f"Подключен съемный USB-накопитель: {clean_model} (S/N: {clean_sn})" if is_usb else f"Подключен новый накопитель: {clean_model} (S/N: {clean_sn})"
                         changes.append({
-                            "id": f"HWC-{device_id}-{'USB' if is_usb else 'DISK'}-ADD-{sn[:8]}-{ts_suffix}",
+                            "id": f"HWC-{device_id}-{'USB' if is_usb else 'DISK'}-ADD-{clean_sn[:8]}-{ts_suffix}",
                             "deviceId": device_id,
                             "timestamp": now_str,
                             "component": comp_name,
                             "changeType": "ADDED",
                             "severity": "Info" if is_usb else "Warning",
                             "previousValue": "Отсутствует",
-                            "currentValue": f"{d.get('model', 'Накопитель')} (S/N: {sn})",
+                            "currentValue": f"{clean_model} (S/N: {clean_sn})",
                             "description": desc,
                             "acknowledged": True if is_usb else False,
                             "diffStatus": "INFO" if is_usb else "MISMATCH",

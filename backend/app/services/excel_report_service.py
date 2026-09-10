@@ -6,9 +6,27 @@ import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from openpyxl.utils import get_column_letter
 from openpyxl.chart import LineChart, Reference, Series
+from openpyxl.cell.cell import ILLEGAL_CHARACTERS_RE
+
+def _clean_val(val: Any) -> Any:
+    """Sanitize strings to eliminate illegal characters prohibited in XML / OpenPyXL."""
+    if val is None:
+        return ''
+    if isinstance(val, (int, float, bool)):
+        return val
+    s = str(val)
+    # Remove control characters that cause openpyxl.utils.exceptions.IllegalCharacterError
+    return ILLEGAL_CHARACTERS_RE.sub('', s).strip()
+
+def _set_cell(ws, row: int, column: int, value: Any, alignment: Optional[Alignment] = None):
+    """Safely set a cell value with illegal characters filtered out and optional alignment."""
+    cell = ws.cell(row=row, column=column, value=_clean_val(value))
+    if alignment is not None:
+        cell.alignment = alignment
+    return cell
 
 def _apply_header_style(cell, text: str, bg_color: str = '0F172A', font_color: str = 'FFFFFF'):
-    cell.value = text
+    cell.value = _clean_val(text)
     cell.font = Font(name='Segoe UI', size=11, bold=True, color=font_color)
     cell.fill = PatternFill(start_color=bg_color, end_color=bg_color, fill_type='solid')
     cell.alignment = Alignment(horizontal='center', vertical='center', wrap_text=True)
@@ -23,17 +41,17 @@ def _apply_kpi_card(ws, start_row: int, start_col: int, title: str, value: str, 
     )
     
     c_title = ws.cell(row=start_row, column=start_col)
-    c_title.value = title.upper()
+    c_title.value = _clean_val(title.upper())
     c_title.font = Font(name='Segoe UI', size=9, bold=True, color='64748B')
     c_title.alignment = Alignment(horizontal='left', vertical='center')
     
     c_val = ws.cell(row=start_row + 1, column=start_col)
-    c_val.value = value
+    c_val.value = _clean_val(value)
     c_val.font = Font(name='Segoe UI', size=18, bold=True, color=color_hex)
     c_val.alignment = Alignment(horizontal='left', vertical='center')
     
     c_sub = ws.cell(row=start_row + 2, column=start_col)
-    c_sub.value = subtext
+    c_sub.value = _clean_val(subtext)
     c_sub.font = Font(name='Segoe UI', size=9, italic=True, color='94A3B8')
     c_sub.alignment = Alignment(horizontal='left', vertical='center')
 
@@ -63,7 +81,7 @@ def generate_monitoring_excel_report(
     # 1. Header Banner
     ws_summary.row_dimensions[1].height = 28
     ws_summary.row_dimensions[2].height = 20
-    ws_summary['A1'] = 'WORKSTATION MANAGER · ОТЧЕТ МОНИТОРИНГА И ТЕЛЕМЕТРИИ'
+    ws_summary['A1'] = _clean_val('WORKSTATION MANAGER · ОТЧЕТ МОНИТОРИНГА И ТЕЛЕМЕТРИИ')
     ws_summary['A1'].font = Font(name='Segoe UI', size=14, bold=True, color='1E293B')
     
     period_names = {
@@ -76,7 +94,7 @@ def generate_monitoring_excel_report(
     period_display = period_names.get(period_type, period_type)
     now_str = datetime.now(timezone.utc).strftime('%d.%m.%Y %H:%M UTC')
     
-    ws_summary['A2'] = f'Зона охвата: {scope_title}  |  Период: {period_display}  |  Сформирован: {now_str}'
+    ws_summary['A2'] = _clean_val(f'Зона охвата: {scope_title}  |  Период: {period_display}  |  Сформирован: {now_str}')
     ws_summary['A2'].font = Font(name='Segoe UI', size=10, italic=True, color='64748B')
 
     total_devs = len(devices)
@@ -108,7 +126,7 @@ def generate_monitoring_excel_report(
     step = span / bucket_count
 
     chart_table_start_row = 9
-    ws_summary.cell(row=chart_table_start_row - 1, column=1, value='Сводная динамика нагрузки для диаграмм').font = Font(name='Segoe UI', size=11, bold=True, color='1E293B')
+    _set_cell(ws_summary, row=chart_table_start_row - 1, column=1, value='Сводная динамика нагрузки для диаграмм').font = Font(name='Segoe UI', size=11, bold=True, color='1E293B')
 
     chart_headers = ['Интервал времени', 'Загрузка ЦП (%)', 'Память ОЗУ (%)', 'Диск (%)', 'ПК в сети (шт)']
     for col_idx, h_name in enumerate(chart_headers, start=1):
@@ -127,11 +145,11 @@ def generate_monitoring_excel_report(
         cnt_val = len(set(p.get('deviceId', 'PC') for p in b_online)) if b_online else (online_devs if online_devs else 0)
 
         dt_label = datetime.utcfromtimestamp(b_start).strftime('%d.%m %H:%M')
-        ws_summary.cell(row=current_row, column=1, value=dt_label).alignment = Alignment(horizontal='center')
-        ws_summary.cell(row=current_row, column=2, value=c_val).alignment = Alignment(horizontal='center')
-        ws_summary.cell(row=current_row, column=3, value=r_val).alignment = Alignment(horizontal='center')
-        ws_summary.cell(row=current_row, column=4, value=d_val).alignment = Alignment(horizontal='center')
-        ws_summary.cell(row=current_row, column=5, value=cnt_val).alignment = Alignment(horizontal='center')
+        _set_cell(ws_summary, row=current_row, column=1, value=dt_label, alignment=Alignment(horizontal='center'))
+        _set_cell(ws_summary, row=current_row, column=2, value=c_val, alignment=Alignment(horizontal='center'))
+        _set_cell(ws_summary, row=current_row, column=3, value=r_val, alignment=Alignment(horizontal='center'))
+        _set_cell(ws_summary, row=current_row, column=4, value=d_val, alignment=Alignment(horizontal='center'))
+        _set_cell(ws_summary, row=current_row, column=5, value=cnt_val, alignment=Alignment(horizontal='center'))
         current_row += 1
 
     chart_table_end_row = current_row - 1
@@ -181,13 +199,13 @@ def generate_monitoring_excel_report(
         _apply_header_style(ws_telem.cell(row=1, column=idx), h, bg_color='334155')
 
     for r_idx, pt in enumerate(sorted_pts, start=2):
-        ws_telem.cell(row=r_idx, column=1, value=str(pt.get('timestamp', ''))[:19].replace('T', ' ')).alignment = Alignment(horizontal='center')
-        ws_telem.cell(row=r_idx, column=2, value=pt.get('deviceId', '')).alignment = Alignment(horizontal='center')
-        ws_telem.cell(row=r_idx, column=3, value=pt.get('cpu', 0)).alignment = Alignment(horizontal='center')
-        ws_telem.cell(row=r_idx, column=4, value=pt.get('ram', 0)).alignment = Alignment(horizontal='center')
-        ws_telem.cell(row=r_idx, column=5, value=pt.get('disk', 0)).alignment = Alignment(horizontal='center')
+        _set_cell(ws_telem, row=r_idx, column=1, value=str(pt.get('timestamp', ''))[:19].replace('T', ' '), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_telem, row=r_idx, column=2, value=pt.get('deviceId', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_telem, row=r_idx, column=3, value=pt.get('cpu', 0), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_telem, row=r_idx, column=4, value=pt.get('ram', 0), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_telem, row=r_idx, column=5, value=pt.get('disk', 0), alignment=Alignment(horizontal='center'))
         status_str = 'В сети' if pt.get('isOnline', True) else 'Выключен'
-        ws_telem.cell(row=r_idx, column=6, value=status_str).alignment = Alignment(horizontal='center')
+        _set_cell(ws_telem, row=r_idx, column=6, value=status_str, alignment=Alignment(horizontal='center'))
 
     # Sheet 3: Power Events
     ws_power = wb.create_sheet(title='События питания')
@@ -197,15 +215,15 @@ def generate_monitoring_excel_report(
         _apply_header_style(ws_power.cell(row=1, column=idx), h, bg_color='1E3A8A')
 
     for r_idx, ev in enumerate(power_events, start=2):
-        ws_power.cell(row=r_idx, column=1, value=ev.get('id', '')).alignment = Alignment(horizontal='center')
-        ws_power.cell(row=r_idx, column=2, value=str(ev.get('timestamp', ''))[:19].replace('T', ' ')).alignment = Alignment(horizontal='center')
-        ws_power.cell(row=r_idx, column=3, value=ev.get('action', '')).alignment = Alignment(horizontal='center')
-        ws_power.cell(row=r_idx, column=4, value=ev.get('title', '')).alignment = Alignment(horizontal='left')
-        ws_power.cell(row=r_idx, column=5, value=f"{ev.get('deviceName', '')} ({ev.get('deviceId', '')})").alignment = Alignment(horizontal='left')
-        ws_power.cell(row=r_idx, column=6, value=ev.get('initiator', '')).alignment = Alignment(horizontal='center')
-        ws_power.cell(row=r_idx, column=7, value=ev.get('source', '')).alignment = Alignment(horizontal='center')
-        ws_power.cell(row=r_idx, column=8, value=ev.get('status', '')).alignment = Alignment(horizontal='center')
-        ws_power.cell(row=r_idx, column=9, value=ev.get('details', '')).alignment = Alignment(horizontal='left')
+        _set_cell(ws_power, row=r_idx, column=1, value=ev.get('id', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_power, row=r_idx, column=2, value=str(ev.get('timestamp', ''))[:19].replace('T', ' '), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_power, row=r_idx, column=3, value=ev.get('action', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_power, row=r_idx, column=4, value=ev.get('title', ''), alignment=Alignment(horizontal='left'))
+        _set_cell(ws_power, row=r_idx, column=5, value=f"{ev.get('deviceName', '')} ({ev.get('deviceId', '')})", alignment=Alignment(horizontal='left'))
+        _set_cell(ws_power, row=r_idx, column=6, value=ev.get('initiator', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_power, row=r_idx, column=7, value=ev.get('source', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_power, row=r_idx, column=8, value=ev.get('status', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_power, row=r_idx, column=9, value=ev.get('details', ''), alignment=Alignment(horizontal='left'))
 
     # Sheet 4: Alerts
     ws_alerts = wb.create_sheet(title='Алерты и Инциденты')
@@ -215,12 +233,12 @@ def generate_monitoring_excel_report(
         _apply_header_style(ws_alerts.cell(row=1, column=idx), h, bg_color='991B1B')
 
     for r_idx, alt in enumerate(alerts, start=2):
-        ws_alerts.cell(row=r_idx, column=1, value=alt.get('id', '')).alignment = Alignment(horizontal='center')
-        ws_alerts.cell(row=r_idx, column=2, value=str(alt.get('timestamp', alt.get('created_at', '')))[:19].replace('T', ' ')).alignment = Alignment(horizontal='center')
-        ws_alerts.cell(row=r_idx, column=3, value=alt.get('deviceId', alt.get('device_id', ''))).alignment = Alignment(horizontal='center')
-        ws_alerts.cell(row=r_idx, column=4, value=alt.get('severity', '')).alignment = Alignment(horizontal='center')
-        ws_alerts.cell(row=r_idx, column=5, value=alt.get('category', '')).alignment = Alignment(horizontal='center')
-        ws_alerts.cell(row=r_idx, column=6, value=alt.get('description', '')).alignment = Alignment(horizontal='left')
+        _set_cell(ws_alerts, row=r_idx, column=1, value=alt.get('id', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_alerts, row=r_idx, column=2, value=str(alt.get('timestamp', alt.get('created_at', '')))[:19].replace('T', ' '), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_alerts, row=r_idx, column=3, value=alt.get('deviceId', alt.get('device_id', '')), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_alerts, row=r_idx, column=4, value=alt.get('severity', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_alerts, row=r_idx, column=5, value=alt.get('category', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_alerts, row=r_idx, column=6, value=alt.get('description', ''), alignment=Alignment(horizontal='left'))
 
     # Sheet 5: Devices List
     ws_devs = wb.create_sheet(title='Список ПК')
@@ -230,18 +248,18 @@ def generate_monitoring_excel_report(
         _apply_header_style(ws_devs.cell(row=1, column=idx), h, bg_color='065F46')
 
     for r_idx, d in enumerate(devices, start=2):
-        ws_devs.cell(row=r_idx, column=1, value=d.get('id', '')).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=2, value=d.get('name', '')).alignment = Alignment(horizontal='left')
-        ws_devs.cell(row=r_idx, column=3, value=d.get('ip_address', d.get('ip', ''))).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=4, value=d.get('building', '')).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=5, value=d.get('floor', '')).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=6, value=d.get('room', '')).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=7, value=d.get('group_name', '')).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=8, value=str(d.get('power_status', d.get('powerStatus', '')))).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=9, value=str(d.get('agent_status', d.get('agentStatus', '')))).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=10, value=d.get('cpu', 0)).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=11, value=d.get('ram', 0)).alignment = Alignment(horizontal='center')
-        ws_devs.cell(row=r_idx, column=12, value=d.get('disk', 0)).alignment = Alignment(horizontal='center')
+        _set_cell(ws_devs, row=r_idx, column=1, value=d.get('id', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=2, value=d.get('name', ''), alignment=Alignment(horizontal='left'))
+        _set_cell(ws_devs, row=r_idx, column=3, value=d.get('ip_address', d.get('ip', '')), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=4, value=d.get('building', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=5, value=d.get('floor', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=6, value=d.get('room', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=7, value=d.get('group_name', ''), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=8, value=str(d.get('power_status', d.get('powerStatus', ''))), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=9, value=str(d.get('agent_status', d.get('agentStatus', ''))), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=10, value=d.get('cpu', 0), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=11, value=d.get('ram', 0), alignment=Alignment(horizontal='center'))
+        _set_cell(ws_devs, row=r_idx, column=12, value=d.get('disk', 0), alignment=Alignment(horizontal='center'))
 
     for ws in [ws_summary, ws_telem, ws_power, ws_alerts, ws_devs]:
         for col in ws.columns:

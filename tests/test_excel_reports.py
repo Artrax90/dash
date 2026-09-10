@@ -110,3 +110,75 @@ async def test_excel_report_endpoint():
         assert len(resp.content) > 0
         wb = openpyxl.load_workbook(io.BytesIO(resp.content))
         assert "Сводка и Графики" in wb.sheetnames
+
+def test_generate_monitoring_excel_report_with_illegal_xml_control_characters():
+    """TDD: Ensure excel report generation does NOT crash on control characters like \x00, \x05, etc."""
+    mock_devices = [
+        {
+            'id': 'PC-9AEB',
+            'name': 'ARM-09\x00\x01',
+            'group_name': 'Auditorium\x07',
+            'building': 'Main\x08',
+            'floor': 'Floor 1',
+            'room': '101\x1f',
+            'power_status': 'On',
+            'agent_status': 'Connected',
+            'ip_address': '172.16.42.0',
+            'cpu': 10,
+            'ram': 20,
+            'disk': 30
+        }
+    ]
+    mock_power_events = [
+        {
+            'id': 'EVT-USB-1',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'action': 'USB_PLUG',
+            'title': 'USB Device Attached\x00',
+            'deviceId': 'PC-9AEB',
+            'deviceName': 'ARM-09\x05',
+            'status': 'Success',
+            'initiator': 'Agent\x00',
+            'source': 'AGENT',
+            'details': 'Flash drive inserted\x02'
+        }
+    ]
+    mock_alerts = [
+        {
+            'id': 'ALT-USB-99',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'deviceId': 'PC-9AEB',
+            'severity': 'Info',
+            'description': 'Извлечен съемный USB-накопитель: Netac OnlyDisk USB Device (S/N: 0000000005\x00)',
+            'category': 'Hardware\x00'
+        }
+    ]
+    mock_telemetry_points = [
+        {
+            'time': datetime.now(timezone.utc).timestamp(),
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'deviceId': 'PC-9AEB',
+            'cpu': 15,
+            'ram': 35,
+            'disk': 45,
+            'isOnline': True
+        }
+    ]
+
+    report_bytes = generate_monitoring_excel_report(
+        period_type='hourly_24h',
+        scope_title='Test Scope with \x00 null byte',
+        devices=mock_devices,
+        telemetry_points=mock_telemetry_points,
+        power_events=mock_power_events,
+        alerts=mock_alerts
+    )
+
+    assert isinstance(report_bytes, bytes)
+    assert len(report_bytes) > 0
+    wb = openpyxl.load_workbook(io.BytesIO(report_bytes))
+    ws_alerts = wb['Алерты и Инциденты']
+    # Verify description is saved and illegal char was stripped
+    assert 'Netac OnlyDisk USB Device' in ws_alerts.cell(row=2, column=6).value
+    assert '\x00' not in ws_alerts.cell(row=2, column=6).value
+
