@@ -289,7 +289,7 @@ def test_generate_itilium_excel_report():
     assert 'Итилиум' in sheet.title or 'Оборудование' in sheet.title
 
     # Header check in row 4
-    headers = [sheet.cell(4, c).value for c in range(1, 15)]
+    headers = [sheet.cell(4, c).value for c in range(1, 20) if sheet.cell(4, c).value is not None]
     assert 'Имя ПК' in headers
     assert 'Инвентарный номер' in headers
     assert 'Материнская плата' in headers
@@ -297,6 +297,13 @@ def test_generate_itilium_excel_report():
     assert 'Оперативная память (RAM)' in headers
     assert 'Накопители (HDD/SSD)' in headers
     assert 'Видеокарта (GPU)' in headers
+
+    # Ensure unwanted columns are removed
+    assert len(headers) == 13
+    assert 'ID станции' not in headers
+    assert 'Статус' not in headers
+    assert 'Статус питания' not in headers
+    assert 'Текущий пользователь' not in headers
 
     # Value checks in row 5
     name_col = headers.index('Имя ПК') + 1

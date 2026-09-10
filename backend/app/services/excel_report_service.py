@@ -625,13 +625,32 @@ def generate_itilium_excel_report(
         parts = [p for p in [vendor, ver, date] if p and p.lower() not in ["unknown", "none"]]
         return " ".join(parts) if parts else "—"
 
+    # Row 4: Table Headers
+    ws.row_dimensions[4].height = 28
+    headers = [
+        '№',
+        'Имя ПК',
+        'Инвентарный номер',
+        'Расположение',
+        'Группа / Отдел',
+        'Материнская плата',
+        'Процессор (CPU)',
+        'Оперативная память (RAM)',
+        'Накопители (HDD/SSD)',
+        'Видеокарта (GPU)',
+        'Сетевой адаптер (MAC / IP)',
+        'Операционная система',
+        'BIOS'
+    ]
+
+    total_cols = len(headers)
+    end_col_letter = get_column_letter(total_cols)
+    
     # Row 1: Header Banner
     ws.row_dimensions[1].height = 32
     ws.row_dimensions[2].height = 24
     ws.row_dimensions[3].height = 10
-    total_cols = 16
-    end_col_letter = get_column_letter(total_cols)
-    
+
     ws.merge_cells(f"A1:{end_col_letter}1")
     c1 = ws['A1']
     c1.value = _clean_val('ВЫГРУЗКА СПЕЦИФИКАЦИИ ОБОРУДОВАНИЯ ДЛЯ 1С:ИТИЛИУМ / SERVICE DESK')
@@ -646,27 +665,6 @@ def generate_itilium_excel_report(
     c2.font = Font(name='Segoe UI', size=10, italic=False, color='334155')
     c2.fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
     c2.alignment = Alignment(horizontal='center', vertical='center')
-
-    # Row 4: Table Headers
-    ws.row_dimensions[4].height = 28
-    headers = [
-        '№',
-        'Имя ПК',
-        'Инвентарный номер',
-        'ID станции',
-        'Расположение',
-        'Группа / Отдел',
-        'Статус',
-        'Материнская плата',
-        'Процессор (CPU)',
-        'Оперативная память (RAM)',
-        'Накопители (HDD/SSD)',
-        'Видеокарта (GPU)',
-        'Сетевой адаптер (MAC / IP)',
-        'Операционная система',
-        'BIOS',
-        'Текущий пользователь'
-    ]
 
     for col_idx, h_text in enumerate(headers, start=1):
         cell = ws.cell(row=4, column=col_idx)
@@ -701,9 +699,6 @@ def generate_itilium_excel_report(
         location_str = " / ".join(loc_parts) if loc_parts else "—"
 
         grp = d.get('group_name') or d.get('group') or '—'
-        p_stat = str(d.get('power_status', d.get('powerStatus', ''))).lower()
-        stat_str = 'В сети' if p_stat in ['on', 'booting'] else 'Выключен'
-        user_str = d.get('currentUser') or d.get('current_user') or '—'
 
         mb_str = _fmt_mb(spec)
         cpu_str = _fmt_cpu(spec, d)
@@ -718,10 +713,8 @@ def generate_itilium_excel_report(
             (idx, align_center),
             (name_val, align_left),
             (inv_num, align_center),
-            (dev_id, align_center),
             (location_str, align_left),
             (grp, align_left),
-            (stat_str, align_center),
             (mb_str, align_left),
             (cpu_str, align_left),
             (ram_str, align_left),
@@ -729,8 +722,7 @@ def generate_itilium_excel_report(
             (gpu_str, align_left),
             (net_str, align_left),
             (os_str, align_left),
-            (bios_str, align_left),
-            (user_str, align_left)
+            (bios_str, align_left)
         ]
 
         ws.row_dimensions[current_row].height = 24 if ('\n' not in disk_str and '\n' not in net_str) else 38
