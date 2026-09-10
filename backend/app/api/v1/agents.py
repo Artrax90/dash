@@ -1,5 +1,5 @@
 from fastapi import APIRouter, HTTPException, Depends, Response, Request, WebSocket, WebSocketDisconnect
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import asyncio
 import secrets
 import os
@@ -581,7 +581,7 @@ async def enroll_agent(payload: Dict[str, Any], db: AsyncSession = Depends(get_d
         "deviceId": device_id,
         "agentSecret": agent_secret,
         "group": target_group,
-        "heartbeatIntervalSeconds": 5
+        "heartbeatIntervalSeconds": 30
     }
 
 @router.post("/inventory")
@@ -855,11 +855,11 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
 
 # Agent heartbeat and telemetry global & group configuration
 agent_settings = {
-    "defaultHeartbeatInterval": 5,
+    "defaultHeartbeatInterval": 30,
     "groupHeartbeatIntervals": {
-        "Servers": 5,
-        "DevOps": 5,
-        "Office": 5
+        "Servers": 30,
+        "DevOps": 30,
+        "Office": 30
     }
 }
 
@@ -1178,7 +1178,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
         except Exception:
             pass
 
-    effective_interval = agent_settings.get("defaultHeartbeatInterval", 5)
+    effective_interval = agent_settings.get("defaultHeartbeatInterval", 30)
     device = None
 
     # Cache all live network neighbors (Get-NetNeighbor) for instant fleet MAC discovery
@@ -1381,7 +1381,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 raw_procs = []
 
             if raw_procs and len(raw_procs) > 0:
-                from backend.app.api.v1.devices import device_live_processes, save_device_processes
+                from backend.app.api.v1.devices import device_live_processes, maybe_save_device_processes
                 procs = []
                 for p in raw_procs:
                     if isinstance(p, dict):
@@ -1445,7 +1445,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                 for k in idx_keys:
                     if k:
                         device_live_processes[k] = procs
-                save_device_processes(device_live_processes)
+                maybe_save_device_processes(device_live_processes, min_interval=60.0)
 
             # Live reported logical drives / partitions
             raw_drives = payload.get("drives") or payload.get("logicalDrives") or payload.get("partitions")
@@ -1919,7 +1919,12 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
         effective_interval = min(effective_interval, 3)
 
     jitter_sec = max(2, min(6, int(effective_interval * 0.08)))
-    await ws_manager.broadcast_event("agent.heartbeat", payload)
+    hb_ws_event = {
+        "deviceId": device.id if device else device_id,
+        "id": device.id if device else device_id,
+        "rdpSessions": filtered_rdp if (rdp_data is not None) else []
+    }
+    await ws_manager.broadcast_event("agent.heartbeat", hb_ws_event)
     return {
         "status": "ok",
         "ackTime": datetime.utcnow().isoformat(),
@@ -2069,11 +2074,35 @@ async def report_agent_power_event(payload: Dict[str, Any], db: AsyncSession = D
 # REMOTE AGENT UPDATE & FLEET VERSION MANAGEMENT
 # -------------------------------------------------------------------------
 
+_version_info_cache: Optional[Dict[str, Any]] = None
+_version_info_cache_time: float = 0.0
+
+def _get_cached_version_info(max_age: float = 10.0) -> Optional[Dict[str, Any]]:
+    global _version_info_cache, _version_info_cache_time
+    if _version_info_cache is not None and (time.time() - _version_info_cache_time) < max_age:
+        return _version_info_cache
+    return None
+
+def _set_cached_version_info(data: Dict[str, Any]):
+    global _version_info_cache, _version_info_cache_time
+    _version_info_cache = data
+    _version_info_cache_time = time.time()
+
+def invalidate_version_info_cache():
+    global _version_info_cache, _version_info_cache_time
+    _version_info_cache = None
+    _version_info_cache_time = 0.0
+
 @router.get("/version-info")
 async def get_agent_version_info(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Returns latest agent version details, changelog, and fleet breakdown (up to date vs outdated).
+    Cached for 10s to prevent continuous full-table scan and interface probing on multi-tab refresh.
     """
+    cached = _get_cached_version_info(max_age=10.0)
+    if cached:
+        return cached
+
     result = await db.execute(select(Device))
     devices = result.scalars().all()
     
@@ -2113,7 +2142,7 @@ async def get_agent_version_info(request: Request, db: AsyncSession = Depends(ge
     except Exception:
         pass
 
-    return {
+    info_data = {
         "currentVersion": latest_ver,
         "releaseDate": "2026-08-23",
         "minSupportedVersion": "1.0.0",
@@ -2124,6 +2153,8 @@ async def get_agent_version_info(request: Request, db: AsyncSession = Depends(ge
         "updatingCount": updating_count,
         "serverUrl": srv_url
     }
+    _set_cached_version_info(info_data)
+    return info_data
 
 @router.post("/update-status")
 async def report_agent_update_status(payload: Dict[str, Any], db: AsyncSession = Depends(get_db)):
@@ -2220,6 +2251,7 @@ async def report_agent_update_status(payload: Dict[str, Any], db: AsyncSession =
         agent_update_logs[:] = agent_update_logs[:100]
 
     save_update_logs(agent_update_logs)
+    invalidate_version_info_cache()
 
     if device:
         from backend.app.api.v1.devices import log_device_power_event, format_device_summary
@@ -2421,7 +2453,7 @@ async def trigger_bulk_agent_update(payload: Dict[str, Any], request: Request, d
 async def get_agent_update_logs():
     """
     Returns recent history of remote agent update operations and statuses.
-    Accurately reflects status based on real device verification.
+    Accurately reflects status based on real device verification in memory.
     """
     now = datetime.utcnow()
     for entry in agent_update_logs:

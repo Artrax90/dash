@@ -20,6 +20,50 @@ class SchedulerService:
             self._power_action_grace_until[str(device_id).upper()] = time.time() + duration
 
     @staticmethod
+    def is_agentless_device(dev: Any) -> bool:
+        if not dev:
+            return False
+        return (
+            getattr(dev, "agent_version", None) == "Agentless" or 
+            getattr(dev, "os_type", None) == "ThinClient" or 
+            (getattr(dev, "id", None) and str(dev.id).upper().startswith("TC-")) or 
+            "Agentless" in (getattr(dev, "tags", None) or []) or
+            "Тонкий клиент" in (getattr(dev, "tags", None) or [])
+        )
+
+    def should_probe_device(self, dev: Any, now_utc: Optional[datetime] = None) -> bool:
+        """
+        Determine if device needs active ICMP/TCP probe.
+        Skips agent-managed devices that are already known to be PowerStatus.OFF,
+        avoiding dozens of futile ping subprocess forks every 5 seconds.
+        """
+        if not dev or not getattr(dev, "id", None):
+            return False
+        if getattr(dev, 'is_archived', False) or (getattr(dev, 'group_name', None) or '').strip().lower() == 'архив':
+            return False
+        ip = getattr(dev, "ip_address", None)
+        if not ip or ip in ["127.0.0.1", "0.0.0.0", ""]:
+            return False
+
+        is_ag = self.is_agentless_device(dev)
+        p_status = getattr(dev, "power_status", None)
+        # If device is agent-managed and already marked OFF, never fork ping subprocesses.
+        # When it boots, the agent will send an immediate heartbeat.
+        from backend.app.models.device import PowerStatus
+        if not is_ag and p_status == PowerStatus.OFF:
+            return False
+
+        if now_utc is None:
+            now_utc = datetime.utcnow()
+        last_seen = getattr(dev, "last_seen", None)
+        sec_since_heartbeat = (now_utc - last_seen).total_seconds() if last_seen else 999999
+        dev_interval = getattr(dev, 'heartbeat_interval', 30) or 30
+        timeout_threshold = max(90, dev_interval * 2 + 15)
+        agent_alive = (sec_since_heartbeat <= timeout_threshold) if not is_ag else False
+
+        return not agent_alive
+
+    @staticmethod
     async def _check_device_reachability(ip_address: Optional[str], is_agentless: bool, mac_address: Optional[str]) -> Tuple[bool, Optional[str]]:
         if not ip_address or ip_address in ["127.0.0.1", "0.0.0.0", ""]:
             return False, None
@@ -256,26 +300,11 @@ class SchedulerService:
                 for dev in devices:
                     if not dev.id:
                         continue
-                    if getattr(dev, 'is_archived', False) or (dev.group_name or '').strip().lower() == 'архив':
-                        continue
                     dev_key = str(dev.id).upper()
                     if now_ts < self._power_action_grace_until.get(dev_key, 0):
                         continue
-
-                    is_agentless = (
-                        dev.agent_version == "Agentless" or 
-                        dev.os_type == "ThinClient" or 
-                        (dev.id and dev.id.upper().startswith("TC-")) or 
-                        "Agentless" in (dev.tags or []) or
-                        "Тонкий клиент" in (dev.tags or [])
-                    )
-                    sec_since_heartbeat = (now_utc - dev.last_seen).total_seconds() if dev.last_seen else 999999
-                    dev_interval = getattr(dev, 'heartbeat_interval', 30) or 30
-                    timeout_threshold = max(90, dev_interval * 2 + 15)
-                    agent_alive = (sec_since_heartbeat <= timeout_threshold) if not is_agentless else False
-
-                    if not agent_alive and dev.ip_address and dev.ip_address not in ["127.0.0.1", "0.0.0.0", ""]:
-                        ping_targets.append((dev, is_agentless))
+                    if self.should_probe_device(dev, now_utc=now_utc):
+                        ping_targets.append((dev, self.is_agentless_device(dev)))
 
                 probe_results = {}
                 if ping_targets:

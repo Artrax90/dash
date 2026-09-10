@@ -83,13 +83,24 @@ def save_device_processes(procs: Dict[str, List[Dict[str, Any]]]):
         os.makedirs(settings.DATA_DIR, exist_ok=True)
         tmp_file = DEVICE_PROCESSES_FILE + ".tmp"
         with open(tmp_file, "w", encoding="utf-8") as f:
-            json.dump(procs, f, ensure_ascii=False, indent=2)
+            json.dump(procs, f, ensure_ascii=False)
         if os.path.exists(DEVICE_PROCESSES_FILE):
             os.replace(tmp_file, DEVICE_PROCESSES_FILE)
         else:
             os.rename(tmp_file, DEVICE_PROCESSES_FILE)
     except Exception as e:
         print(f"Error saving device processes: {e}")
+
+_last_processes_save_time: float = 0.0
+
+def maybe_save_device_processes(procs: Dict[str, List[Dict[str, Any]]], min_interval: float = 60.0):
+    """Throttle disk persistence of live processes to once every min_interval seconds."""
+    global _last_processes_save_time
+    now = time.time()
+    if (now - _last_processes_save_time) < min_interval:
+        return
+    _last_processes_save_time = now
+    save_device_processes(procs)
 
 # Persistent storage of live reported processes per device
 device_live_processes: Dict[str, List[Dict[str, Any]]] = load_device_processes()

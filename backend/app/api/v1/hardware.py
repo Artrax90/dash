@@ -13,8 +13,22 @@ router = APIRouter(prefix="/hardware", tags=["hardware"])
 
 hardware_changes_db: List[Dict[str, Any]] = []
 
+_hardware_changes_cache: Optional[List[Dict[str, Any]]] = None
+_hardware_changes_cache_time: float = 0.0
+
+def invalidate_hardware_changes_cache():
+    global _hardware_changes_cache, _hardware_changes_cache_time
+    _hardware_changes_cache = None
+    _hardware_changes_cache_time = 0.0
+
 @router.get("/changes")
 async def get_changes(device_id: Optional[str] = None, db: AsyncSession = Depends(get_db)):
+    global _hardware_changes_cache, _hardware_changes_cache_time
+    import time
+    now = time.time()
+    if not device_id and _hardware_changes_cache is not None and (now - _hardware_changes_cache_time) < 5.0:
+        return _hardware_changes_cache
+
     query = select(HardwareChangeModel).order_by(desc(HardwareChangeModel.timestamp))
     if device_id:
         query = query.where(HardwareChangeModel.device_id == device_id)
@@ -36,6 +50,9 @@ async def get_changes(device_id: Optional[str] = None, db: AsyncSession = Depend
         }
         for c in changes
     ]
+    if not device_id:
+        _hardware_changes_cache = db_items if db_items else hardware_changes_db
+        _hardware_changes_cache_time = now
     if db_items:
         return db_items
     if device_id:

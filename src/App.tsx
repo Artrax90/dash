@@ -8386,7 +8386,7 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
     };
 
     fetchLogs();
-    const pollTimer = setInterval(fetchLogs, 4000);
+    const pollTimer = setInterval(fetchLogs, 12000);
 
     return () => { 
       isMounted = false; 
@@ -13026,7 +13026,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
       });
       agentsApi.getUpdateLogs().then(setUpdateLogs);
       devicesApi.list().then(setFleetDevices);
-    }, 4000);
+    }, 15000);
     return () => clearInterval(interval);
   }, []);
 
