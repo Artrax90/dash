@@ -288,10 +288,11 @@ def test_generate_itilium_excel_report():
     sheet = wb.active
     assert 'Итилиум' in sheet.title or 'Оборудование' in sheet.title
 
-    # Header check in row 4
-    headers = [sheet.cell(4, c).value for c in range(1, 20) if sheet.cell(4, c).value is not None]
+    # Header check in row 1 (no banner, direct 1C/Itilium import format)
+    headers = [sheet.cell(1, c).value for c in range(1, 20) if sheet.cell(1, c).value is not None]
     assert 'Имя ПК' in headers
-    assert 'Инвентарный номер' in headers
+    assert 'Штрих-код КЕ' in headers
+    assert 'Инвентарный номер' not in headers
     assert 'Материнская плата' in headers
     assert 'Процессор (CPU)' in headers
     assert 'Оперативная память (RAM)' in headers
@@ -305,22 +306,23 @@ def test_generate_itilium_excel_report():
     assert 'Статус питания' not in headers
     assert 'Текущий пользователь' not in headers
 
-    # Value checks in row 5
+    # Value checks in row 2 (data starts immediately after row 1 headers)
     name_col = headers.index('Имя ПК') + 1
-    inv_col = headers.index('Инвентарный номер') + 1
+    inv_col = headers.index('Штрих-код КЕ') + 1
     mb_col = headers.index('Материнская плата') + 1
     cpu_col = headers.index('Процессор (CPU)') + 1
     ram_col = headers.index('Оперативная память (RAM)') + 1
     disk_col = headers.index('Накопители (HDD/SSD)') + 1
     gpu_col = headers.index('Видеокарта (GPU)') + 1
 
-    assert sheet.cell(5, name_col).value == 'ARM-01'
-    assert sheet.cell(5, inv_col).value == 'INV-2026-ITIL-001'
-    assert 'PRIME B450M-K' in str(sheet.cell(5, mb_col).value)
-    assert 'Ryzen 5 3600' in str(sheet.cell(5, cpu_col).value)
-    assert '16 GB' in str(sheet.cell(5, ram_col).value)
-    assert 'Kingston SA400' in str(sheet.cell(5, disk_col).value)
-    assert 'GTX 1660' in str(sheet.cell(5, gpu_col).value)
+    assert sheet.cell(2, name_col).value == 'ARM-01'
+    assert sheet.cell(2, inv_col).value == 'INV-2026-ITIL-001'
+    assert 'PRIME B450M-K' in str(sheet.cell(2, mb_col).value)
+    assert 'Ryzen 5 3600' in str(sheet.cell(2, cpu_col).value)
+    assert '16 GB' in str(sheet.cell(2, ram_col).value)
+    assert 'Kingston SA400' in str(sheet.cell(2, disk_col).value)
+    assert 'GTX 1660' in str(sheet.cell(2, gpu_col).value)
+    assert sheet.freeze_panes == 'A2'
 
 @pytest.mark.anyio
 async def test_itilium_report_endpoint():
@@ -332,6 +334,10 @@ async def test_itilium_report_endpoint():
         assert resp.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         assert len(resp.content) > 0
         wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        sheet = wb.active
         assert any('Итилиум' in s or 'Оборудование' in s for s in wb.sheetnames)
+        assert sheet.cell(1, 1).value == '№'
+        headers = [sheet.cell(1, c).value for c in range(1, 20) if sheet.cell(1, c).value is not None]
+        assert 'Штрих-код КЕ' in headers
 
 

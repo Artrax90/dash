@@ -625,12 +625,12 @@ def generate_itilium_excel_report(
         parts = [p for p in [vendor, ver, date] if p and p.lower() not in ["unknown", "none"]]
         return " ".join(parts) if parts else "—"
 
-    # Row 4: Table Headers
-    ws.row_dimensions[4].height = 28
+    # Row 1: Table Headers (direct tabular document format for 1C:Itilium import)
+    ws.row_dimensions[1].height = 28
     headers = [
         '№',
         'Имя ПК',
-        'Инвентарный номер',
+        'Штрих-код КЕ',
         'Расположение',
         'Группа / Отдел',
         'Материнская плата',
@@ -643,34 +643,11 @@ def generate_itilium_excel_report(
         'BIOS'
     ]
 
-    total_cols = len(headers)
-    end_col_letter = get_column_letter(total_cols)
-    
-    # Row 1: Header Banner
-    ws.row_dimensions[1].height = 32
-    ws.row_dimensions[2].height = 24
-    ws.row_dimensions[3].height = 10
-
-    ws.merge_cells(f"A1:{end_col_letter}1")
-    c1 = ws['A1']
-    c1.value = _clean_val('ВЫГРУЗКА СПЕЦИФИКАЦИИ ОБОРУДОВАНИЯ ДЛЯ 1С:ИТИЛИУМ / SERVICE DESK')
-    c1.font = Font(name='Segoe UI', size=13, bold=True, color='FFFFFF')
-    c1.fill = PatternFill(start_color='0F172A', end_color='0F172A', fill_type='solid')
-    c1.alignment = Alignment(horizontal='center', vertical='center')
-
-    now_local = datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')
-    ws.merge_cells(f"A2:{end_col_letter}2")
-    c2 = ws['A2']
-    c2.value = _clean_val(f'Зона охвата: {scope_title}   |   Всего станций: {len(devices)}   |   Сформирован: {now_local}')
-    c2.font = Font(name='Segoe UI', size=10, italic=False, color='334155')
-    c2.fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
-    c2.alignment = Alignment(horizontal='center', vertical='center')
-
     for col_idx, h_text in enumerate(headers, start=1):
-        cell = ws.cell(row=4, column=col_idx)
+        cell = ws.cell(row=1, column=col_idx)
         _apply_header_style(cell, h_text, bg_color='1E293B', font_color='FFFFFF')
 
-    # Rows 5+: Device Rows
+    # Rows 2+: Device Rows
     thin_border = Border(
         left=Side(style='thin', color='E2E8F0'),
         right=Side(style='thin', color='E2E8F0'),
@@ -683,7 +660,7 @@ def generate_itilium_excel_report(
     align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
     align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
 
-    current_row = 5
+    current_row = 2
     for idx, d in enumerate(devices, start=1):
         dev_id = str(d.get('id', '')).strip()
         spec = hardware_specs.get(dev_id) or hardware_specs.get(dev_id.upper()) or hardware_specs.get(dev_id.lower()) or {}
@@ -735,15 +712,13 @@ def generate_itilium_excel_report(
 
         current_row += 1
 
-    ws.freeze_panes = 'A5'
+    ws.freeze_panes = 'A2'
 
     # Auto column widths
     for col in ws.columns:
         max_len = 0
         col_letter = get_column_letter(col[0].column)
         for cell in col:
-            if cell.row < 4:
-                continue
             val_str = str(cell.value or '')
             for line in val_str.split('\n'):
                 if len(line) > max_len:
