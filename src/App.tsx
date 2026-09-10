@@ -19,6 +19,7 @@ import {
   isFloorVisibleInScope,
   isRoomVisibleInScope
 } from '@/utils/scope';
+import { FaqModal } from './components/FaqModal';
 
 export function formatLocalTime(isoString?: string, fallback = '—'): string {
   if (!isoString) return fallback;
@@ -726,6 +727,7 @@ function App() {
   const [showWorkspaceModal, setShowWorkspaceModal] = useState(false);
   const [showProfileModal, setShowProfileModal] = useState(false);
   const [showLogoutModal, setShowLogoutModal] = useState(false);
+  const [showFaqModal, setShowFaqModal] = useState(false);
 
   // Profile password change state
   const [profileOldPassword, setProfileOldPassword] = useState('');
@@ -1042,6 +1044,16 @@ function App() {
         </nav>
 
         <div className="sidebar-bottom">
+          <button
+            type="button"
+            className="faq-sidebar-btn"
+            onClick={() => setShowFaqModal(true)}
+            title="База знаний и руководство (FAQ)"
+          >
+            <CircleHelp size={16} />
+            {!sidebarCollapsed && <span>База знаний (FAQ)</span>}
+          </button>
+
           <div className="profile">
             <div className="avatar" style={{ background: currentUser?.role === 'Суперадминистратор' ? 'var(--blue)' : 'var(--green)' }}>
               {currentUser?.displayName ? currentUser.displayName.split(' ').map(n => n[0]).join('').slice(0, 2).toUpperCase() : 'AD'}
@@ -1327,6 +1339,9 @@ function App() {
           </div>
         </div>
       )}
+
+      {/* FAQ Knowledge Base Modal */}
+      <FaqModal isOpen={showFaqModal} onClose={() => setShowFaqModal(false)} />
 
       {toast && (
         <div className="toast">
