@@ -12544,7 +12544,12 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
       setAvailableGroups(prev => Array.from(new Set([...prev, ...tokGroups])));
     });
     agentsApi.getBuilds().then(setBuilds);
-    agentsApi.getVersionInfo().then(setVersionInfo);
+    agentsApi.getVersionInfo().then(info => {
+      setVersionInfo(info);
+      if (info?.serverUrl) {
+        setServerAddress(prev => (prev.includes('localhost') || prev.includes('127.0.0.1')) ? info.serverUrl! : prev);
+      }
+    });
     agentsApi.getUpdateLogs().then(setUpdateLogs);
     groupsApi.getHierarchy().then(h => {
       if (h && h.length > 0) setHierarchyData(h);
@@ -12570,7 +12575,12 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
   useEffect(() => {
     loadData();
     const interval = setInterval(() => {
-      agentsApi.getVersionInfo().then(setVersionInfo);
+      agentsApi.getVersionInfo().then(info => {
+        setVersionInfo(info);
+        if (info?.serverUrl) {
+          setServerAddress(prev => (prev.includes('localhost') || prev.includes('127.0.0.1')) ? info.serverUrl! : prev);
+        }
+      });
       agentsApi.getUpdateLogs().then(setUpdateLogs);
       devicesApi.list().then(setFleetDevices);
     }, 4000);

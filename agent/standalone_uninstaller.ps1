@@ -1,12 +1,15 @@
-﻿# ==============================================================================
-# Workstation Manager - Clean Standalone Uninstaller Script (PowerShell Core)
-# ==============================================================================
+﻿# Workstation Manager Agent Uninstaller
 [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $OutputEncoding = [System.Text.Encoding]::UTF8
 $ErrorActionPreference = 'Continue'
 
 $ServerUrl = "__SERVER_URL__".TrimEnd('/')
+if ($args) {
+    for ($i = 0; $i -lt $args.Count; $i++) {
+        if ($args[$i] -eq '-ServerUrl' -and ($i + 1) -lt $args.Count) { $ServerUrl = $args[$i + 1] }
+    }
+}
 if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or $ServerUrl -like "*localhost*" -or $ServerUrl -like "*127.0.0.1*") {
     try {
         $candidatePaths = @("C:\Program Files\WorkstationManagerAgent\config.json", (Join-Path $env:LOCALAPPDATA "WorkstationManagerAgent\config.json"))

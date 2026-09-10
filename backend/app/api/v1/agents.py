@@ -2031,7 +2031,7 @@ async def report_agent_power_event(payload: Dict[str, Any], db: AsyncSession = D
 # -------------------------------------------------------------------------
 
 @router.get("/version-info")
-async def get_agent_version_info(db: AsyncSession = Depends(get_db)):
+async def get_agent_version_info(request: Request, db: AsyncSession = Depends(get_db)):
     """
     Returns latest agent version details, changelog, and fleet breakdown (up to date vs outdated).
     """
@@ -2067,6 +2067,13 @@ async def get_agent_version_info(db: AsyncSession = Depends(get_db)):
         else:
             outdated_count += 1
 
+    srv_url = ""
+    try:
+        from backend.app.main import resolve_request_base_url
+        srv_url = resolve_request_base_url(request)
+    except Exception:
+        pass
+
     return {
         "currentVersion": latest_ver,
         "releaseDate": "2026-08-23",
@@ -2075,7 +2082,8 @@ async def get_agent_version_info(db: AsyncSession = Depends(get_db)):
         "totalAgents": total_count,
         "upToDateCount": up_to_date_count,
         "outdatedCount": outdated_count,
-        "updatingCount": updating_count
+        "updatingCount": updating_count,
+        "serverUrl": srv_url
     }
 
 @router.post("/update-status")

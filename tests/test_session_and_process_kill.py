@@ -331,13 +331,27 @@ def test_powershell_endpoints_return_utf8_bom_and_valid_ast():
 
     client = TestClient(app)
 
-    # 1. /install.ps1
+    # 1. /install.ps1 for 'irm | iex' in-memory execution (MUST NOT have BOM)
     res_inst = client.get("/install.ps1?token=wm_tok_test_123")
     assert res_inst.status_code == 200
-    assert res_inst.content.startswith(b"\xef\xbb\xbf"), "Installer script must start with UTF-8 BOM"
+    assert not res_inst.content.startswith(b"\xef\xbb\xbf"), "Direct 'irm | iex' installer script must NOT have BOM"
+
+    # Verify ParseInput (in-memory AST parser) succeeds with 0 errors
+    check_ast_mem = subprocess.run(
+        ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+         "$c = [System.IO.File]::ReadAllText('agent/standalone_installer.ps1', [System.Text.Encoding]::UTF8); $t=$null;$e=$null;[System.Management.Automation.Language.Parser]::ParseInput($c, [ref]$t, [ref]$e) | Out-Null; Write-Host $e.Count"],
+        capture_output=True, text=False
+    )
+    assert check_ast_mem.returncode == 0
+    assert check_ast_mem.stdout.decode("ascii", errors="ignore").strip() == "0"
+
+    # Downloadable installer (?download=1) MUST have UTF-8 BOM for disk saving
+    res_dl = client.get("/install.ps1?token=wm_tok_test_123&download=1")
+    assert res_dl.status_code == 200
+    assert res_dl.content.startswith(b"\xef\xbb\xbf"), "Downloaded installer file must start with UTF-8 BOM"
 
     with tempfile.NamedTemporaryFile(suffix=".ps1", delete=False) as f:
-        f.write(res_inst.content)
+        f.write(res_dl.content)
         temp_inst = f.name
     try:
         check_ast = subprocess.run(
@@ -352,7 +366,7 @@ def test_powershell_endpoints_return_utf8_bom_and_valid_ast():
         if os.path.exists(temp_inst):
             os.remove(temp_inst)
 
-    # 2. /agent.ps1 (service script)
+    # 2. /agent.ps1 (service script saved to disk)
     res_svc = client.get("/agent.ps1")
     assert res_svc.status_code == 200
     assert res_svc.content.startswith(b"\xef\xbb\xbf"), "Service script must start with UTF-8 BOM"
@@ -373,10 +387,16 @@ def test_powershell_endpoints_return_utf8_bom_and_valid_ast():
         if os.path.exists(temp_svc):
             os.remove(temp_svc)
 
-    # 3. /install.bat must include BOM injection guard
+    # 3. /uninstall.ps1 for 'irm | iex' (MUST NOT have BOM)
+    res_uninst = client.get("/uninstall.ps1")
+    assert res_uninst.status_code == 200
+    assert not res_uninst.content.startswith(b"\xef\xbb\xbf"), "Direct 'irm | iex' uninstaller must NOT have BOM"
+
+    # 4. /install.bat must use ExecutionPolicy Bypass and include BOM injection guard
     res_bat = client.get("/install.bat?token=wm_tok_test_123")
     assert res_bat.status_code == 200
     bat_text = res_bat.text
+    assert "ExecutionPolicy Bypass" in bat_text
     assert "0xEF" in bat_text and "0xBB" in bat_text and "0xBF" in bat_text
 
 

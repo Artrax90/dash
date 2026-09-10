@@ -399,7 +399,34 @@ def resolve_request_base_url(request: Request, server_url: str = "") -> str:
     except Exception:
         pass
 
-    # 8. Final fallback to request.base_url
+    # 8. Multi-interface enumeration fallback (offline / air-gapped / isolated corporate networks)
+    try:
+        import psutil
+        candidates = []
+        for iface, addrs in psutil.net_if_addrs().items():
+            for addr in addrs:
+                if addr.family == socket.AF_INET and not addr.address.startswith("127.") and not addr.address.startswith("169.254."):
+                    ip = addr.address
+                    if not ip.startswith("172.17.") and not ip.startswith("172.18."):
+                        candidates.append(ip)
+        if candidates:
+            prio = [c for c in candidates if c.startswith("192.168.")]
+            if not prio:
+                prio = [c for c in candidates if c.startswith("10.") or (c.startswith("172.") and 16 <= int(c.split(".")[1]) <= 31)]
+            best = prio[0] if prio else candidates[0]
+            return f"http://{best}:{port}"
+    except Exception:
+        pass
+
+    try:
+        addrs = socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET)
+        ips = [a[4][0] for a in addrs if not a[4][0].startswith("127.") and not a[4][0].startswith("169.254.")]
+        if ips:
+            return f"http://{ips[0]}:{port}"
+    except Exception:
+        pass
+
+    # 9. Final fallback to request.base_url
     raw_base = str(request.base_url).rstrip("/")
     return raw_base.replace("/api/v1", "").rstrip("/")
 
@@ -469,7 +496,7 @@ title Workstation Manager Agent Setup
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo [*] Requesting Administrator permissions...
-    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 
@@ -478,10 +505,11 @@ echo ===========================================================================
 echo        WORKSTATION MANAGER - AGENT INSTALLER (ADMINISTRATOR)
 echo ==============================================================================
 echo.
+echo [*] Target Server: {base_url}
 echo [*] Launching PowerShell Agent Setup...
 echo.
 
-powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Install-WorkstationAgent.ps1'); $wc = New-Object Net.WebClient; $wc.Proxy = $null; $wc.DownloadFile('{base_url}/install.ps1?token={effective_token}', $dst); $bytes = [IO.File]::ReadAllBytes($dst); if ($bytes.Length -ge 3 -and ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF)) {{ [IO.File]::WriteAllBytes($dst, ([byte[]](0xEF, 0xBB, 0xBF) + $bytes)) }}; & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Install-WorkstationAgent.ps1'); $wc = New-Object Net.WebClient; $wc.Proxy = $null; try {{ $wc.DownloadFile('{base_url}/install.ps1?token={effective_token}&download=1', $dst) }} catch {{ Write-Host '[!] Error: Cannot download installer from {base_url}' -ForegroundColor Red; Write-Host ('[!] ' + $_.Exception.Message) -ForegroundColor Yellow; exit 1 }}; $bytes = [IO.File]::ReadAllBytes($dst); if ($bytes.Length -ge 3 -and ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF)) {{ [IO.File]::WriteAllBytes($dst, ([byte[]](0xEF, 0xBB, 0xBF) + $bytes)) }}; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $dst -ServerUrl '{base_url}' -Token '{effective_token}'; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
 
 echo.
 echo ==============================================================================
@@ -498,14 +526,16 @@ exit /b
 
 @app.get("/install_full.ps1")
 @app.get("/install-full.ps1")
-async def get_windows_installer_full_ps1_endpoint(request: Request, token: str = "", server_url: str = ""):
+async def get_windows_installer_full_ps1_endpoint(request: Request, token: str = "", server_url: str = "", download: bool = False):
     """
     Serve raw, complete Windows installer script for direct execution.
     """
     base_url = resolve_request_base_url(request, server_url)
     clean_token = token.split("_0123")[0] if token else "wm_tok_live_7f8a92b3c4d5e6f7"
     content = get_windows_installer_ps1(base_url, clean_token)
-    return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8")
+    if download:
+        return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8")
+    return PlainTextResponse(content, media_type="text/plain; charset=utf-8")
 
 @app.get("/install.ps1")
 @app.get("/installer.ps1")
@@ -530,7 +560,10 @@ async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", 
         group_suffix = f"-{safe_group}" if safe_group else ""
         filename = f"Install-Agent{group_suffix}.ps1"
         headers["Content-Disposition"] = make_safe_attachment_header(filename, fallback_ascii="Install-Agent.ps1")
-    return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers=headers)
+        return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers=headers)
+
+    # In-memory execution (irm ... | iex) requires pure UTF-8 WITHOUT BOM so PowerShell 5.1 doesn't treat \uFEFF as command name
+    return PlainTextResponse(content, media_type="text/plain; charset=utf-8", headers=headers)
 
 def get_windows_agent_service_ps1(base_url: str, device_id: str = "", mac: str = "") -> str:
     template_path = os.path.join(os.path.dirname(__file__), "..", "..", "agent", "standalone_installer.ps1")
@@ -601,7 +634,8 @@ async def get_windows_uninstaller_ps1_endpoint(request: Request, server_url: str
     headers = {}
     if download:
         headers["Content-Disposition"] = 'attachment; filename="Uninstall-Agent.ps1"'
-    return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers=headers)
+        return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers=headers)
+    return PlainTextResponse(content, media_type="text/plain; charset=utf-8", headers=headers)
 
 @app.get("/uninstall.bat", response_class=PlainTextResponse)
 @app.get("/uninstall-agent.bat", response_class=PlainTextResponse)
@@ -621,7 +655,7 @@ title Workstation Manager Agent Uninstaller
 net session >nul 2>&1
 if %errorlevel% neq 0 (
     echo [*] Requesting Administrator permissions...
-    powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
+    powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "Start-Process -FilePath '%~f0' -Verb RunAs"
     exit /b
 )
 
@@ -630,10 +664,11 @@ echo ===========================================================================
 echo        WORKSTATION MANAGER - AGENT UNINSTALLER (ADMINISTRATOR)
 echo ==============================================================================
 echo.
+echo [*] Target Server: {base_url}
 echo [*] Launching PowerShell Agent Uninstaller...
 echo.
 
-powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Uninstall-WorkstationAgent.ps1'); (New-Object Net.WebClient).DownloadFile('{base_url}/uninstall.ps1?server_url={base_url}', $dst); $bytes = [IO.File]::ReadAllBytes($dst); if ($bytes.Length -ge 3 -and ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF)) {{ [IO.File]::WriteAllBytes($dst, ([byte[]](0xEF, 0xBB, 0xBF) + $bytes)) }}; & powershell.exe -NoProfile -ExecutionPolicy RemoteSigned -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $dst = [IO.Path]::Combine($env:TEMP, 'Uninstall-WorkstationAgent.ps1'); $wc = New-Object Net.WebClient; $wc.Proxy = $null; try {{ $wc.DownloadFile('{base_url}/uninstall.ps1?server_url={base_url}&download=1', $dst) }} catch {{ Write-Host '[!] Error: Cannot download uninstaller from {base_url}' -ForegroundColor Red; exit 1 }}; $bytes = [IO.File]::ReadAllBytes($dst); if ($bytes.Length -ge 3 -and ($bytes[0] -ne 0xEF -or $bytes[1] -ne 0xBB -or $bytes[2] -ne 0xBF)) {{ [IO.File]::WriteAllBytes($dst, ([byte[]](0xEF, 0xBB, 0xBF) + $bytes)) }}; & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $dst; Remove-Item $dst -Force -ErrorAction SilentlyContinue"
 
 echo.
 echo ==============================================================================

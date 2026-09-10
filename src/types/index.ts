@@ -301,6 +301,7 @@ export interface AgentVersionInfo {
   upToDateCount: number;
   outdatedCount: number;
   updatingCount: number;
+  serverUrl?: string;
 }
 
 export interface AgentUpdateLog {

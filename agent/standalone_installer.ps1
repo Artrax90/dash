@@ -1,4 +1,4 @@
-﻿# Parameters initialization (supports direct execution, irm | iex, and parameter passing)
+﻿# Workstation Manager Agent Installer
 $embeddedServer = "__SERVER_URL__"
 $embeddedToken = "__TOKEN__"
 
@@ -25,8 +25,21 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 if ($ServerUrl) {
     $ServerUrl = $ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
 }
-if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__") {
-    $foundLiveServer = $false
+
+$serverReachable = $false
+if ($ServerUrl -and $ServerUrl -ne "__SERVER_URL__") {
+    try {
+        $pProbe = [System.Net.WebRequest]::Create("$ServerUrl/api/v1/devices/stats")
+        $pProbe.Proxy = $null
+        $pProbe.Timeout = 2000
+        $pResp = $pProbe.GetResponse()
+        $pResp.Close()
+        $serverReachable = $true
+    } catch {}
+}
+
+if (-not $serverReachable) {
+    # 1. Probe config.json from previous installation
     try {
         $candidatePaths = @("C:\Program Files\WorkstationManagerAgent\config.json", (Join-Path $env:LOCALAPPDATA "WorkstationManagerAgent\config.json"))
         foreach ($cp in $candidatePaths) {
@@ -34,33 +47,68 @@ if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__") {
                 $prevCfg = Get-Content $cp -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
                 if ($prevCfg -and $prevCfg.server_url) {
                     $cand = $prevCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
-                    try {
-                        $pProbe = [System.Net.WebRequest]::Create("$cand/api/v1/devices/stats")
-                        $pProbe.Proxy = $null
-                        $pProbe.Timeout = 1500
-                        $pResp = $pProbe.GetResponse()
-                        $pResp.Close()
-                        $ServerUrl = $cand
-                        $foundLiveServer = $true
-                        break
-                    } catch {}
+                    if ($cand -and $cand -notmatch "localhost|127\.0\.0\.1") {
+                        try {
+                            $pProbe = [System.Net.WebRequest]::Create("$cand/api/v1/devices/stats")
+                            $pProbe.Proxy = $null
+                            $pProbe.Timeout = 1500
+                            $pResp = $pProbe.GetResponse()
+                            $pResp.Close()
+                            $ServerUrl = $cand
+                            $serverReachable = $true
+                            break
+                        } catch {}
+                    }
                 }
             }
         }
     } catch {}
-    if (-not $foundLiveServer) {
-        # Check local host:2301
+
+    # 2. Probe local host:2301
+    if (-not $serverReachable) {
         try {
             $pProbe = [System.Net.WebRequest]::Create("http://127.0.0.1:2301/api/v1/devices/stats")
             $pProbe.Proxy = $null
-            $pProbe.Timeout = 1200
+            $pProbe.Timeout = 1000
             $pResp = $pProbe.GetResponse()
             $pResp.Close()
             $ServerUrl = "http://127.0.0.1:2301"
-        } catch {
-            $ServerUrl = "http://localhost:2301"
+            $serverReachable = $true
+        } catch {}
+    }
+
+    # 3. Interactive prompt fallback if running in console and unreachable
+    if (-not $serverReachable -and [Environment]::UserInteractive) {
+        Write-Host "==============================================================================" -ForegroundColor Yellow
+        Write-Host "  [!] Сервер Workstation Manager не обнаружен автоматически." -ForegroundColor Yellow
+        Write-Host "==============================================================================" -ForegroundColor Yellow
+        $promptUrl = Read-Host "  Введите URL сервера (например: http://172.19.33.68:2301)"
+        if ($promptUrl) {
+            $promptUrl = $promptUrl.Trim().TrimEnd('/')
+            if (-not $promptUrl.StartsWith("http://") -and -not $promptUrl.StartsWith("https://")) {
+                $promptUrl = "http://$promptUrl"
+            }
+            if ($promptUrl -notmatch ':\d+$') {
+                $promptUrl = "$promptUrl:2301"
+            }
+            try {
+                $pProbe = [System.Net.WebRequest]::Create("$promptUrl/api/v1/devices/stats")
+                $pProbe.Proxy = $null
+                $pProbe.Timeout = 3000
+                $pResp = $pProbe.GetResponse()
+                $pResp.Close()
+                $ServerUrl = $promptUrl
+                $serverReachable = $true
+            } catch {
+                Write-Host "  [!] Связь с $promptUrl не подтверждена: $($_.Exception.Message)" -ForegroundColor Yellow
+                $ServerUrl = $promptUrl
+            }
         }
     }
+}
+
+if (-not $ServerUrl -or $ServerUrl -eq "__SERVER_URL__") {
+    $ServerUrl = "http://localhost:2301"
 }
 if (-not $Token) { $Token = "__TOKEN__" }
 
@@ -81,16 +129,32 @@ Write-Host ""
 
 # 1. Проверка доступности сервера
 Write-Host "[1/7] Проверка соединения с сервером $ServerUrl ..." -ForegroundColor Yellow
-try {
-    $testReq = [System.Net.WebRequest]::Create("$ServerUrl/api/v1/devices/stats")
-    $testReq.Timeout = 5000
-    $testResp = $testReq.GetResponse()
-    $testResp.Close()
+if (-not $serverReachable) {
+    try {
+        $testReq = [System.Net.WebRequest]::Create("$ServerUrl/api/v1/devices/stats")
+        $testReq.Timeout = 4000
+        $testReq.Proxy = $null
+        $testResp = $testReq.GetResponse()
+        $testResp.Close()
+        $serverReachable = $true
+        Write-Host "      [OK] Сервер доступен и готов к приему телеметрии." -ForegroundColor Green
+    } catch {
+        Write-Host "      [!] Внимание: Не удалось подключиться к серверу $ServerUrl" -ForegroundColor Red
+        Write-Host "          Причина: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "          Проверьте, что сервер запущен и порт 2301 открыт в брандмауэре." -ForegroundColor Yellow
+    }
+} else {
     Write-Host "      [OK] Сервер доступен и готов к приему телеметрии." -ForegroundColor Green
-} catch {
-    Write-Host "      [!] Внимание: Не удалось подключиться к серверу $ServerUrl" -ForegroundColor Red
-    Write-Host "          Причина: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "          Проверьте, что сервер запущен и порт 2301 открыт в брандмауэре." -ForegroundColor Yellow
+}
+
+if (-not $serverReachable) {
+    Write-Host ""
+    Write-Host "==============================================================================" -ForegroundColor Red
+    Write-Host "  [!] ОШИБКА: Сервер $ServerUrl недоступен." -ForegroundColor Red
+    Write-Host "      Установка прервана. Укажите правильный адрес сервера и повторите попытку." -ForegroundColor Red
+    Write-Host "      Пример: .\standalone_installer.ps1 -ServerUrl http://172.19.33.68:2301" -ForegroundColor Yellow
+    Write-Host "==============================================================================" -ForegroundColor Red
+    exit 1
 }
 
 function Invoke-ApiPost($url, $data, [bool]$silent = $false) {
