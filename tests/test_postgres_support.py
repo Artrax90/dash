@@ -94,10 +94,43 @@ def test_safe_column_migration_logic():
         assert "building" in cols
         assert "floor" in cols
         assert "room" in cols
+        assert "is_archived" in cols
+        assert "decommission_reason" in cols
+        assert "decommission_comment" in cols
+        assert "decommissioned_at" in cols
 
     # Run it a second time: must be idempotent and not crash or attempt duplicate column creation
     with mem_engine.begin() as conn:
         safe_migrate_columns_sync(conn)
+
+def test_postgres_column_migration_syntax_and_types():
+    from backend.app.main import safe_migrate_columns_sync
+    
+    mock_conn = MagicMock()
+    mock_conn.dialect.name = "postgresql"
+    
+    executed_sqls = []
+    def mock_execute(statement, *args, **kwargs):
+        sql_str = str(statement)
+        executed_sqls.append(sql_str)
+        return MagicMock()
+    
+    mock_conn.execute.side_effect = mock_execute
+    
+    with patch("sqlalchemy.inspect") as mock_inspect:
+        mock_inspector = MagicMock()
+        mock_inspect.return_value = mock_inspector
+        mock_inspector.get_table_names.return_value = ["devices"]
+        mock_inspector.get_columns.return_value = [{"name": "id"}]
+        
+        safe_migrate_columns_sync(mock_conn)
+        
+    combined_sql = "\n".join(executed_sqls)
+    assert "BOOLEAN DEFAULT FALSE" in combined_sql
+    assert "BOOLEAN DEFAULT 0" not in combined_sql
+    assert "TIMESTAMP" in combined_sql
+    assert "IF NOT EXISTS" in combined_sql
+    assert "ix_devices_is_archived" in combined_sql
 
 def test_system_status_endpoint_reports_database_info():
     from fastapi.testclient import TestClient

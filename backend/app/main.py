@@ -66,57 +66,72 @@ def safe_migrate_columns_sync(connection):
     except Exception:
         tables = []
     
+    def _execute_safe(stmt_sql: str, notice_msg: str):
+        try:
+            if hasattr(connection, "begin_nested"):
+                with connection.begin_nested():
+                    connection.execute(text(stmt_sql))
+            else:
+                connection.execute(text(stmt_sql))
+        except Exception as ex:
+            logger.debug(f"{notice_msg}: {ex}")
+
     if "devices" in tables:
         existing_cols = {c["name"] for c in inspector.get_columns("devices")}
-        is_postgres = connection.dialect.name == "postgresql"
+        is_postgres = getattr(connection.dialect, "name", "") == "postgresql"
         dt_type = "TIMESTAMP" if is_postgres else "DATETIME"
+        bool_default = "FALSE" if is_postgres else "0"
+        ine = "IF NOT EXISTS " if is_postgres else ""
         
         column_defs = [
-            ("boot_time", f"ALTER TABLE devices ADD COLUMN boot_time {dt_type}"),
-            ("uptime_seconds", "ALTER TABLE devices ADD COLUMN uptime_seconds INTEGER DEFAULT 0"),
-            ("building", "ALTER TABLE devices ADD COLUMN building VARCHAR(100) DEFAULT ''"),
-            ("floor", "ALTER TABLE devices ADD COLUMN floor VARCHAR(50) DEFAULT ''"),
-            ("room", "ALTER TABLE devices ADD COLUMN room VARCHAR(100) DEFAULT ''"),
-            ("is_archived", "ALTER TABLE devices ADD COLUMN is_archived BOOLEAN DEFAULT 0"),
-            ("decommission_reason", "ALTER TABLE devices ADD COLUMN decommission_reason VARCHAR(200)"),
-            ("decommission_comment", "ALTER TABLE devices ADD COLUMN decommission_comment VARCHAR(500)"),
-            ("decommissioned_at", f"ALTER TABLE devices ADD COLUMN decommissioned_at {dt_type}"),
+            ("boot_time", f"ALTER TABLE devices ADD COLUMN {ine}boot_time {dt_type}"),
+            ("uptime_seconds", f"ALTER TABLE devices ADD COLUMN {ine}uptime_seconds INTEGER DEFAULT 0"),
+            ("building", f"ALTER TABLE devices ADD COLUMN {ine}building VARCHAR(100) DEFAULT ''"),
+            ("floor", f"ALTER TABLE devices ADD COLUMN {ine}floor VARCHAR(50) DEFAULT ''"),
+            ("room", f"ALTER TABLE devices ADD COLUMN {ine}room VARCHAR(100) DEFAULT ''"),
+            ("is_archived", f"ALTER TABLE devices ADD COLUMN {ine}is_archived BOOLEAN DEFAULT {bool_default}"),
+            ("decommission_reason", f"ALTER TABLE devices ADD COLUMN {ine}decommission_reason VARCHAR(200)"),
+            ("decommission_comment", f"ALTER TABLE devices ADD COLUMN {ine}decommission_comment VARCHAR(500)"),
+            ("decommissioned_at", f"ALTER TABLE devices ADD COLUMN {ine}decommissioned_at {dt_type}"),
         ]
         
         for col_name, col_sql in column_defs:
-            if col_name not in existing_cols:
-                try:
-                    connection.execute(text(col_sql))
-                except Exception as ex:
-                    logger.debug(f"Column migration notice for {col_name}: {ex}")
+            if col_name not in existing_cols or is_postgres:
+                _execute_safe(col_sql, f"Column migration notice for {col_name}")
+
+        if is_postgres:
+            _execute_safe(
+                "CREATE INDEX IF NOT EXISTS ix_devices_is_archived ON devices (is_archived)",
+                "Index creation notice for is_archived"
+            )
 
     if "hardware_changes" in tables:
-        try:
-            connection.execute(text("UPDATE hardware_changes SET diff_status = 'INFO', severity = 'Info' WHERE (component = 'USB-накопитель' OR id LIKE '%USB%' OR description LIKE '%Remote Display Adapter%' OR current_value LIKE '%Remote Display Adapter%') AND diff_status = 'MISMATCH'"))
-        except Exception as ex:
-            logger.debug(f"Hardware changes USB/VGPU cleanup notice: {ex}")
+        _execute_safe(
+            "UPDATE hardware_changes SET diff_status = 'INFO', severity = 'Info' WHERE (component = 'USB-накопитель' OR id LIKE '%USB%' OR description LIKE '%Remote Display Adapter%' OR current_value LIKE '%Remote Display Adapter%') AND diff_status = 'MISMATCH'",
+            "Hardware changes USB/VGPU cleanup notice"
+        )
 
     if "alerts" in tables:
-        try:
-            connection.execute(text("UPDATE alerts SET state = 'Resolved', severity = 'Info' WHERE (alert_type IN ('USB_STORAGE_CHANGED', 'VIRTUAL_GPU_CHANGED') OR description LIKE '%Remote Display Adapter%') AND state = 'Open'"))
-        except Exception as ex:
-            logger.debug(f"Alerts USB/VGPU cleanup notice: {ex}")
+        _execute_safe(
+            "UPDATE alerts SET state = 'Resolved', severity = 'Info' WHERE (alert_type IN ('USB_STORAGE_CHANGED', 'VIRTUAL_GPU_CHANGED') OR description LIKE '%Remote Display Adapter%') AND state = 'Open'",
+            "Alerts USB/VGPU cleanup notice"
+        )
 
     if "devices" in tables and "alerts" in tables and "hardware_changes" in tables:
-        try:
-            connection.execute(text("""
-                UPDATE devices 
-                SET health_status = 'HEALTHY' 
-                WHERE (health_status = 'CRITICAL' OR health_status = 'WARNING' OR health_status = 'Critical' OR health_status = 'Warning')
-                  AND id NOT IN (
-                      SELECT DISTINCT device_id FROM alerts WHERE state = 'Open' AND device_id IS NOT NULL
-                  )
-                  AND id NOT IN (
-                      SELECT DISTINCT device_id FROM hardware_changes WHERE diff_status = 'MISMATCH' AND (acknowledged = 0 OR acknowledged IS NULL) AND component NOT IN ('USB-накопитель', 'RDP-видеоадаптер') AND id NOT LIKE '%USB%' AND id NOT LIKE '%VGPU%' AND description NOT LIKE '%Remote Display Adapter%' AND device_id IS NOT NULL
-                  )
-            """))
-        except Exception as ex:
-            logger.debug(f"Device health auto-reconciliation notice: {ex}")
+        _execute_safe(
+            """
+            UPDATE devices 
+            SET health_status = 'HEALTHY' 
+            WHERE (health_status = 'CRITICAL' OR health_status = 'WARNING' OR health_status = 'Critical' OR health_status = 'Warning')
+              AND id NOT IN (
+                  SELECT DISTINCT device_id FROM alerts WHERE state = 'Open' AND device_id IS NOT NULL
+              )
+              AND id NOT IN (
+                  SELECT DISTINCT device_id FROM hardware_changes WHERE diff_status = 'MISMATCH' AND (acknowledged IS NOT TRUE) AND component NOT IN ('USB-накопитель', 'RDP-видеоадаптер') AND id NOT LIKE '%USB%' AND id NOT LIKE '%VGPU%' AND description NOT LIKE '%Remote Display Adapter%' AND device_id IS NOT NULL
+              )
+            """,
+            "Device health auto-reconciliation notice"
+        )
 
 @app.on_event("startup")
 async def startup_event():
