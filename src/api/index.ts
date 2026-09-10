@@ -840,7 +840,7 @@ export const agentsApi = {
       id: `TOK-${String(agentTokens.length + 1).padStart(2, '0')}`,
       token: `wm_tok_${Math.random().toString(36).substring(2, 12)}_${Math.random().toString(36).substring(2, 10)}`,
       targetGroup: payload.targetGroup,
-      serverUrl: typeof window !== 'undefined' ? `${window.location.protocol}//${window.location.hostname || 'localhost'}:${window.location.port === '5173' ? '2301' : (window.location.port || '2301')}` : 'http://localhost:2301',
+      serverUrl: typeof window !== 'undefined' ? `${window.location.protocol}//${(window.location.hostname && window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1') ? window.location.hostname : '192.168.1.109'}:${window.location.port === '5173' ? '2301' : (window.location.port || '2301')}` : 'http://192.168.1.109:2301',
       createdAt: 'Только что',
       expiresAt: payload.expiresAt || (payload.expiry === '24h' ? 'Через 24 часа' : payload.expiry === '7d' ? 'Через 7 дней' : payload.expiry === 'never' ? 'Бессрочно' : 'Через 30 дней'),
       isReusable: payload.isReusable !== false,

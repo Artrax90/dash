@@ -5,8 +5,8 @@
 set -e
 
 DEFAULT_SERVER_URL="__SERVER_URL_VALUE__"
-if [ "$DEFAULT_SERVER_URL" = "__SERVER_URL_VALUE__" ] || [ "$DEFAULT_SERVER_URL" = "" ]; then
-    DEFAULT_SERVER_URL="http://localhost:2301"
+if [ "$DEFAULT_SERVER_URL" = "__SERVER_URL_VALUE__" ] || [ "$DEFAULT_SERVER_URL" = "" ] || [[ "$DEFAULT_SERVER_URL" == *"localhost"* ]] || [[ "$DEFAULT_SERVER_URL" == *"127.0.0.1"* ]]; then
+    DEFAULT_SERVER_URL="http://192.168.1.109:2301"
 fi
 
 echo "=============================================================================="

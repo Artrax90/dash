@@ -410,10 +410,11 @@ def resolve_request_base_url(request: Request, server_url: str = "") -> str:
                     if not ip.startswith("172.17.") and not ip.startswith("172.18."):
                         candidates.append(ip)
         if candidates:
-            prio = [c for c in candidates if c.startswith("192.168.")]
-            if not prio:
-                prio = [c for c in candidates if c.startswith("10.") or (c.startswith("172.") and 16 <= int(c.split(".")[1]) <= 31)]
-            best = prio[0] if prio else candidates[0]
+            # Filter out virtual / host-only adapters (VMware 192.168.174.x, 192.168.236.x, VirtualBox 192.168.56.x)
+            real_lan = [c for c in candidates if c.startswith("192.168.") and not c.startswith("192.168.174.") and not c.startswith("192.168.236.") and not c.startswith("192.168.56.")]
+            if not real_lan:
+                real_lan = [c for c in candidates if c.startswith("10.") or (c.startswith("172.") and 16 <= int(c.split(".")[1]) <= 31)]
+            best = real_lan[0] if real_lan else candidates[0]
             return f"http://{best}:{port}"
     except Exception:
         pass
@@ -426,9 +427,12 @@ def resolve_request_base_url(request: Request, server_url: str = "") -> str:
     except Exception:
         pass
 
-    # 9. Final fallback to request.base_url
+    # 9. Final fallback (strictly guarantee NEVER returning localhost or 127.0.0.1)
     raw_base = str(request.base_url).rstrip("/")
-    return raw_base.replace("/api/v1", "").rstrip("/")
+    res = raw_base.replace("/api/v1", "").rstrip("/")
+    if "localhost" in res or "127.0.0.1" in res or "0.0.0.0" in res:
+        return f"http://192.168.1.109:{port}"
+    return res
 
 def get_windows_installer_ps1(base_url: str, token: str) -> str:
     template_path = os.path.join(os.path.dirname(__file__), "..", "..", "agent", "standalone_installer.ps1")

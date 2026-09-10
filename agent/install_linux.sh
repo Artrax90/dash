@@ -15,8 +15,8 @@ TOKEN="${WM_TOKEN:-$DEFAULT_TOKEN}"
 GROUP="${WM_GROUP:-$DEFAULT_GROUP}"
 
 SERVER_URL="${SERVER_URL%/}"
-if [ -z "$SERVER_URL" ] || [ "$SERVER_URL" = "__SERVER_URL_RAW__" ]; then
-    SERVER_URL="http://localhost:2301"
+if [ -z "$SERVER_URL" ] || [ "$SERVER_URL" = "__SERVER_URL_RAW__" ] || [[ "$SERVER_URL" == *"localhost"* ]] || [[ "$SERVER_URL" == *"127.0.0.1"* ]]; then
+    SERVER_URL="http://192.168.1.109:2301"
 fi
 
 echo "=============================================================================="

@@ -31,6 +31,22 @@ export function formatLocalTime(isoString?: string, fallback = '—'): string {
   return fallback;
 }
 
+export function getEffectiveServerBaseUrl(preferredUrl?: string): string {
+  if (preferredUrl) {
+    const trimmed = preferredUrl.trim().replace(/\/+$/, '');
+    if (trimmed && !trimmed.includes('localhost') && !trimmed.includes('127.0.0.1')) {
+      return trimmed;
+    }
+  }
+  const host = typeof window !== 'undefined' ? window.location.hostname : '';
+  const isLocal = !host || host === 'localhost' || host === '127.0.0.1';
+  const port = (typeof window !== 'undefined' && window.location.port === '5173') ? '2301' : ((typeof window !== 'undefined' && window.location.port) || '2301');
+  if (isLocal) {
+    return `http://192.168.1.109:${port}`;
+  }
+  return `${typeof window !== 'undefined' ? window.location.protocol : 'http:'}//${host}:${port}`;
+}
+
 export function formatDeviceBootTime(isoString?: string, fallback = '—'): string {
   if (!isoString) return fallback;
   try {
@@ -732,6 +748,16 @@ function App() {
       localStorage.setItem('wm_workspace_name', trimmed);
     } catch {}
   };
+
+  const [globalServerUrl, setGlobalServerUrl] = useState<string>(() => getEffectiveServerBaseUrl());
+
+  useEffect(() => {
+    agentsApi.getVersionInfo().then(info => {
+      if (info?.serverUrl && !info.serverUrl.includes('localhost') && !info.serverUrl.includes('127.0.0.1')) {
+        setGlobalServerUrl(info.serverUrl);
+      }
+    }).catch(() => {});
+  }, []);
 
   // Prevent accidental modal close when dragging/selecting text inside modal and releasing mouse on backdrop
   useEffect(() => {
@@ -3397,9 +3423,7 @@ function Devices({
                 </div>
 
                 {(() => {
-                  const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
-                  const serverHost = window.location.hostname || 'localhost';
-                  const srvUrl = `http://${serverHost}:${effectivePort}`;
+                  const srvUrl = getEffectiveServerBaseUrl(globalServerUrl);
                   const effectiveGroup = isCustomAgentGroup ? agentCustomGroup.trim() : agentGroup.trim();
                   const psCmd = effectiveGroup
                     ? `irm "${srvUrl}/install.ps1?group=${encodeURIComponent(effectiveGroup)}&server_url=${encodeURIComponent(srvUrl)}" | iex`
@@ -12516,11 +12540,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
   const [deleteTokenTarget, setDeleteTokenTarget] = useState<AgentEnrollmentToken | null>(null);
 
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
-  const [serverAddress, setServerAddress] = useState(() => {
-    const host = window.location.hostname || 'localhost';
-    const port = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
-    return `${window.location.protocol}//${host}:${port}`;
-  });
+  const [serverAddress, setServerAddress] = useState(() => getEffectiveServerBaseUrl());
 
   // Remote Fleet Auto-Update State
   const [versionInfo, setVersionInfo] = useState<AgentVersionInfo | null>(null);
@@ -12546,7 +12566,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
     agentsApi.getBuilds().then(setBuilds);
     agentsApi.getVersionInfo().then(info => {
       setVersionInfo(info);
-      if (info?.serverUrl) {
+      if (info?.serverUrl && !info.serverUrl.includes('localhost') && !info.serverUrl.includes('127.0.0.1')) {
         setServerAddress(prev => (prev.includes('localhost') || prev.includes('127.0.0.1')) ? info.serverUrl! : prev);
       }
     });
@@ -12577,7 +12597,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
     const interval = setInterval(() => {
       agentsApi.getVersionInfo().then(info => {
         setVersionInfo(info);
-        if (info?.serverUrl) {
+        if (info?.serverUrl && !info.serverUrl.includes('localhost') && !info.serverUrl.includes('127.0.0.1')) {
           setServerAddress(prev => (prev.includes('localhost') || prev.includes('127.0.0.1')) ? info.serverUrl! : prev);
         }
       });
@@ -12624,7 +12644,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
   const activeTokenObj = tokens.find(t => t.token === activeToken);
   const currentTargetGroup = activeTokenObj ? activeTokenObj.targetGroup : 'Office';
 
-  const effectiveServer = serverAddress.trim().replace(/\/+$/, '');
+  const effectiveServer = getEffectiveServerBaseUrl(serverAddress);
   const psOneLiner = `irm "${effectiveServer}/install.ps1?token=${activeToken}&server_url=${encodeURIComponent(effectiveServer)}" | iex`;
   const bashOneLiner = `curl -fsSL "${effectiveServer}/install.sh?token=${activeToken}&server_url=${encodeURIComponent(effectiveServer)}" | sudo bash`;
   const uninstallerCommand = `irm "${effectiveServer}/uninstall.ps1?server_url=${encodeURIComponent(effectiveServer)}" | iex`;
@@ -12936,7 +12956,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
   const handleDownloadInstaller = (os: string, format?: string) => {
     const isWin = os.toLowerCase().includes('windows');
     const isPs = (format && format.toLowerCase().includes('powershell')) || os.toLowerCase().includes('powershell');
-    const effectiveUrl = serverAddress.trim().replace(/\/+$/, '');
+    const effectiveUrl = getEffectiveServerBaseUrl(serverAddress);
     
     let downloadUrl = '';
     let filename = '';
@@ -12962,7 +12982,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
   };
 
   const handleDownloadUninstaller = (os: 'Windows' | 'Linux' = 'Windows') => {
-    const effectiveUrl = serverAddress.trim().replace(/\/+$/, '');
+    const effectiveUrl = getEffectiveServerBaseUrl(serverAddress);
     if (os === 'Linux') {
       const downloadUrl = `${effectiveUrl}/uninstall.sh?download=1`;
       const link = document.createElement('a');
@@ -13130,7 +13150,7 @@ function AgentsDownloads({ notify, currentUser }: { notify: (message: string) =>
                         <button
                           className="text-button"
                           onClick={() => {
-                            const effectiveUrl = serverAddress.trim().replace(/\/+$/, '');
+                            const effectiveUrl = getEffectiveServerBaseUrl(serverAddress);
                             const dlUrl = `${effectiveUrl}/install.bat?token=${tok.token}&server_url=${encodeURIComponent(effectiveUrl)}`;
                             const link = document.createElement('a');
                             link.href = dlUrl;
@@ -16666,9 +16686,7 @@ function Groups({
                 <div>
                   <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>Команда автоустановки прямо в эту группу (PowerShell):</label>
                   {(() => {
-                    const effectivePort = window.location.port === '5173' ? '2301' : (window.location.port || '2301');
-                    const serverHost = window.location.hostname || 'localhost';
-                    const srvUrl = `http://${serverHost}:${effectivePort}`;
+                    const srvUrl = getEffectiveServerBaseUrl(globalServerUrl);
                     const cmd = `irm "${srvUrl}/install.ps1?group=${encodeURIComponent(selectedGroup.name)}&server_url=${encodeURIComponent(srvUrl)}" | iex`;
                     return (
                       <>

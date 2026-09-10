@@ -26,7 +26,25 @@ if ($ServerUrl) {
     $ServerUrl = $ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
 }
 
-if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or $ServerUrl -like "*localhost*" -or $ServerUrl -like "*127.0.0.1*") {
+$isLocalhost = ($ServerUrl -like "*localhost*" -or $ServerUrl -like "*127.0.0.1*")
+$localWorking = $false
+if ($isLocalhost) {
+    try {
+        $lr = [System.Net.WebRequest]::Create("http://127.0.0.1:2301/api/v1/devices/stats")
+        $lr.Timeout = 800
+        $lr.Proxy = $null
+        $lresp = $lr.GetResponse()
+        $lresp.Close()
+        $localWorking = $true
+    } catch {
+        $localWorking = $false
+    }
+}
+
+if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or ($isLocalhost -and -not $localWorking)) {
+    $ServerUrl = $null
+
+    # 1. Check previously saved config.json
     try {
         $candidatePaths = @("C:\Program Files\WorkstationManagerAgent\config.json", (Join-Path $env:LOCALAPPDATA "WorkstationManagerAgent\config.json"))
         foreach ($cp in $candidatePaths) {
@@ -39,9 +57,34 @@ if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or $ServerUrl -like "*local
             }
         }
     } catch {}
-}
-if (-not $ServerUrl -or $ServerUrl -eq "__SERVER_URL__") {
-    $ServerUrl = "http://localhost:2301"
+
+    # 2. Probe candidate LAN servers silently
+    if (!$ServerUrl) {
+        $candidateList = @("http://192.168.1.109:2301", "http://172.19.33.68:2301")
+        try {
+            $gw = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty NextHop -First 1)
+            if ($gw -and $gw -ne "0.0.0.0") {
+                $candidateList += "http://${gw}:2301"
+            }
+        } catch {}
+
+        foreach ($cand in $candidateList) {
+            try {
+                $probe = [System.Net.WebRequest]::Create("$cand/api/v1/devices/stats")
+                $probe.Timeout = 800
+                $probe.Proxy = $null
+                $pr = $probe.GetResponse()
+                $pr.Close()
+                $ServerUrl = $cand
+                break
+            } catch {}
+        }
+    }
+
+    # 3. Final default fallback (NEVER localhost on remote clients!)
+    if (!$ServerUrl) {
+        $ServerUrl = "http://192.168.1.109:2301"
+    }
 }
 if (-not $Token) { $Token = "__TOKEN__" }
 
