@@ -272,6 +272,26 @@ export const devicesApi = {
     }
     return await res.blob();
   },
+  downloadItiliumReport: async (params?: {
+    group?: string;
+    building?: string;
+    floor?: string;
+    room?: string;
+    deviceId?: string;
+  }): Promise<Blob> => {
+    const q = new URLSearchParams();
+    if (params?.group && params.group !== 'ALL') q.append('group', params.group);
+    if (params?.building) q.append('building', params.building);
+    if (params?.floor) q.append('floor', params.floor);
+    if (params?.room) q.append('room', params.room);
+    if (params?.deviceId) q.append('device_id', params.deviceId);
+
+    const res = await fetch(`${API_BASE}/devices/reports/itilium?${q.toString()}`);
+    if (!res.ok) {
+      throw new Error(`Ошибка формирования выгрузки в Итилиум (${res.status})`);
+    }
+    return await res.blob();
+  },
   delete: async (id: string): Promise<boolean> => {
     try {
       const res = await fetch(`${API_BASE}/devices/${id}`, { method: 'DELETE' });

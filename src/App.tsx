@@ -1594,6 +1594,30 @@ function Dashboard({
         }
         actions={
           <>
+            <Button
+              icon={<FileSpreadsheet size={15} />}
+              onClick={async () => {
+                try {
+                  notify('Формирование выгрузки в 1С:Итилиум...');
+                  const blob = await devicesApi.downloadItiliumReport();
+                  const url = window.URL.createObjectURL(blob);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  const dateStr = new Date().toISOString().slice(0, 10);
+                  a.download = `itilium_hardware_inventory_fleet_${dateStr}.xlsx`;
+                  document.body.appendChild(a);
+                  a.click();
+                  a.remove();
+                  window.URL.revokeObjectURL(url);
+                  notify('Отчет для 1С:Итилиум успешно выгружен', 'success');
+                } catch (e: any) {
+                  notify(e.message || 'Ошибка выгрузки в Итилиум', 'error');
+                }
+              }}
+              title="Выгрузить аппаратную спецификацию всего парка ПК для 1С:Итилиум (.xlsx)"
+            >
+              Выгрузка в Итилиум
+            </Button>
             <Button icon={<ArrowDownToLine size={15} />} onClick={() => { exportDevicesToCsv(devices); notify('Отчет по устройствам экспортирован в CSV'); }}>
               {t('dashboard.exportReport')}
             </Button>
@@ -6473,6 +6497,34 @@ function Monitoring({
   const [exportSelectedGroup, setExportSelectedGroup] = useState('');
   const [exportSelectedDeviceId, setExportSelectedDeviceId] = useState('');
   const [exportingExcel, setExportingExcel] = useState(false);
+  const [exportingItilium, setExportingItilium] = useState(false);
+
+  const handleExportItilium = async () => {
+    try {
+      setExportingItilium(true);
+      const params: any = {};
+      if (selectedGroup && selectedGroup !== 'ALL') {
+        params.group = selectedGroup;
+      }
+      const blob = await devicesApi.downloadItiliumReport(params);
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      const dateStr = new Date().toISOString().slice(0, 10);
+      const scopeTag = selectedGroup && selectedGroup !== 'ALL' ? selectedGroup : 'fleet';
+      a.download = `itilium_hardware_inventory_${scopeTag}_${dateStr}.xlsx`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      window.URL.revokeObjectURL(url);
+      if (notify) notify('Отчет для 1С:Итилиум успешно выгружен', 'success');
+    } catch (err: any) {
+      console.error('Failed to export itilium:', err);
+      if (notify) notify(err.message || 'Ошибка выгрузки отчета в Итилиум', 'error');
+    } finally {
+      setExportingItilium(false);
+    }
+  };
 
   const handleExportExcel = async () => {
     try {
@@ -6780,6 +6832,14 @@ function Monitoring({
         description="Оперативный контроль утилизации ЦП, памяти, дисков и сетевого трафика рабочих станций в реальном времени."
         actions={
           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+            <Button
+              icon={<FileSpreadsheet size={14} />}
+              onClick={handleExportItilium}
+              disabled={exportingItilium}
+              title="Выгрузить спецификацию оборудования парка ПК для 1С:Итилиум (.xlsx)"
+            >
+              {exportingItilium ? 'Выгрузка...' : 'Выгрузка в Итилиум'}
+            </Button>
             <Button
               icon={<Download size={14} />}
               onClick={() => setShowExportModal(true)}

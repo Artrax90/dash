@@ -395,3 +395,370 @@ def generate_monitoring_excel_report(
     buf = io.BytesIO()
     wb.save(buf)
     return buf.getvalue()
+
+def generate_itilium_excel_report(
+    devices: List[Dict[str, Any]],
+    hardware_specs: Dict[str, Any],
+    scope_title: str = "Весь парк ПК (Fleet)"
+) -> bytes:
+    """
+    Generate an ITIL/CMDB hardware inventory workbook for 1C:Itilium / Service Desk.
+    Features dedicated columns for PC name, inventory number, and each physical hardware unit.
+    """
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Оборудование (Итилиум)"
+    ws.views.sheetView[0].showGridLines = True
+
+    # Helper formatters for hardware components
+    def _fmt_mb(spec: Dict[str, Any]) -> str:
+        mb = spec.get("motherboard") or {}
+        if not mb or not isinstance(mb, dict):
+            return "—"
+        manuf = str(mb.get("manufacturer") or "").strip()
+        model = str(mb.get("model") or "").strip()
+        serial = str(mb.get("serialNumber") or mb.get("serial") or "").strip()
+        ver = str(mb.get("version") or "").strip()
+        parts = []
+        if manuf and manuf.lower() not in ["oem", "unknown", "to be filled by o.e.m.", "system manufacturer"]:
+            parts.append(manuf)
+        if model and model.lower() not in ["motherboard", "unknown", "to be filled by o.e.m.", "base board", "system product name"]:
+            parts.append(model)
+        if not parts:
+            parts.append(model or manuf or "—")
+        res = " ".join(parts)
+        extras = []
+        if serial and serial.lower() not in ["unknown", "default string", "none", "to be filled by o.e.m.", "0"]:
+            extras.append(f"S/N: {serial}")
+        if ver and ver.lower() not in ["unknown", "rev 1.0", "none"]:
+            extras.append(f"Rev: {ver}")
+        if extras:
+            res += f" ({', '.join(extras)})"
+        return res if res != "—" else "—"
+
+    def _fmt_cpu(spec: Dict[str, Any], dev: Dict[str, Any]) -> str:
+        cpu = spec.get("cpu") or {}
+        if not cpu or not isinstance(cpu, dict):
+            return "—"
+        model = str(cpu.get("model") or "").strip()
+        cores = cpu.get("cores")
+        threads = cpu.get("threads")
+        freq = cpu.get("baseFrequencyGhz") or cpu.get("clockSpeedMhz")
+        socket = str(cpu.get("socket") or "").strip()
+        if not model:
+            return "—"
+        details = []
+        if cores:
+            details.append(f"{cores} ядер")
+        if threads and threads != cores:
+            details.append(f"{threads} потоков")
+        if freq:
+            if isinstance(freq, (int, float)) and freq > 100:  # MHz
+                details.append(f"{round(freq / 1000, 2)} ГГц")
+            elif isinstance(freq, (int, float)):  # GHz
+                details.append(f"{freq} ГГц")
+            elif str(freq).strip():
+                details.append(str(freq).strip())
+        if socket and socket.lower() not in ["unknown", "none"]:
+            details.append(f"Socket {socket}")
+        if details:
+            return f"{model} ({', '.join(details)})"
+        return model
+
+    def _fmt_ram(spec: Dict[str, Any], dev: Dict[str, Any]) -> str:
+        ram = spec.get("ram") or {}
+        total_gb = ram.get("totalGb") if isinstance(ram, dict) else None
+        if not total_gb or total_gb == 0:
+            total_gb = dev.get("ram_total") or dev.get("hardware", {}).get("ram", {}).get("totalGb")
+        slots = ram.get("slots") if isinstance(ram, dict) else []
+        if not slots and isinstance(dev.get("hardware", {}).get("ram", {}).get("slots"), list):
+            slots = dev.get("hardware", {}).get("ram", {}).get("slots", [])
+        
+        if not total_gb and not slots:
+            return "—"
+        
+        res = f"{total_gb} GB" if total_gb else ""
+        if slots and isinstance(slots, list):
+            slot_details = []
+            for s in slots:
+                if not isinstance(s, dict):
+                    continue
+                cap = s.get("capacityGb") or s.get("sizeGb")
+                mfg = str(s.get("manufacturer") or "").strip()
+                part = str(s.get("partNumber") or "").strip()
+                spd = s.get("speed")
+                stype = str(s.get("type") or "").strip()
+                sn = str(s.get("serialNumber") or s.get("serial") or "").strip()
+                
+                mod_str = f"{cap} GB" if cap else ""
+                if stype and stype.lower() != "unknown":
+                    mod_str += f" {stype}"
+                if spd:
+                    mod_str += f"-{spd}"
+                if mfg and mfg.lower() not in ["unknown", "none"]:
+                    mod_str += f" {mfg}"
+                if part and part.lower() not in ["unknown", "none"]:
+                    mod_str += f" [{part}]"
+                if sn and sn.lower() not in ["unknown", "none"]:
+                    mod_str += f" (S/N: {sn})"
+                if mod_str:
+                    slot_details.append(mod_str.strip())
+            if slot_details:
+                if res:
+                    res += f" ({len(slots)} мод: {'; '.join(slot_details)})"
+                else:
+                    res = f"{'; '.join(slot_details)}"
+        return res or "—"
+
+    def _fmt_storage(spec: Dict[str, Any], dev: Dict[str, Any]) -> str:
+        disks = spec.get("storage") or spec.get("disks") or []
+        if not disks and isinstance(dev.get("drives"), list):
+            drv_strs = []
+            for drv in dev["drives"]:
+                drv_strs.append(f"{drv.get('device', 'Диск')} {drv.get('volumeName', '')} ({drv.get('sizeGb', '')} GB)")
+            if drv_strs:
+                return "; ".join(drv_strs)
+        if not disks or not isinstance(disks, list):
+            return "—"
+        disk_items = []
+        for d in disks:
+            if not isinstance(d, dict):
+                continue
+            model = str(d.get("model") or d.get("name") or "").strip()
+            cap = d.get("capacityGb") or d.get("sizeGb")
+            mtype = str(d.get("mediaType") or d.get("type") or "").strip()
+            bus = str(d.get("busType") or d.get("interfaceType") or "").strip()
+            sn = str(d.get("serialNumber") or d.get("serial") or "").strip()
+            
+            type_tag = mtype.upper() if mtype else ("SSD" if "ssd" in model.lower() else "HDD")
+            cap_str = f"{cap} GB" if cap else ""
+            header = f"[{type_tag} {cap_str}]".replace("  ", " ").strip()
+            
+            desc = f"{header} {model}".strip()
+            extras = []
+            if sn and sn.lower() not in ["unknown", "none", "0"]:
+                extras.append(f"S/N: {sn}")
+            if bus and bus.lower() not in ["unknown", "none"]:
+                extras.append(bus)
+            if extras:
+                desc += f" ({', '.join(extras)})"
+            disk_items.append(desc)
+        return ";\n".join(disk_items) if disk_items else "—"
+
+    def _fmt_gpu(spec: Dict[str, Any]) -> str:
+        gpus = spec.get("gpus") or spec.get("gpu") or []
+        if isinstance(gpus, dict):
+            gpus = [gpus]
+        if not gpus or not isinstance(gpus, list):
+            return "—"
+        gpu_items = []
+        for g in gpus:
+            if not isinstance(g, dict):
+                continue
+            model = str(g.get("model") or g.get("name") or "").strip()
+            vram = g.get("vramGb") or g.get("memoryGb")
+            driver = str(g.get("driverVersion") or "").strip()
+            if not model or model.lower() in ["unknown", "none"]:
+                continue
+            item = model
+            extras = []
+            if vram:
+                extras.append(f"{vram} GB VRAM")
+            if driver and driver.lower() not in ["unknown", "none"]:
+                extras.append(f"Драйвер: {driver}")
+            if extras:
+                item += f" ({', '.join(extras)})"
+            gpu_items.append(item)
+        return "; ".join(gpu_items) if gpu_items else "—"
+
+    def _fmt_net(spec: Dict[str, Any], dev: Dict[str, Any]) -> str:
+        nets = spec.get("network") or spec.get("netAdapters") or []
+        if not nets or not isinstance(nets, list):
+            ip = dev.get("ip_address") or dev.get("ip") or "—"
+            mac = dev.get("mac_address") or dev.get("mac") or "—"
+            return f"MAC: {mac}, IP: {ip}"
+        net_items = []
+        for n in nets:
+            if not isinstance(n, dict):
+                continue
+            name = str(n.get("name") or n.get("description") or "").strip()
+            mac = str(n.get("mac") or n.get("macAddress") or "").strip()
+            ip = str(n.get("ip") or n.get("ipAddress") or "").strip()
+            spd = n.get("speedMbps")
+            if not mac and not ip:
+                continue
+            item = name if name else "Сетевой адаптер"
+            details = []
+            if mac:
+                details.append(f"MAC: {mac}")
+            if ip:
+                details.append(f"IP: {ip}")
+            if spd:
+                details.append(f"{spd} Мбит/с")
+            if details:
+                item += f" ({', '.join(details)})"
+            net_items.append(item)
+        return ";\n".join(net_items) if net_items else f"MAC: {dev.get('mac_address', '—')}, IP: {dev.get('ip_address', '—')}"
+
+    def _fmt_os(spec: Dict[str, Any], dev: Dict[str, Any]) -> str:
+        os_info = spec.get("os") or {}
+        caption = os_info.get("caption") or dev.get("osVersion") or dev.get("os_version") or dev.get("osType") or "Windows"
+        arch = os_info.get("architecture") or ("64-bit" if "64" in str(caption) else "")
+        build = os_info.get("buildNumber") or os_info.get("build")
+        res = str(caption).strip()
+        extras = []
+        if arch and arch.lower() not in res.lower():
+            extras.append(arch)
+        if build:
+            extras.append(f"Сборка {build}")
+        if extras:
+            res += f" ({', '.join(extras)})"
+        return res
+
+    def _fmt_bios(spec: Dict[str, Any]) -> str:
+        bios = spec.get("bios") or {}
+        if not bios or not isinstance(bios, dict):
+            return "—"
+        vendor = str(bios.get("vendor") or "").strip()
+        ver = str(bios.get("version") or "").strip()
+        date = str(bios.get("releaseDate") or "").strip()
+        parts = [p for p in [vendor, ver, date] if p and p.lower() not in ["unknown", "none"]]
+        return " ".join(parts) if parts else "—"
+
+    # Row 1: Header Banner
+    ws.row_dimensions[1].height = 32
+    ws.row_dimensions[2].height = 24
+    ws.row_dimensions[3].height = 10
+    total_cols = 16
+    end_col_letter = get_column_letter(total_cols)
+    
+    ws.merge_cells(f"A1:{end_col_letter}1")
+    c1 = ws['A1']
+    c1.value = _clean_val('ВЫГРУЗКА СПЕЦИФИКАЦИИ ОБОРУДОВАНИЯ ДЛЯ 1С:ИТИЛИУМ / SERVICE DESK')
+    c1.font = Font(name='Segoe UI', size=13, bold=True, color='FFFFFF')
+    c1.fill = PatternFill(start_color='0F172A', end_color='0F172A', fill_type='solid')
+    c1.alignment = Alignment(horizontal='center', vertical='center')
+
+    now_local = datetime.now().astimezone().strftime('%d.%m.%Y %H:%M')
+    ws.merge_cells(f"A2:{end_col_letter}2")
+    c2 = ws['A2']
+    c2.value = _clean_val(f'Зона охвата: {scope_title}   |   Всего станций: {len(devices)}   |   Сформирован: {now_local}')
+    c2.font = Font(name='Segoe UI', size=10, italic=False, color='334155')
+    c2.fill = PatternFill(start_color='F1F5F9', end_color='F1F5F9', fill_type='solid')
+    c2.alignment = Alignment(horizontal='center', vertical='center')
+
+    # Row 4: Table Headers
+    ws.row_dimensions[4].height = 28
+    headers = [
+        '№',
+        'Имя ПК',
+        'Инвентарный номер',
+        'ID станции',
+        'Расположение',
+        'Группа / Отдел',
+        'Статус',
+        'Материнская плата',
+        'Процессор (CPU)',
+        'Оперативная память (RAM)',
+        'Накопители (HDD/SSD)',
+        'Видеокарта (GPU)',
+        'Сетевой адаптер (MAC / IP)',
+        'Операционная система',
+        'BIOS',
+        'Текущий пользователь'
+    ]
+
+    for col_idx, h_text in enumerate(headers, start=1):
+        cell = ws.cell(row=4, column=col_idx)
+        _apply_header_style(cell, h_text, bg_color='1E293B', font_color='FFFFFF')
+
+    # Rows 5+: Device Rows
+    thin_border = Border(
+        left=Side(style='thin', color='E2E8F0'),
+        right=Side(style='thin', color='E2E8F0'),
+        top=Side(style='thin', color='E2E8F0'),
+        bottom=Side(style='thin', color='E2E8F0')
+    )
+    fill_white = PatternFill(start_color='FFFFFF', end_color='FFFFFF', fill_type='solid')
+    fill_alt = PatternFill(start_color='F8FAFC', end_color='F8FAFC', fill_type='solid')
+
+    align_center = Alignment(horizontal='center', vertical='center', wrap_text=True)
+    align_left = Alignment(horizontal='left', vertical='center', wrap_text=True)
+
+    current_row = 5
+    for idx, d in enumerate(devices, start=1):
+        dev_id = str(d.get('id', '')).strip()
+        spec = hardware_specs.get(dev_id) or hardware_specs.get(dev_id.upper()) or hardware_specs.get(dev_id.lower()) or {}
+        row_fill = fill_white if idx % 2 == 1 else fill_alt
+
+        inv_num = d.get('assetTag') or d.get('asset_tag') or '—'
+        name_val = d.get('name') or dev_id
+        
+        b = d.get('building', '') or ''
+        f = d.get('floor', '') or ''
+        r = d.get('room', '') or ''
+        loc_parts = [p for p in [b, f, r] if p]
+        location_str = " / ".join(loc_parts) if loc_parts else "—"
+
+        grp = d.get('group_name') or d.get('group') or '—'
+        p_stat = str(d.get('power_status', d.get('powerStatus', ''))).lower()
+        stat_str = 'В сети' if p_stat in ['on', 'booting'] else 'Выключен'
+        user_str = d.get('currentUser') or d.get('current_user') or '—'
+
+        mb_str = _fmt_mb(spec)
+        cpu_str = _fmt_cpu(spec, d)
+        ram_str = _fmt_ram(spec, d)
+        disk_str = _fmt_storage(spec, d)
+        gpu_str = _fmt_gpu(spec)
+        net_str = _fmt_net(spec, d)
+        os_str = _fmt_os(spec, d)
+        bios_str = _fmt_bios(spec)
+
+        row_vals = [
+            (idx, align_center),
+            (name_val, align_left),
+            (inv_num, align_center),
+            (dev_id, align_center),
+            (location_str, align_left),
+            (grp, align_left),
+            (stat_str, align_center),
+            (mb_str, align_left),
+            (cpu_str, align_left),
+            (ram_str, align_left),
+            (disk_str, align_left),
+            (gpu_str, align_left),
+            (net_str, align_left),
+            (os_str, align_left),
+            (bios_str, align_left),
+            (user_str, align_left)
+        ]
+
+        ws.row_dimensions[current_row].height = 24 if ('\n' not in disk_str and '\n' not in net_str) else 38
+
+        for c_idx, (val, alignment) in enumerate(row_vals, start=1):
+            c = _set_cell(ws, row=current_row, column=c_idx, value=val, alignment=alignment)
+            c.border = thin_border
+            c.fill = row_fill
+            c.font = Font(name='Segoe UI', size=10)
+
+        current_row += 1
+
+    ws.freeze_panes = 'A5'
+
+    # Auto column widths
+    for col in ws.columns:
+        max_len = 0
+        col_letter = get_column_letter(col[0].column)
+        for cell in col:
+            if cell.row < 4:
+                continue
+            val_str = str(cell.value or '')
+            for line in val_str.split('\n'):
+                if len(line) > max_len:
+                    max_len = len(line)
+        ws.column_dimensions[col_letter].width = min(max(max_len + 4, 13), 50)
+
+    buf = io.BytesIO()
+    wb.save(buf)
+    return buf.getvalue()
+

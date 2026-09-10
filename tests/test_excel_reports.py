@@ -216,3 +216,115 @@ def test_generate_monitoring_excel_report_with_illegal_xml_control_characters():
     assert 'Netac OnlyDisk USB Device' in ws_alerts.cell(row=2, column=7).value
     assert '\x00' not in ws_alerts.cell(row=2, column=7).value
 
+def test_generate_itilium_excel_report():
+    from backend.app.services.excel_report_service import generate_itilium_excel_report
+
+    mock_devices = [
+        {
+            'id': 'PC-01',
+            'name': 'ARM-01',
+            'group_name': 'Бухгалтерия',
+            'building': 'Главный корпус',
+            'floor': '2 этаж',
+            'room': 'Каб. 204',
+            'power_status': 'On',
+            'agent_status': 'Connected',
+            'ip_address': '192.168.1.50',
+            'mac_address': '70:85:C2:54:1F:7D',
+            'assetTag': 'INV-2026-ITIL-001',
+            'currentUser': 'Иванов И.И.'
+        }
+    ]
+
+    mock_specs = {
+        'PC-01': {
+            'motherboard': {
+                'manufacturer': 'ASUSTeK COMPUTER INC.',
+                'model': 'PRIME B450M-K',
+                'serialNumber': '21038472910'
+            },
+            'bios': {
+                'vendor': 'American Megatrends Inc.',
+                'version': '2.40',
+                'releaseDate': '12.05.2023'
+            },
+            'cpu': {
+                'model': 'AMD Ryzen 5 3600',
+                'cores': 6,
+                'threads': 12,
+                'baseFrequencyGhz': 3.6,
+                'socket': 'AM4'
+            },
+            'ram': {
+                'totalGb': 16,
+                'slots': [
+                    {'slot': 'DIMM 0', 'capacityGb': 8, 'speed': 3200, 'manufacturer': 'Kingston', 'partNumber': 'KHX3200C16D4/8GX', 'serialNumber': '98A72B10'},
+                    {'slot': 'DIMM 1', 'capacityGb': 8, 'speed': 3200, 'manufacturer': 'Kingston', 'partNumber': 'KHX3200C16D4/8GX', 'serialNumber': '98A72B11'}
+                ]
+            },
+            'storage': [
+                {'model': 'Kingston SA400S37480G', 'capacityGb': 480, 'serialNumber': '50026B7683C01234', 'mediaType': 'SSD', 'busType': 'SATA'},
+                {'model': 'WDC WD10EZEX-08WN4A0', 'capacityGb': 1000, 'serialNumber': 'WD-WCC6Y7890123', 'mediaType': 'HDD', 'busType': 'SATA'}
+            ],
+            'gpus': [
+                {'model': 'NVIDIA GeForce GTX 1660 SUPER', 'vramGb': 6, 'driverVersion': '536.23'}
+            ],
+            'network': [
+                {'name': 'Realtek PCIe GbE Family Controller', 'mac': '70:85:C2:54:1F:7D', 'ip': '192.168.1.50', 'speedMbps': 1000}
+            ]
+        }
+    }
+
+    report_bytes = generate_itilium_excel_report(
+        devices=mock_devices,
+        hardware_specs=mock_specs,
+        scope_title='Бухгалтерия (Главный корпус / 2 этаж / Каб. 204)'
+    )
+
+    assert isinstance(report_bytes, bytes)
+    assert len(report_bytes) > 0
+
+    wb = openpyxl.load_workbook(io.BytesIO(report_bytes))
+    sheet = wb.active
+    assert 'Итилиум' in sheet.title or 'Оборудование' in sheet.title
+
+    # Header check in row 4
+    headers = [sheet.cell(4, c).value for c in range(1, 15)]
+    assert 'Имя ПК' in headers
+    assert 'Инвентарный номер' in headers
+    assert 'Материнская плата' in headers
+    assert 'Процессор (CPU)' in headers
+    assert 'Оперативная память (RAM)' in headers
+    assert 'Накопители (HDD/SSD)' in headers
+    assert 'Видеокарта (GPU)' in headers
+
+    # Value checks in row 5
+    name_col = headers.index('Имя ПК') + 1
+    inv_col = headers.index('Инвентарный номер') + 1
+    mb_col = headers.index('Материнская плата') + 1
+    cpu_col = headers.index('Процессор (CPU)') + 1
+    ram_col = headers.index('Оперативная память (RAM)') + 1
+    disk_col = headers.index('Накопители (HDD/SSD)') + 1
+    gpu_col = headers.index('Видеокарта (GPU)') + 1
+
+    assert sheet.cell(5, name_col).value == 'ARM-01'
+    assert sheet.cell(5, inv_col).value == 'INV-2026-ITIL-001'
+    assert 'PRIME B450M-K' in str(sheet.cell(5, mb_col).value)
+    assert 'Ryzen 5 3600' in str(sheet.cell(5, cpu_col).value)
+    assert '16 GB' in str(sheet.cell(5, ram_col).value)
+    assert 'Kingston SA400' in str(sheet.cell(5, disk_col).value)
+    assert 'GTX 1660' in str(sheet.cell(5, gpu_col).value)
+
+@pytest.mark.anyio
+async def test_itilium_report_endpoint():
+    import httpx
+    from backend.app.main import app
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        resp = await client.get("/api/v1/devices/reports/itilium")
+        assert resp.status_code == 200
+        assert resp.headers["content-type"] == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        assert len(resp.content) > 0
+        wb = openpyxl.load_workbook(io.BytesIO(resp.content))
+        assert any('Итилиум' in s or 'Оборудование' in s for s in wb.sheetnames)
+
+

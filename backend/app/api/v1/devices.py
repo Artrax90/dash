@@ -12,7 +12,7 @@ from backend.app.models.alert import AlertPolicyModel, AlertModel
 from backend.app.models.schedule import ScheduleModel
 from backend.app.schemas.device import BulkOperationRequestSchema, DeviceProbeSchema, AgentlessDeviceCreateSchema
 from backend.app.services.wol_service import wol_service
-from backend.app.services.excel_report_service import generate_monitoring_excel_report
+from backend.app.services.excel_report_service import generate_monitoring_excel_report, generate_itilium_excel_report
 from backend.app.ws.manager import ws_manager
 from backend.app.core.config import settings
 
@@ -1293,6 +1293,75 @@ async def export_excel_report(
     )
 
     filename = f"report_{period_key}_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return Response(
+        content=report_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
+
+@router.get("/reports/itilium")
+async def export_itilium_report(
+    group: Optional[str] = None,
+    building: Optional[str] = None,
+    floor: Optional[str] = None,
+    room: Optional[str] = None,
+    device_id: Optional[str] = None,
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Generate an ITIL/CMDB hardware inventory Excel report for 1C:Itilium / Service Desk.
+    Includes PC name, asset tag, and separate columns for all physical hardware components.
+    """
+    query = select(Device)
+    if device_id:
+        query = query.where(or_(Device.id == device_id, Device.hostname == device_id))
+    else:
+        if building:
+            query = query.where(Device.building == building)
+        if floor:
+            query = query.where(Device.floor == floor)
+        if room:
+            query = query.where(Device.room == room)
+        if group and group != "ALL":
+            query = query.where(Device.group_name.ilike(f"%{group}%"))
+
+    result = await db.execute(query)
+    raw_devices = result.scalars().all()
+    devices_data = [format_device_summary(d) for d in raw_devices]
+    target_dev_ids = {d["id"] for d in devices_data}
+
+    # Fetch hardware specs
+    spec_map = {}
+    if target_dev_ids:
+        hw_query = select(HardwareSpecModel).where(HardwareSpecModel.device_id.in_(list(target_dev_ids)))
+        hw_res = await db.execute(hw_query)
+        for h in hw_res.scalars().all():
+            if h.raw_spec and h.device_id:
+                spec_map[h.device_id] = h.raw_spec
+                spec_map[h.device_id.upper()] = h.raw_spec
+                spec_map[h.device_id.lower()] = h.raw_spec
+
+    # Build scope title
+    if device_id and devices_data:
+        d0 = devices_data[0]
+        scope_title = f"{d0.get('name', device_id)} ({device_id})"
+    elif building or floor or room:
+        parts = [p for p in [building, floor, room] if p]
+        scope_title = " / ".join(parts)
+        if group and group != "ALL":
+            scope_title += f" [Группа: {group}]"
+    elif group and group != "ALL":
+        scope_title = f"Группа {group}"
+    else:
+        scope_title = "Весь парк ПК (Fleet)"
+
+    report_bytes = generate_itilium_excel_report(
+        devices=devices_data,
+        hardware_specs=spec_map,
+        scope_title=scope_title
+    )
+
+    filename = f"itilium_inventory_{datetime.now().astimezone().strftime('%Y%m%d_%H%M%S')}.xlsx"
     return Response(
         content=report_bytes,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
