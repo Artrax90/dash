@@ -596,7 +596,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
 
           <div style={{ marginTop: '18px', paddingTop: '14px', borderTop: '1px solid rgba(255, 255, 255, 0.08)', fontSize: '11px', color: '#64748b', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span>🔒 Режим первого запуска</span>
-            <span>v2.9.14</span>
+            <span>v2.9.15</span>
           </div>
         </div>
       </div>
@@ -670,7 +670,7 @@ function LoginScreen({ onLogin, workspaceName }: { onLogin: (user: ManagedUser) 
           <span style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <ShieldCheck size={13} style={{ color: '#22c55e' }} /> Защищенная авторизация
           </span>
-          <span style={{ color: '#475569' }}>v2.9.14</span>
+          <span style={{ color: '#475569' }}>v2.9.15</span>
         </div>
       </div>
     </div>
@@ -4658,16 +4658,38 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                       </tr>
                     </thead>
                     <tbody>
-                      {(spec.storage || []).map((drive, idx) => (
-                        <tr key={drive.serialNumber || idx}>
-                          <td><strong>{drive.model}</strong></td>
-                          <td><span className="badge">{drive.type} ({drive.busType || 'SATA'})</span></td>
-                          <td>{drive.capacityGb >= 1000 ? `${(drive.capacityGb / 1000).toFixed(2)} TB` : `${drive.capacityGb} GB`}</td>
-                          <td className="mono">{drive.serialNumber}</td>
-                          <td><StatusPill status={`${drive.healthPercent}%`} type="health" /></td>
-                          <td>{drive.temperatureC}°C</td>
-                        </tr>
-                      ))}
+                      {(spec.storage || []).map((drive, idx) => {
+                        const dModel = drive.model || '';
+                        const isUsb = Boolean(
+                          (drive.type && drive.type.toLowerCase().includes('usb')) ||
+                          (drive.busType && drive.busType.toLowerCase().includes('usb')) ||
+                          dModel.toLowerCase().includes('usb') ||
+                          (drive as any).isRemovable
+                        );
+                        const isNvme = /SX[0-9]|NVME|PCIE|SNVS|970|980|PM9|M\.2/i.test(dModel) ||
+                          (drive.busType || '').toUpperCase() === 'NVME' ||
+                          (drive.type || '').toUpperCase().includes('NVME') ||
+                          ((device as any).drives || []).some((d: any) =>
+                            d.physicalModel && d.physicalModel.toLowerCase() === dModel.toLowerCase() && (d.busType === 'NVMe' || d.driveType === 'NVMe SSD')
+                          );
+                        const isSsd = isNvme || /SSD/i.test(dModel) || (drive.type || '').includes('SSD');
+                        const resolvedType = isUsb ? 'USB Flash' : (isNvme ? 'NVMe SSD' : (isSsd ? 'SATA SSD' : (drive.type || 'HDD')));
+                        const resolvedBus = isUsb ? 'USB' : (isNvme ? 'NVMe' : (drive.busType === 'IDE' ? 'SATA' : (drive.busType || 'SATA')));
+                        const healthVal = drive.healthPercent ?? (drive as any).health ?? 100;
+                        const healthStr = typeof healthVal === 'number' ? `${healthVal}%` : String(healthVal);
+                        const tempStr = drive.temperatureC !== undefined && drive.temperatureC !== null ? `${drive.temperatureC}°C` : '—';
+
+                        return (
+                          <tr key={drive.serialNumber || idx}>
+                            <td><strong>{drive.model}</strong></td>
+                            <td><span className="badge">{resolvedType} ({resolvedBus})</span></td>
+                            <td>{drive.capacityGb >= 1000 ? `${(drive.capacityGb / 1000).toFixed(2)} TB` : `${drive.capacityGb} GB`}</td>
+                            <td className="mono">{drive.serialNumber}</td>
+                            <td><StatusPill status={healthStr} type="health" /></td>
+                            <td>{tempStr}</td>
+                          </tr>
+                        );
+                      })}
                     </tbody>
                   </table>
                 </div>
@@ -5636,16 +5658,41 @@ function DeviceMonitoringTab({
   const ramType = spec?.ram?.slots?.[0]?.type || 'DDR4/DDR5';
   const ramFreq = spec?.ram?.slots?.[0]?.frequencyMhz || 3200;
 
-  const storagePrimary = spec?.storage?.[0];
-  const diskTotalGb = storagePrimary?.capacityGb || 512;
-  const diskUsedGb = Math.round((dynamicDisk / 100) * diskTotalGb);
-  const diskFreeGb = Math.max(0, diskTotalGb - diskUsedGb);
-  const diskModel = storagePrimary?.model || 'Системный накопитель (SSD/HDD)';
-  const diskHealth = storagePrimary?.healthPercent ?? 100;
+  const rawDrives: any[] = ((device as any).drives && Array.isArray((device as any).drives) && (device as any).drives.length > 0)
+    ? (device as any).drives
+    : [];
+
+  const physicalStorage: any[] = (spec?.storage && Array.isArray(spec.storage)) ? spec.storage : [];
+
+  // Find system partition (C:) and its corresponding physical drive
+  const systemDrive = rawDrives.find((d: any) => (d.device || '').toUpperCase() === 'C:') || rawDrives[0];
+
+  const systemPhysical = physicalStorage.find(ps => {
+    if (!systemDrive) return false;
+    const psModel = (ps.model || ps.name || '').trim().toLowerCase();
+    if (systemDrive.physicalModel && (
+      systemDrive.physicalModel.toLowerCase() === psModel ||
+      systemDrive.physicalModel.toLowerCase().includes(psModel) ||
+      psModel.includes(systemDrive.physicalModel.toLowerCase())
+    )) return true;
+    if (systemDrive.serialNumber && ps.serialNumber && systemDrive.serialNumber.trim() === ps.serialNumber.trim()) return true;
+    if (typeof systemDrive.diskNumber === 'number' && systemDrive.diskNumber >= 0) {
+      const psIdx = physicalStorage.indexOf(ps);
+      if (psIdx === systemDrive.diskNumber) return true;
+    }
+    return false;
+  }) || physicalStorage[0];
+
+  const storagePrimary = systemPhysical;
+  const diskTotalGb = systemDrive?.sizeGb ?? storagePrimary?.capacityGb ?? 512;
+  const diskUsedGb = systemDrive?.usedGb ?? Math.round((dynamicDisk / 100) * diskTotalGb);
+  const diskFreeGb = systemDrive?.freeGb ?? Math.max(0, diskTotalGb - diskUsedGb);
+  const diskModel = systemDrive?.physicalModel || storagePrimary?.model || 'Системный накопитель (SSD/HDD)';
+  const diskHealth = storagePrimary?.healthPercent ?? (storagePrimary as any)?.health ?? 100;
   const diskTemp = storagePrimary?.temperatureC ?? 35;
 
-  const deviceDrives: any[] = ((device as any).drives && Array.isArray((device as any).drives) && (device as any).drives.length > 0)
-    ? (device as any).drives
+  const deviceDrives: any[] = rawDrives.length > 0
+    ? rawDrives
     : [
         {
           device: 'C:',
@@ -5657,8 +5704,6 @@ function DeviceMonitoringTab({
           percent: dynamicDisk
         }
       ];
-
-  const physicalStorage: any[] = (spec?.storage && Array.isArray(spec.storage)) ? spec.storage : [];
 
   const storageUnits = useMemo(() => {
     const units: Array<{
@@ -5684,8 +5729,15 @@ function DeviceMonitoringTab({
         psModel.toLowerCase().includes('usb') ||
         ps.isRemovable
       );
-      const busType = ps.busType || (isUsb ? 'USB' : (ps.type && ps.type.includes('NVMe') ? 'NVMe' : 'SATA'));
-      const driveType = isUsb ? 'USB Flash' : (ps.type || (psModel.match(/SSD|NVMe/i) ? 'NVMe SSD' : 'HDD'));
+      const isNvme = /SX[0-9]|NVME|PCIE|SNVS|970|980|PM9|M\.2/i.test(psModel) ||
+        (ps.busType || '').toUpperCase() === 'NVME' ||
+        (ps.type || '').toUpperCase().includes('NVME') ||
+        deviceDrives.some(drv =>
+          (drv.physicalModel && drv.physicalModel.toLowerCase() === psModel.toLowerCase() && (drv.busType === 'NVMe' || drv.driveType === 'NVMe SSD'))
+        );
+      const isSsd = isNvme || /SSD/i.test(psModel) || (ps.type || '').includes('SSD');
+      const busType = isUsb ? 'USB' : (isNvme ? 'NVMe' : (ps.busType === 'IDE' ? 'SATA' : (ps.busType || 'SATA')));
+      const driveType = isUsb ? 'USB Flash' : (isNvme ? 'NVMe SSD' : (isSsd ? 'SATA SSD' : (ps.type || 'HDD')));
 
       // Find partitions belonging to this physical drive
       const matchingPartitions = deviceDrives.filter(drv => {
@@ -17912,7 +17964,7 @@ function SettingsPage({
             <div style={{ display: 'flex', alignItems: 'center', gap: '7px', fontSize: '11.5px', color: 'var(--muted)', minWidth: 0 }}>
               <ShieldCheck size={15} style={{ color: 'var(--green)', flexShrink: 0 }} />
               <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                Workstation Manager · v2.9.14 · © 2026 Сергей Ерёмин
+                Workstation Manager · v2.9.15 · © 2026 Сергей Ерёмин
               </span>
 
             </div>

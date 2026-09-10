@@ -1461,7 +1461,7 @@ export const systemApi = {
     } catch {}
     return {
       status: 'online',
-      version: '2.9.14',
+      version: '2.9.15',
       database: {
         type: 'sqlite',
         dialect: 'sqlite',

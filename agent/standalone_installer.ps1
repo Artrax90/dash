@@ -282,25 +282,54 @@ if ($ramSlots.Count -eq 0) {
 # Storage
 $disks = @()
 try {
+    $physDisks = @{}
+    try {
+        $rawPhys = Get-PhysicalDisk -ErrorAction SilentlyContinue
+        if ($rawPhys) {
+            foreach ($pd in $rawPhys) {
+                $mKey = if ($pd.FriendlyName) { $pd.FriendlyName.Trim() } else { "" }
+                $sKey = if ($pd.SerialNumber) { $pd.SerialNumber.Trim() } else { "" }
+                $info = @{
+                    mediaType = if ($pd.MediaType) { $pd.MediaType.ToString() } else { "" }
+                    busType = if ($pd.BusType) { $pd.BusType.ToString() } else { "" }
+                    healthStatus = if ($pd.HealthStatus) { $pd.HealthStatus.ToString() } else { "Healthy" }
+                }
+                if ($mKey) { $physDisks[$mKey] = $info }
+                if ($sKey) { $physDisks[$sKey] = $info }
+            }
+        }
+    } catch {}
+
     $diskDrives = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue
     $diskIdx = 0
     if ($diskDrives) {
         foreach ($d in $diskDrives) {
+            $dModel = if ($d.Model) { $d.Model.Trim() } else { "Disk $diskIdx" }
+            $dSerial = if ($d.SerialNumber) { $d.SerialNumber.Trim() } else { "DISK-SN-$diskIdx" }
             $sizeGb = [int][math]::Round($d.Size / 1GB, 0)
             $isUsb = ($d.InterfaceType -match "USB") -or ($d.PNPDeviceID -match "USB")
-            $media = if ($d.MediaType) { $d.MediaType } else { "SSD" }
-            $isSsd = $d.Model -match "SSD|NVMe" -or $media -match "SSD"
+            $pdMatch = if ($physDisks.ContainsKey($dSerial)) { $physDisks[$dSerial] } elseif ($physDisks.ContainsKey($dModel)) { $physDisks[$dModel] } else { $null }
+
+            $pMedia = if ($pdMatch -and $pdMatch.mediaType) { $pdMatch.mediaType } elseif ($d.MediaType) { $d.MediaType.Trim() } else { "" }
+            $pBus = if ($pdMatch -and $pdMatch.busType) { $pdMatch.busType } elseif ($d.InterfaceType) { $d.InterfaceType.Trim() } else { "" }
+
+            $isNvme = ($pBus -match "NVMe") -or ($dModel -match "NVMe|SX[0-9]|PCIe|Optane|PM9|SNVS") -or ($pBus -match "SCSI" -and $dModel -notmatch "RAID|SAS")
+            $isSsd = $isNvme -or ($pMedia -match "SSD") -or ($dModel -match "SSD")
+            $dType = if ($isUsb) { "USB Flash" } elseif ($isNvme) { "NVMe SSD" } elseif ($isSsd) { "SATA SSD" } else { "HDD" }
+            $dBusType = if ($isUsb) { "USB" } elseif ($isNvme) { "NVMe" } elseif ($pBus -match "IDE") { "SATA" } elseif ($pBus) { $pBus } else { "SATA" }
+
             $disks += @{
                 id = "disk-" + $diskIdx
-                name = if ($d.Model) { $d.Model.Trim() } else { "Disk $diskIdx" }
-                model = if ($d.Model) { $d.Model.Trim() } else { "Standard Disk" }
-                serialNumber = if ($d.SerialNumber) { $d.SerialNumber.Trim() } else { "DISK-SN-$diskIdx" }
-                type = if ($isUsb) { "USB Flash" } elseif ($isSsd) { "NVMe SSD" } else { "HDD" }
-                busType = if ($isUsb) { "USB" } elseif ($d.InterfaceType) { $d.InterfaceType.Trim() } else { "" }
+                name = $dModel
+                model = $dModel
+                serialNumber = $dSerial
+                type = $dType
+                busType = $dBusType
                 isRemovable = [bool]$isUsb
                 capacityGb = $sizeGb
                 health = "Good"
-                temperatureC = 38
+                healthPercent = 100
+                temperatureC = 35
                 wearLevelPercent = 98
                 status = "OK"
             }
@@ -461,7 +490,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.13"
+    agentVersion = "2.9.15"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -479,7 +508,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.13"
+    agentVersion = "2.9.15"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -541,7 +570,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.14'
+`$AgentVersion = '2.9.15'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 5
@@ -612,9 +641,9 @@ Write-AgentLog "Service started. Server: `$ServerUrl, DeviceId: `$DeviceId, Vers
 
 # Native Windows administration mode - dynamic compilation disabled
 
-function Update-AgentService([string]`$targetVer = "2.9.13") {
+function Update-AgentService([string]`$targetVer = "2.9.15") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.13"
+        `$targetVer = "2.9.15"
     }
     try {
         # 1. Report update in progress
@@ -1380,24 +1409,56 @@ function Get-LiveHardwareSpec() {
     # Live Physical Disks
     `$liveDisks = @()
     try {
+        `$physDisks = @{}
+        try {
+            `$rawPhys = Get-PhysicalDisk -ErrorAction SilentlyContinue
+            if (`$rawPhys) {
+                foreach (`$pd in `$rawPhys) {
+                    `$mKey = if (`$pd.FriendlyName) { `$pd.FriendlyName.Trim() } else { "" }
+                    `$sKey = if (`$pd.SerialNumber) { `$pd.SerialNumber.Trim() } else { "" }
+                    `$info = @{
+                        mediaType = if (`$pd.MediaType) { `$pd.MediaType.ToString() } else { "" }
+                        busType = if (`$pd.BusType) { `$pd.BusType.ToString() } else { "" }
+                        healthStatus = if (`$pd.HealthStatus) { `$pd.HealthStatus.ToString() } else { "Healthy" }
+                    }
+                    if (`$mKey) { `$physDisks[`$mKey] = `$info }
+                    if (`$sKey) { `$physDisks[`$sKey] = `$info }
+                }
+            }
+        } catch {}
+
         `$pDisks = Get-CimInstance Win32_DiskDrive -ErrorAction SilentlyContinue
         `$dIdx = 0
         if (`$pDisks) {
             foreach (`$d in `$pDisks) {
+                `$dModel = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIdx" }
+                `$dSerial = if (`$d.SerialNumber) { `$d.SerialNumber.Trim() } else { "DISK-SN-`$dIdx" }
                 `$dSizeGb = [int][math]::Round(`$d.Size / 1GB, 0)
                 `$isUsb = (`$d.InterfaceType -match "USB") -or (`$d.PNPDeviceID -match "USB")
+                `$pdMatch = if (`$physDisks.ContainsKey(`$dSerial)) { `$physDisks[`$dSerial] } elseif (`$physDisks.ContainsKey(`$dModel)) { `$physDisks[`$dModel] } else { `$null }
+
+                `$pMedia = if (`$pdMatch -and `$pdMatch.mediaType) { `$pdMatch.mediaType } elseif (`$d.MediaType) { `$d.MediaType.Trim() } else { "" }
+                `$pBus = if (`$pdMatch -and `$pdMatch.busType) { `$pdMatch.busType } elseif (`$d.InterfaceType) { `$d.InterfaceType.Trim() } else { "" }
+
+                `$isNvme = (`$pBus -match "NVMe") -or (`$dModel -match "NVMe|SX[0-9]|PCIe|Optane|PM9|SNVS") -or (`$pBus -match "SCSI" -and `$dModel -notmatch "RAID|SAS")
+                `$isSsd = `$isNvme -or (`$pMedia -match "SSD") -or (`$dModel -match "SSD")
+                `$dType = if (`$isUsb) { "USB Flash" } elseif (`$isNvme) { "NVMe SSD" } elseif (`$isSsd) { "SATA SSD" } else { "HDD" }
+                `$dBusType = if (`$isUsb) { "USB" } elseif (`$isNvme) { "NVMe" } elseif (`$pBus -match "IDE") { "SATA" } elseif (`$pBus) { `$pBus } else { "SATA" }
+
                 `$liveDisks += @{
                     id = "disk-" + `$dIdx
-                    name = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIdx" }
-                    model = if (`$d.Model) { `$d.Model.Trim() } else { "Disk `$dIdx" }
-                    serialNumber = if (`$d.SerialNumber) { `$d.SerialNumber.Trim() } else { "DISK-SN-`$dIdx" }
+                    name = `$dModel
+                    model = `$dModel
+                    serialNumber = `$dSerial
                     capacityGb = `$dSizeGb
-                    type = if (`$isUsb) { "USB Flash" } elseif (`$d.Model -match "SSD|NVMe") { "NVMe SSD" } else { "HDD" }
-                    busType = if (`$isUsb) { "USB" } elseif (`$d.InterfaceType) { `$d.InterfaceType.Trim() } else { "" }
+                    type = `$dType
+                    busType = `$dBusType
                     interfaceType = if (`$d.InterfaceType) { `$d.InterfaceType.Trim() } else { "" }
-                    mediaType = if (`$d.MediaType) { `$d.MediaType.Trim() } else { "" }
+                    mediaType = if (`$pMedia) { `$pMedia } else { "" }
                     pnpDeviceId = if (`$d.PNPDeviceID) { `$d.PNPDeviceID.Trim() } else { "" }
                     isRemovable = [bool]`$isUsb
+                    healthPercent = 100
+                    temperatureC = 35
                 }
                 `$dIdx++
             }
@@ -2710,7 +2771,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.13"
+    agentVersion = "2.9.15"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
