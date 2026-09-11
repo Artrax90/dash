@@ -7,7 +7,7 @@ from backend.app.core.config import settings
 
 class AlertEngine:
     @staticmethod
-    def should_notify(alert_type: str, policy: Optional[Dict[str, Any]]) -> bool:
+    def should_notify(alert_type: str, policy: Optional[Dict[str, Any]], alert: Optional[Dict[str, Any]] = None) -> bool:
         if not policy:
             return True
         
@@ -36,8 +36,30 @@ class AlertEngine:
             # Virtual / RDP remote display adapter changes: disabled by default
             return bool(events.get("remoteDisplayAdapter", False))
             
-        if alert_type == "HARDWARE_MISMATCH" and not events.get("hardwareChanges", True):
-            return False
+        if alert_type == "HARDWARE_MISMATCH":
+            if alert:
+                comp = str(alert.get("component") or "").strip().lower()
+                desc = str(alert.get("description") or "").strip().lower()
+
+                # Network adapter changes
+                if comp in ["network", "сетевой адаптер", "networkadapter"] or "сетев" in desc or "ip/mac" in desc:
+                    return bool(events.get("hwNetwork", True))
+
+                # Storage / Disk changes
+                if comp in ["storage", "диск", "накопитель", "disk", "ssd", "hdd"] or "накопител" in desc or "диск" in desc or "раздел" in desc:
+                    return bool(events.get("hwDisks", True))
+
+                # USB and virtual GPU changes passed as HARDWARE_MISMATCH
+                if comp in ["usb", "usb_storage", "usb-накопитель"] or "usb" in desc or "флешк" in desc:
+                    return bool(events.get("usbStorage", False))
+                if comp in ["rdp-видеоадаптер", "virtual_gpu", "remotedisplayadapter"] or "remote display" in desc:
+                    return bool(events.get("remoteDisplayAdapter", False))
+
+            # General hardware changes fallback (CPU, Motherboard, RAM, GPU)
+            if not events.get("hardwareChanges", True) or not events.get("hwCritical", True):
+                return False
+            return True
+
         if alert_type in ["POWER_FAILED", "POWER_OFF_FAILED"] and not events.get("powerStateFailed", True):
             return False
         if alert_type == "MORNING_WAKE_FAILED" and not events.get("morningWakeFailed", True):
@@ -64,7 +86,7 @@ class AlertEngine:
         """
         Process incoming alert and send via configured channels (Telegram Bot & WebSocket).
         """
-        if not cls.should_notify(alert.get("type", ""), policy):
+        if not cls.should_notify(alert.get("type", ""), policy, alert=alert):
             return
         
         channels = policy.get("notify_channels", {}) or policy.get("notifyChannels", {}) if policy else {"webUi": True, "telegram": True}
@@ -87,9 +109,20 @@ class AlertEngine:
                     if a_type == "VIRTUAL_GPU_CHANGED" and not events.get("remoteDisplayAdapter", False):
                         print(f"[Telegram Alert] Skipped Virtual GPU event ({alert.get('description')}) - Telegram remoteDisplayAdapter alerts disabled in settings.")
                         return
-                    # 2. Hardware changes
-                    if a_type == "HARDWARE_MISMATCH" and not events.get("hardwareChanges", True):
-                        return
+                    # 2. Hardware changes (granular checks: Network, Storage, Critical)
+                    if a_type == "HARDWARE_MISMATCH":
+                        comp = str(alert.get("component") or "").strip().lower()
+                        desc = str(alert.get("description") or "").strip().lower()
+                        if comp in ["network", "сетевой адаптер", "networkadapter"] or "сетев" in desc or "ip/mac" in desc:
+                            if not events.get("hwNetwork", True):
+                                print(f"[Telegram Alert] Skipped Network adapter event ({alert.get('description')}) - Telegram hwNetwork alerts disabled.")
+                                return
+                        elif comp in ["storage", "диск", "накопитель", "disk", "ssd", "hdd"] or "накопител" in desc or "диск" in desc:
+                            if not events.get("hwDisks", True):
+                                print(f"[Telegram Alert] Skipped Storage event ({alert.get('description')}) - Telegram hwDisks alerts disabled.")
+                                return
+                        elif not events.get("hardwareChanges", True) or not events.get("hwCritical", True):
+                            return
                     # 3. Power and Disconnect alerts
                     if a_type in ["POWER_FAILED", "EMERGENCY_SHUTDOWN", "OFFLINE", "AGENT_DISCONNECTED"]:
                         if not (events.get("criticalAlerts", True) or events.get("disconnectAlerts", True) or events.get("powerAlerts", True)):

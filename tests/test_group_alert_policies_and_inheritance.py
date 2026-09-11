@@ -340,6 +340,51 @@ def test_building_unprefixed_policy_and_floor_scope_effective_resolution():
     assert data['isInherited'] is True
     assert data['sourceName'] == 'ЦК В4'
 
+def test_network_and_granular_hardware_alert_suppression():
+    from backend.app.services.alert_engine import AlertEngine
+    from backend.app.services.scope_policy_service import resolve_effective_policy, save_scope_policy
+
+    # Building policy has hardwareChanges=True, hwDisks=True, BUT hwNetwork=False
+    save_scope_policy('ЦК В4', {
+        'mode': 'Custom',
+        'events': {'hardwareChanges': True, 'hwDisks': True, 'hwNetwork': False},
+        'notifyChannels': {'webUi': True, 'telegram': True}
+    })
+
+    dev = {'id': 'B4-541-01', 'group': 'Office / ЦК В4 / 5 этаж / 541'}
+    eff = resolve_effective_policy(dev)
+    assert eff['events']['hwNetwork'] is False
+
+    # 1. Alert for Network adapter disconnection should be suppressed when hwNetwork is False
+    net_alert = {
+        'deviceId': 'B4-541-01',
+        'type': 'HARDWARE_MISMATCH',
+        'category': 'Hardware',
+        'component': 'Network',
+        'description': 'Отключен сетевой адаптер: Беспроводная сеть (E4:0D:36:A5:9C:EA)'
+    }
+    assert AlertEngine.should_notify('HARDWARE_MISMATCH', eff, alert=net_alert) is False
+
+    # 2. Alert for CPU/RAM changes should still notify because hardwareChanges is True
+    ram_alert = {
+        'deviceId': 'B4-541-01',
+        'type': 'HARDWARE_MISMATCH',
+        'category': 'Hardware',
+        'component': 'RAM',
+        'description': 'Извлечена оперативная память: 16 GB -> 8 GB'
+    }
+    assert AlertEngine.should_notify('HARDWARE_MISMATCH', eff, alert=ram_alert) is True
+
+    # 3. Alert for Disks should still notify because hwDisks is True
+    disk_alert = {
+        'deviceId': 'B4-541-01',
+        'type': 'HARDWARE_MISMATCH',
+        'category': 'Hardware',
+        'component': 'Storage',
+        'description': 'Отключен накопитель: Samsung SSD 970 EVO Plus'
+    }
+    assert AlertEngine.should_notify('HARDWARE_MISMATCH', eff, alert=disk_alert) is True
+
 
 
 

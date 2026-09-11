@@ -678,6 +678,53 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
 
         changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, real_device_id)
         if changes:
+            # Query policy early so suppressed hardware changes do not degrade device health status
+            pol_res = await db.execute(
+                select(AlertPolicyModel).where(
+                    (AlertPolicyModel.device_id == real_device_id) | 
+                    (AlertPolicyModel.device_id == device_id) |
+                    (AlertPolicyModel.device_id == (dev.hostname if dev else "")) |
+                    (AlertPolicyModel.device_id == (dev.id if dev else ""))
+                )
+            )
+            pol_model = pol_res.scalar_one_or_none()
+            if not pol_model:
+                try:
+                    from backend.app.api.v1.devices import load_device_configs
+                    cfgs = load_device_configs().get("policies", {})
+                    for candidate in (real_device_id, device_id, (dev.hostname if dev else ""), (dev.id if dev else "")):
+                        if candidate in cfgs:
+                            c_p = cfgs[candidate]
+                            pol_model = AlertPolicyModel(
+                                device_id=real_device_id,
+                                mode=c_p.get("mode", "Full"),
+                                events_config=c_p.get("events", {}),
+                                thresholds=c_p.get("thresholds", {}),
+                                notify_channels=c_p.get("notifyChannels") or c_p.get("notify_channels", {})
+                            )
+                            break
+                except Exception:
+                    pass
+
+            from backend.app.services.scope_policy_service import resolve_effective_policy
+            dev_pol = {
+                "mode": pol_model.mode,
+                "events_config": pol_model.events_config,
+                "notify_channels": pol_model.notify_channels,
+                "thresholds": pol_model.thresholds
+            } if (pol_model and pol_model.mode != "Inherit") else None
+            effective_pol = resolve_effective_policy(dev or {"id": real_device_id}, dev_pol)
+            policy_dict = {
+                "mode": effective_pol["mode"],
+                "events_config": effective_pol["events"],
+                "notify_channels": effective_pol["notifyChannels"],
+                "thresholds": effective_pol["thresholds"]
+            }
+            policy_channels = effective_pol["notifyChannels"]
+            ev_cfg = effective_pol.get("events", {}) or {}
+            is_web_enabled = bool(policy_channels.get("webUi", True))
+            is_tg_enabled = bool(policy_channels.get("telegram", True))
+
             for c in changes:
                 alert_desc = c.get("description") or f"Обнаружено изменение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
 
@@ -699,7 +746,19 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
 
                 is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
                 is_virtual_gpu = bool(c.get("isVirtualGpu")) or c.get("component") in ["RDP-видеоадаптер", "VIRTUAL_GPU"]
-                is_suppressed_hardware = is_usb or is_virtual_gpu
+                is_network = c.get("component") in ["Network", "Сетевой адаптер", "NetworkAdapter"] or "сетев" in alert_desc.lower() or "ip/mac" in alert_desc.lower()
+                is_disk = c.get("component") in ["Storage", "Диск", "Накопитель"] or "накопител" in alert_desc.lower() or "диск" in alert_desc.lower()
+
+                # Policy suppression check for granular hardware events
+                is_suppressed_hardware = (
+                    (effective_pol.get("mode") in ["Muted", "Silent"]) or
+                    (is_usb and not ev_cfg.get("usbStorage", False)) or
+                    (is_virtual_gpu and not ev_cfg.get("remoteDisplayAdapter", False)) or
+                    (is_network and not ev_cfg.get("hwNetwork", True)) or
+                    (is_disk and not ev_cfg.get("hwDisks", True)) or
+                    (not is_usb and not is_virtual_gpu and not is_network and not is_disk and (not ev_cfg.get("hardwareChanges", True) or not ev_cfg.get("hwCritical", True)))
+                )
+
                 if dev and not is_suppressed_hardware:
                     if str(c["severity"]).lower() == "critical":
                         dev.health_status = HealthStatus.CRITICAL
@@ -741,71 +800,26 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     "deviceId": real_device_id,
                     "type": cur_alert_type,
                     "category": cur_category,
-                    "severity": c["severity"],
-                    "state": "Open",
+                    "component": c["component"],
+                    "severity": "Info" if is_suppressed_hardware else c["severity"],
+                    "state": "Resolved" if is_suppressed_hardware else "Open",
                     "description": alert_desc,
                     "createdAt": datetime.utcnow().isoformat() + "Z",
                     "time": datetime.utcnow().isoformat() + "Z",
                     "timestamp": datetime.utcnow().isoformat() + "Z"
                 }
-                # Query policy if exists
-                pol_res = await db.execute(
-                    select(AlertPolicyModel).where(
-                        (AlertPolicyModel.device_id == real_device_id) | 
-                        (AlertPolicyModel.device_id == device_id) |
-                        (AlertPolicyModel.device_id == (dev.hostname if dev else "")) |
-                        (AlertPolicyModel.device_id == (dev.id if dev else ""))
-                    )
-                )
-                pol_model = pol_res.scalar_one_or_none()
-                if not pol_model:
-                    try:
-                        from backend.app.api.v1.devices import load_device_configs
-                        cfgs = load_device_configs().get("policies", {})
-                        for candidate in (real_device_id, device_id, (dev.hostname if dev else ""), (dev.id if dev else "")):
-                            if candidate in cfgs:
-                                c_p = cfgs[candidate]
-                                pol_model = AlertPolicyModel(
-                                    device_id=real_device_id,
-                                    mode=c_p.get("mode", "Full"),
-                                    events_config=c_p.get("events", {}),
-                                    thresholds=c_p.get("thresholds", {}),
-                                    notify_channels=c_p.get("notifyChannels") or c_p.get("notify_channels", {})
-                                )
-                                break
-                    except Exception:
-                        pass
 
-                from backend.app.services.scope_policy_service import resolve_effective_policy
-                dev_pol = {
-                    "mode": pol_model.mode,
-                    "events_config": pol_model.events_config,
-                    "notify_channels": pol_model.notify_channels,
-                    "thresholds": pol_model.thresholds
-                } if (pol_model and pol_model.mode != "Inherit") else None
-                effective_pol = resolve_effective_policy(dev or {"id": real_device_id}, dev_pol)
-                policy_dict = {
-                    "mode": effective_pol["mode"],
-                    "events_config": effective_pol["events"],
-                    "notify_channels": effective_pol["notifyChannels"],
-                    "thresholds": effective_pol["thresholds"]
-                }
-                policy_channels = effective_pol["notifyChannels"]
-                is_web_enabled = bool(policy_channels.get("webUi", True))
-                is_tg_enabled = bool(policy_channels.get("telegram", True))
-
-                if is_web_enabled:
+                if is_web_enabled and not is_suppressed_hardware:
                     alerts_db.insert(0, alert_dict)
-
-                # Dispatch alert via alert engine (Telegram + Web UI) and WebSocket
-                try:
-                    if is_tg_enabled:
-                        asyncio.create_task(alert_engine.dispatch_alert(alert_dict, policy=policy_dict))
-                except Exception as e:
-                    print(f"[Alert Dispatch Error] {e}")
-
-                if is_web_enabled:
                     await ws_manager.broadcast_event("alert.created", alert_dict)
+
+                # Dispatch alert via alert engine (Telegram)
+                if is_tg_enabled and not is_suppressed_hardware:
+                    try:
+                        asyncio.create_task(alert_engine.dispatch_alert(alert_dict, policy=policy_dict))
+                    except Exception as e:
+                        print(f"[Alert Dispatch Error] {e}")
+
                 await ws_manager.broadcast_event("hardware.change", {
                     "deviceId": device_id,
                     "component": c["component"],
@@ -1616,6 +1630,53 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                             from backend.app.api.v1.hardware import hardware_changes_db
                             changes = hardware_diff_service.compare_specs(prev_spec, raw_spec, device.id)
                             if changes:
+                                # Query device alert policy early so suppressed hardware changes do not degrade health
+                                pol_res = await db.execute(
+                                    select(AlertPolicyModel).where(
+                                        (AlertPolicyModel.device_id == device.id) | 
+                                        (AlertPolicyModel.device_id == device.hostname) |
+                                        (AlertPolicyModel.device_id == (device.id.upper() if device.id else "")) |
+                                        (AlertPolicyModel.device_id == (device.hostname.upper() if device.hostname else ""))
+                                    )
+                                )
+                                pol_model = pol_res.scalar_one_or_none()
+                                if not pol_model:
+                                    try:
+                                        from backend.app.api.v1.devices import load_device_configs
+                                        cfgs = load_device_configs().get("policies", {})
+                                        for candidate in (device.id, device.hostname, (device.id.upper() if device.id else "")):
+                                            if candidate and candidate in cfgs:
+                                                c_p = cfgs[candidate]
+                                                pol_model = AlertPolicyModel(
+                                                    device_id=device.id,
+                                                    mode=c_p.get("mode", "Full"),
+                                                    events_config=c_p.get("events", {}),
+                                                    thresholds=c_p.get("thresholds", {}),
+                                                    notify_channels=c_p.get("notifyChannels") or c_p.get("notify_channels", {})
+                                                )
+                                                break
+                                    except Exception:
+                                        pass
+
+                                from backend.app.services.scope_policy_service import resolve_effective_policy
+                                dev_pol = {
+                                    "mode": pol_model.mode,
+                                    "events_config": pol_model.events_config,
+                                    "notify_channels": pol_model.notify_channels,
+                                    "thresholds": pol_model.thresholds
+                                } if (pol_model and pol_model.mode != "Inherit") else None
+                                effective_pol = resolve_effective_policy(device, dev_pol)
+                                policy_dict = {
+                                    "mode": effective_pol["mode"],
+                                    "events_config": effective_pol["events"],
+                                    "notify_channels": effective_pol["notifyChannels"],
+                                    "thresholds": effective_pol["thresholds"]
+                                }
+                                policy_channels = effective_pol["notifyChannels"]
+                                ev_cfg = effective_pol.get("events", {}) or {}
+                                is_web_enabled = bool(policy_channels.get("webUi", True))
+                                is_tg_enabled = bool(policy_channels.get("telegram", True))
+
                                 for c in changes:
                                     alert_desc = c.get("description") or f"Обнаружено изменение оборудования ({c['component']}): {c['changeType']} ({c['previousValue']} -> {c['currentValue']})"
 
@@ -1649,7 +1710,19 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
 
                                     is_usb = bool(c.get("isUsb")) or c.get("component") in ["USB", "USB_STORAGE", "USB-накопитель"]
                                     is_virtual_gpu = bool(c.get("isVirtualGpu")) or c.get("component") in ["RDP-видеоадаптер", "VIRTUAL_GPU"]
-                                    is_suppressed_hardware = is_usb or is_virtual_gpu
+                                    is_network = c.get("component") in ["Network", "Сетевой адаптер", "NetworkAdapter"] or "сетев" in alert_desc.lower() or "ip/mac" in alert_desc.lower()
+                                    is_disk = c.get("component") in ["Storage", "Диск", "Накопитель"] or "накопител" in alert_desc.lower() or "диск" in alert_desc.lower()
+
+                                    # Policy suppression check for granular hardware events
+                                    is_suppressed_hardware = (
+                                        (effective_pol.get("mode") in ["Muted", "Silent"]) or
+                                        (is_usb and not ev_cfg.get("usbStorage", False)) or
+                                        (is_virtual_gpu and not ev_cfg.get("remoteDisplayAdapter", False)) or
+                                        (is_network and not ev_cfg.get("hwNetwork", True)) or
+                                        (is_disk and not ev_cfg.get("hwDisks", True)) or
+                                        (not is_usb and not is_virtual_gpu and not is_network and not is_disk and (not ev_cfg.get("hardwareChanges", True) or not ev_cfg.get("hwCritical", True)))
+                                    )
+
                                     if not is_suppressed_hardware:
                                         if str(c["severity"]).lower() == "critical":
                                             device.health_status = HealthStatus.CRITICAL
@@ -1691,73 +1764,25 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         "deviceId": device.id,
                                         "type": cur_alert_type,
                                         "category": cur_category,
-                                        "severity": c["severity"],
-                                        "state": "Open",
+                                        "component": c["component"],
+                                        "severity": "Info" if is_suppressed_hardware else c["severity"],
+                                        "state": "Resolved" if is_suppressed_hardware else "Open",
                                         "description": alert_desc,
                                         "createdAt": datetime.utcnow().isoformat() + "Z",
                                         "time": datetime.utcnow().isoformat() + "Z",
                                         "timestamp": datetime.utcnow().isoformat() + "Z"
                                     }
-                                    from backend.app.api.v1.alerts import alerts_db
-                                    from backend.app.services.alert_engine import alert_engine
 
-                                    # Query device alert policy if available
-                                    pol_res = await db.execute(
-                                        select(AlertPolicyModel).where(
-                                            (AlertPolicyModel.device_id == device.id) | 
-                                            (AlertPolicyModel.device_id == device.hostname) |
-                                            (AlertPolicyModel.device_id == (device.id.upper() if device.id else "")) |
-                                            (AlertPolicyModel.device_id == (device.hostname.upper() if device.hostname else ""))
-                                        )
-                                    )
-                                    pol_model = pol_res.scalar_one_or_none()
-                                    if not pol_model:
-                                        try:
-                                            from backend.app.api.v1.devices import load_device_configs
-                                            cfgs = load_device_configs().get("policies", {})
-                                            for candidate in (device.id, device.hostname, (device.id.upper() if device.id else "")):
-                                                if candidate and candidate in cfgs:
-                                                    c_p = cfgs[candidate]
-                                                    pol_model = AlertPolicyModel(
-                                                        device_id=device.id,
-                                                        mode=c_p.get("mode", "Full"),
-                                                        events_config=c_p.get("events", {}),
-                                                        thresholds=c_p.get("thresholds", {}),
-                                                        notify_channels=c_p.get("notifyChannels") or c_p.get("notify_channels", {})
-                                                    )
-                                                    break
-                                        except Exception:
-                                            pass
-
-                                    from backend.app.services.scope_policy_service import resolve_effective_policy
-                                    dev_pol = {
-                                        "mode": pol_model.mode,
-                                        "events_config": pol_model.events_config,
-                                        "notify_channels": pol_model.notify_channels,
-                                        "thresholds": pol_model.thresholds
-                                    } if (pol_model and pol_model.mode != "Inherit") else None
-                                    effective_pol = resolve_effective_policy(device, dev_pol)
-                                    policy_dict = {
-                                        "mode": effective_pol["mode"],
-                                        "events_config": effective_pol["events"],
-                                        "notify_channels": effective_pol["notifyChannels"],
-                                        "thresholds": effective_pol["thresholds"]
-                                    }
-                                    policy_channels = effective_pol["notifyChannels"]
-                                    is_web_enabled = bool(policy_channels.get("webUi", True))
-                                    is_tg_enabled = bool(policy_channels.get("telegram", True))
-
-                                    if is_web_enabled:
+                                    if is_web_enabled and not is_suppressed_hardware:
                                         alerts_db.insert(0, alert_dict)
-
-                                    try:
-                                        if is_tg_enabled:
-                                            asyncio.create_task(alert_engine.dispatch_alert(alert_dict, policy=policy_dict))
-                                    except Exception as e:
-                                        print(f"[Alert Dispatch Error] {e}")
-
-                                    if is_web_enabled:
                                         await ws_manager.broadcast_event("alert.created", alert_dict)
+
+                                    if is_tg_enabled and not is_suppressed_hardware:
+                                        try:
+                                            asyncio.create_task(alert_engine.dispatch_alert(alert_dict, policy=policy_dict))
+                                        except Exception as e:
+                                            print(f"[Alert Dispatch Error] {e}")
+
                                     await ws_manager.broadcast_event("hardware.change", {
                                         "deviceId": device.id,
                                         "component": c["component"],
