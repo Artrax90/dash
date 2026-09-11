@@ -8950,9 +8950,20 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
   const [webUiChannel, setWebUiChannel] = useState(true);
   const [telegramChannel, setTelegramChannel] = useState(true);
 
-  useEffect(() => {
+  // Scope inheritance metadata
+  const [isInherited, setIsInherited] = useState<boolean>(true);
+  const [inheritanceSource, setInheritanceSource] = useState<string>('global');
+  const [inheritanceSourceName, setInheritanceSourceName] = useState<string>('По умолчанию');
+  const [hasCustomOverride, setHasCustomOverride] = useState<boolean>(false);
+
+  const loadPolicy = useCallback(() => {
     devicesApi.getAlertPolicy(deviceId).then(policy => {
       if (policy) {
+        setIsInherited(Boolean(policy.isInherited));
+        setInheritanceSource(policy.source || 'global');
+        setInheritanceSourceName(policy.sourceName || (policy.source === 'global' ? 'Глобальная политика' : 'Группа'));
+        setHasCustomOverride(Boolean(policy.hasCustomOverride));
+
         if (policy.mode) setMode(policy.mode as any);
         const ev = policy.events || policy.events_config || {};
         if (ev.hardwareChanges !== undefined) setHwCritical(ev.hardwareChanges);
@@ -8990,6 +9001,16 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
     });
   }, [deviceId]);
 
+  useEffect(() => {
+    loadPolicy();
+  }, [loadPolicy]);
+
+  const handleResetToInherit = async () => {
+    await devicesApi.saveAlertPolicy(deviceId, { mode: 'Inherit' });
+    notify('Индивидуальная политика сброшена: ПК теперь наследует политику группы');
+    loadPolicy();
+  };
+
   const handleSavePolicy = async () => {
     await devicesApi.saveAlertPolicy(deviceId, {
       mode,
@@ -9021,8 +9042,13 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
         telegram: telegramChannel,
       }
     });
-    notify('Политика оповещений устройства успешно сохранена!');
+    setHasCustomOverride(true);
+    setIsInherited(false);
+    notify('Индивидуальная политика оповещений устройства сохранена!');
+    loadPolicy();
   };
+
+  const sourceLabel = inheritanceSource === 'room' ? 'Кабинет' : inheritanceSource === 'floor' ? 'Этаж' : inheritanceSource === 'group' ? 'Группа' : 'Глобальная система';
 
   return (
     <section className="panel automation-panel">
@@ -9046,6 +9072,62 @@ function AlertPolicyTab({ deviceId, notify }: { deviceId: string; notify: (messa
             <option value="Muted">Muted (Оповещения отключены)</option>
           </select>
         </div>
+      </div>
+
+      {/* Inheritance Status Bar */}
+      <div style={{
+        margin: '16px 21px 0 21px',
+        padding: '12px 16px',
+        borderRadius: '8px',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'space-between',
+        background: hasCustomOverride ? 'rgba(59, 130, 246, 0.08)' : 'rgba(16, 185, 129, 0.08)',
+        border: `1px solid ${hasCustomOverride ? 'rgba(59, 130, 246, 0.25)' : 'rgba(16, 185, 129, 0.25)'}`,
+        gap: '12px',
+        flexWrap: 'wrap'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div style={{
+            width: '32px',
+            height: '32px',
+            borderRadius: '6px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            background: hasCustomOverride ? 'var(--blue)' : 'var(--green)',
+            color: '#fff',
+            flexShrink: 0
+          }}>
+            {hasCustomOverride ? <Zap size={16} /> : <Layers size={16} />}
+          </div>
+          <div>
+            <div style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text)' }}>
+              {hasCustomOverride ? (
+                <span>Индивидуальная политика ПК (переопределяет наследование)</span>
+              ) : (
+                <span>
+                  Оповещения наследуются от:{' '}
+                  <strong style={{ color: 'var(--blue)' }}>{inheritanceSourceName}</strong>
+                  {' '}
+                  <span className="badge" style={{ fontSize: '10px', textTransform: 'uppercase', marginLeft: '6px' }}>
+                    {sourceLabel}
+                  </span>
+                </span>
+              )}
+            </div>
+            <div style={{ fontSize: '12px', color: 'var(--muted)' }}>
+              {hasCustomOverride
+                ? 'Для данного компьютера настроены персональные правила алертинга'
+                : 'Политика синхронизируется с вышестоящей группой/этажом. Сохранение изменений создаст персональное переопределение.'}
+            </div>
+          </div>
+        </div>
+        {hasCustomOverride && (
+          <Button onClick={handleResetToInherit}>
+            <RotateCcw size={13} style={{ marginRight: '6px' }} /> Сбросить к наследованию группы
+          </Button>
+        )}
       </div>
 
       {/* Preset summary banner when NOT in Custom mode */}
@@ -15301,6 +15383,589 @@ function AuditLog({ compact = false, deviceId }: { compact?: boolean; deviceId?:
 }
 
 // ----------------------------------------------------
+// 14.5 SCOPE ALERT POLICY MODAL (GROUPS / FLOORS / ROOMS)
+// ----------------------------------------------------
+interface ScopeAlertPolicyModalProps {
+  target: {
+    scope: string;
+    title: string;
+    type: 'group' | 'building' | 'floor' | 'room';
+    bldName?: string;
+    flrName?: string;
+    roomName?: string;
+  };
+  onClose: () => void;
+  onSaved: () => void;
+  notify: (msg: string) => void;
+  availableFloors?: string[];
+  availableRooms?: { name: string; roomName: string; floor: string }[];
+}
+
+function ScopeAlertPolicyModal({
+  target,
+  onClose,
+  onSaved,
+  notify,
+  availableFloors = [],
+  availableRooms = []
+}: ScopeAlertPolicyModalProps) {
+  const [loading, setLoading] = useState(true);
+  const [hasCustomPolicy, setHasCustomPolicy] = useState(false);
+  const [mode, setMode] = useState<'Full' | 'Critical Only' | 'Hardware Only' | 'Custom' | 'Muted'>('Full');
+
+  // Granular events
+  const [hwCritical, setHwCritical] = useState(true);
+  const [hwDisks, setHwDisks] = useState(true);
+  const [hwUsb, setHwUsb] = useState(false);
+  const [hwVirtualGpu, setHwVirtualGpu] = useState(false);
+  const [hwNetwork, setHwNetwork] = useState(true);
+
+  const [powerWake, setPowerWake] = useState(true);
+  const [powerShutdown, setPowerShutdown] = useState(true);
+  const [powerUnexpected, setPowerUnexpected] = useState(true);
+
+  const [agentDisconnect, setAgentDisconnect] = useState(true);
+  const [agentOnline, setAgentOnline] = useState(true);
+
+  const [rdpIdle, setRdpIdle] = useState(true);
+  const [rdpLogon, setRdpLogon] = useState(false);
+
+  const [resourceCpu, setResourceCpu] = useState(true);
+  const [resourceRam, setResourceRam] = useState(true);
+  const [resourceDisk, setResourceDisk] = useState(true);
+
+  const [cpuThreshold, setCpuThreshold] = useState(90);
+  const [ramThreshold, setRamThreshold] = useState(85);
+  const [diskThreshold, setDiskThreshold] = useState(90);
+  const [rdpIdleLimit, setRdpIdleLimit] = useState(30);
+
+  const [webUiChannel, setWebUiChannel] = useState(true);
+  const [telegramChannel, setTelegramChannel] = useState(true);
+
+  // Cascading options
+  const [cascadeMode, setCascadeMode] = useState<'scope' | 'floors' | 'rooms'>('scope');
+  const [selectedFloors, setSelectedFloors] = useState<string[]>([]);
+  const [selectedRooms, setSelectedRooms] = useState<string[]>([]);
+  const [isSaving, setIsSaving] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    groupsApi.getScopeAlertPolicy(target.scope).then(pol => {
+      if (pol && pol.mode && pol.mode !== 'Inherit') {
+        setHasCustomPolicy(true);
+        setMode(pol.mode);
+        const ev = pol.events || {};
+        if (ev.hardwareChanges !== undefined) setHwCritical(ev.hardwareChanges);
+        if (ev.hwDisks !== undefined) setHwDisks(ev.hwDisks);
+        if (ev.usbStorage !== undefined) setHwUsb(ev.usbStorage);
+        if (ev.remoteDisplayAdapter !== undefined) setHwVirtualGpu(ev.remoteDisplayAdapter);
+        if (ev.hwNetwork !== undefined) setHwNetwork(ev.hwNetwork);
+
+        if (ev.morningWakeFailed !== undefined) setPowerWake(ev.morningWakeFailed);
+        if (ev.eveningShutdownFailed !== undefined) setPowerShutdown(ev.eveningShutdownFailed);
+        if (ev.powerStateFailed !== undefined) setPowerUnexpected(ev.powerStateFailed);
+
+        if (ev.agentDisconnect !== undefined) setAgentDisconnect(ev.agentDisconnect);
+        if (ev.agentOnline !== undefined) setAgentOnline(ev.agentOnline);
+
+        if (ev.rdpSessionTimeout !== undefined) setRdpIdle(ev.rdpSessionTimeout);
+        if (ev.rdpLogon !== undefined) setRdpLogon(ev.rdpLogon);
+
+        if (ev.highCpuUsage !== undefined) setResourceCpu(ev.highCpuUsage);
+        if (ev.highRamUsage !== undefined) setResourceRam(ev.highRamUsage);
+        if (ev.highDiskUsage !== undefined) setResourceDisk(ev.highDiskUsage);
+
+        if (pol.thresholds) {
+          if (pol.thresholds.cpuPercent !== undefined) setCpuThreshold(pol.thresholds.cpuPercent);
+          if (pol.thresholds.ramPercent !== undefined) setRamThreshold(pol.thresholds.ramPercent);
+          if (pol.thresholds.diskPercent !== undefined) setDiskThreshold(pol.thresholds.diskPercent);
+          if (pol.thresholds.rdpIdleMinutes !== undefined) setRdpIdleLimit(pol.thresholds.rdpIdleMinutes);
+        }
+
+        const ch = pol.notifyChannels || pol.notify_channels || {};
+        const webVal = ch.webUi !== undefined ? ch.webUi : (ch.web_ui !== undefined ? ch.web_ui : undefined);
+        const tgVal = ch.telegram !== undefined ? ch.telegram : (ch.tg !== undefined ? ch.tg : undefined);
+        if (webVal !== undefined) setWebUiChannel(Boolean(webVal));
+        if (tgVal !== undefined) setTelegramChannel(Boolean(tgVal));
+      } else {
+        setHasCustomPolicy(false);
+      }
+      setLoading(false);
+    }).catch(() => setLoading(false));
+  }, [target.scope]);
+
+  const handleResetToInherit = async () => {
+    setIsSaving(true);
+    try {
+      await groupsApi.deleteScopeAlertPolicy(target.scope);
+      notify(`Индивидуальная политика для "${target.title}" сброшена. Уровень теперь наследует настройки.`);
+      onSaved();
+      onClose();
+    } catch {
+      notify('Ошибка сброса политики');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleSave = async () => {
+    setIsSaving(true);
+    const policyData = {
+      mode,
+      events: {
+        hardwareChanges: hwCritical,
+        hwDisks,
+        usbStorage: hwUsb,
+        remoteDisplayAdapter: hwVirtualGpu,
+        hwNetwork,
+        morningWakeFailed: powerWake,
+        eveningShutdownFailed: powerShutdown,
+        powerStateFailed: powerUnexpected,
+        agentDisconnect,
+        agentOnline,
+        rdpSessionTimeout: rdpIdle,
+        rdpLogon,
+        highCpuUsage: resourceCpu,
+        highRamUsage: resourceRam,
+        highDiskUsage: resourceDisk,
+      },
+      thresholds: {
+        cpuPercent: cpuThreshold,
+        ramPercent: ramThreshold,
+        diskPercent: diskThreshold,
+        rdpIdleMinutes: rdpIdleLimit,
+      },
+      notifyChannels: {
+        webUi: webUiChannel,
+        telegram: telegramChannel,
+      }
+    };
+
+    try {
+      const groupOrBldName = target.bldName || target.scope.replace(/^[^:]+:/, '');
+      if (cascadeMode === 'floors' && selectedFloors.length > 0) {
+        const floorKeys = selectedFloors.map(f => {
+          const bld = target.bldName || groupOrBldName;
+          return f.includes('/') ? `floor:${f}` : `floor:${bld} / ${f}`;
+        });
+        await groupsApi.saveGroupAlertPolicy(groupOrBldName, {
+          policy: policyData,
+          cascade: 'floors',
+          targetFloors: floorKeys
+        });
+        notify(`Политика успешно сохранена и скопирована на ${selectedFloors.length} этажей!`);
+      } else if (cascadeMode === 'rooms' && selectedRooms.length > 0) {
+        const roomKeys = selectedRooms.map(r => r.startsWith('room:') ? r : `room:${r}`);
+        await groupsApi.saveGroupAlertPolicy(groupOrBldName, {
+          policy: policyData,
+          cascade: 'rooms',
+          targetRooms: roomKeys
+        });
+        notify(`Политика успешно сохранена и скопирована на ${selectedRooms.length} кабинетов!`);
+      } else {
+        await groupsApi.saveScopeAlertPolicy(target.scope, policyData);
+        notify(`Политика оповещений для "${target.title}" успешно сохранена!`);
+      }
+      onSaved();
+      onClose();
+    } catch {
+      notify('Ошибка сохранения политики оповещений');
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const typeLabels = {
+    group: 'ГРУППА',
+    building: 'КОРПУС',
+    floor: 'ЭТАЖ',
+    room: 'КАБИНЕТ'
+  };
+
+  return (
+    <div className="modal-backdrop" onClick={onClose} style={{ zIndex: 9999 }}>
+      <div
+        className="confirm-modal"
+        onClick={(e) => e.stopPropagation()}
+        style={{ width: '640px', maxWidth: '95vw', textAlign: 'left', maxHeight: '88vh', overflowY: 'auto', padding: '24px' }}
+      >
+        {/* Header */}
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <div style={{
+              width: '40px',
+              height: '40px',
+              borderRadius: '10px',
+              background: 'var(--blue-soft)',
+              color: 'var(--blue)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center'
+            }}>
+              <Bell size={22} />
+            </div>
+            <div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                <span className="badge" style={{ fontSize: '10px', textTransform: 'uppercase' }}>
+                  {typeLabels[target.type] || 'УРОВЕНЬ'}
+                </span>
+                <h2 style={{ fontSize: '17px', margin: 0, fontWeight: 700 }}>{target.title}</h2>
+              </div>
+              <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>
+                Настройка правил алертинга и каскадного наследования
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ background: 'transparent', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: '4px' }}
+          >
+            <X size={18} />
+          </button>
+        </div>
+
+        {loading ? (
+          <div style={{ padding: '30px', textAlign: 'center', color: 'var(--muted)' }}>
+            <RefreshCw size={24} className="spin-icon" style={{ marginBottom: '8px' }} />
+            <div>Загрузка параметров политики...</div>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Inheritance / Custom Status Banner */}
+            <div style={{
+              padding: '12px 14px',
+              borderRadius: '8px',
+              background: hasCustomPolicy ? 'rgba(59, 130, 246, 0.08)' : 'rgba(16, 185, 129, 0.08)',
+              border: `1px solid ${hasCustomPolicy ? 'rgba(59, 130, 246, 0.25)' : 'rgba(16, 185, 129, 0.25)'}`,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'space-between',
+              gap: '12px',
+              flexWrap: 'wrap'
+            }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                <span style={{ fontSize: '16px' }}>{hasCustomPolicy ? '⚡' : '🔗'}</span>
+                <div>
+                  <strong style={{ fontSize: '12px', display: 'block', color: 'var(--text)' }}>
+                    {hasCustomPolicy
+                      ? 'Настроена индивидуальная политика для этого уровня'
+                      : 'В данный момент действует наследование вышестоящей политики'}
+                  </strong>
+                  <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
+                    {hasCustomPolicy
+                      ? 'Все дочерние объекты и ПК наследуют эти правила (если не переопределены персонально)'
+                      : 'Сохранение настроек создаст переопределение специально для этой группы/локации'}
+                  </span>
+                </div>
+              </div>
+              {hasCustomPolicy && (
+                <Button onClick={handleResetToInherit} disabled={isSaving}>
+                  <RotateCcw size={12} style={{ marginRight: '4px' }} /> Сбросить к наследованию
+                </Button>
+              )}
+            </div>
+
+            {/* Profile Selection */}
+            <div>
+              <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>
+                Профиль политики оповещений:
+              </label>
+              <select
+                value={mode}
+                onChange={(e) => setMode(e.target.value as any)}
+                className="text-input"
+                style={{ width: '100%', fontWeight: 600 }}
+              >
+                <option value="Full">Full (Все события и пороги)</option>
+                <option value="Critical Only">Critical Only (Только критические сбои и аварии)</option>
+                <option value="Hardware Only">Hardware Only (Комплектующие ПК)</option>
+                <option value="Custom">Custom (Пользовательские настройки)</option>
+                <option value="Muted">Muted (Оповещения отключены)</option>
+              </select>
+            </div>
+
+            {/* Granular Toggles in Custom Mode */}
+            {mode === 'Custom' && (
+              <div style={{ border: '1px solid var(--line)', borderRadius: '8px', overflow: 'hidden' }}>
+                {/* 1. Hardware */}
+                <div style={{ padding: '10px 14px', background: 'var(--blue-soft)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <HardDrive size={15} style={{ color: 'var(--blue)' }} />
+                  <strong style={{ fontSize: '12px' }}>1. Комплектующие и аппаратная конфигурация</strong>
+                </div>
+                <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={hwCritical} onChange={(e) => setHwCritical(e.target.checked)} />
+                    <span>Критические изменения (CPU, Материнская плата, RAM, GPU)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={hwDisks} onChange={(e) => setHwDisks(e.target.checked)} />
+                    <span>Физические накопители и разделы дисков (SSD/HDD)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={hwUsb} onChange={(e) => setHwUsb(e.target.checked)} />
+                    <span>Подключение съемных USB-накопителей (Флешки)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={hwVirtualGpu} onChange={(e) => setHwVirtualGpu(e.target.checked)} />
+                    <span>Microsoft Remote Display Adapter (RDP Video)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={hwNetwork} onChange={(e) => setHwNetwork(e.target.checked)} />
+                    <span>Сетевые адаптеры и смена IP/MAC</span>
+                  </label>
+                </div>
+
+                {/* 2. Power */}
+                <div style={{ padding: '10px 14px', background: 'var(--blue-soft)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Zap size={15} style={{ color: 'var(--orange)' }} />
+                  <strong style={{ fontSize: '12px' }}>2. Питание и расписания</strong>
+                </div>
+                <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={powerWake} onChange={(e) => setPowerWake(e.target.checked)} />
+                    <span>Сбой утреннего включения (WoL)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={powerShutdown} onChange={(e) => setPowerShutdown(e.target.checked)} />
+                    <span>Сбой вечернего выключения</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={powerUnexpected} onChange={(e) => setPowerUnexpected(e.target.checked)} />
+                    <span>Аварийное обесточивание / сбой питания</span>
+                  </label>
+                </div>
+
+                {/* 3. Availability */}
+                <div style={{ padding: '10px 14px', background: 'var(--blue-soft)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Wifi size={15} style={{ color: 'var(--green)' }} />
+                  <strong style={{ fontSize: '12px' }}>3. Доступность агента</strong>
+                </div>
+                <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={agentDisconnect} onChange={(e) => setAgentDisconnect(e.target.checked)} />
+                    <span>Потеря связи со станцией (уход в оффлайн)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={agentOnline} onChange={(e) => setAgentOnline(e.target.checked)} />
+                    <span>Восстановление связи со станцией (Online)</span>
+                  </label>
+                </div>
+
+                {/* 4. RDP */}
+                <div style={{ padding: '10px 14px', background: 'var(--blue-soft)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Lock size={15} style={{ color: 'var(--blue)' }} />
+                  <strong style={{ fontSize: '12px' }}>4. Безопасность и RDP</strong>
+                </div>
+                <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={rdpIdle} onChange={(e) => setRdpIdle(e.target.checked)} />
+                    <span>Превышение лимита простоя RDP-сессии</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={rdpLogon} onChange={(e) => setRdpLogon(e.target.checked)} />
+                    <span>Авторизация пользователя в системе</span>
+                  </label>
+                </div>
+
+                {/* 5. Metrics */}
+                <div style={{ padding: '10px 14px', background: 'var(--blue-soft)', borderTop: '1px solid var(--line)', borderBottom: '1px solid var(--line)', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <Gauge size={15} style={{ color: 'var(--orange)' }} />
+                  <strong style={{ fontSize: '12px' }}>5. Пороги ресурсов</strong>
+                </div>
+                <div style={{ padding: '8px 14px', display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={resourceCpu} onChange={(e) => setResourceCpu(e.target.checked)} />
+                    <span>Контроль высокой нагрузки CPU</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={resourceRam} onChange={(e) => setResourceRam(e.target.checked)} />
+                    <span>Контроль расхода оперативной памяти RAM</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', fontSize: '12px', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={resourceDisk} onChange={(e) => setResourceDisk(e.target.checked)} />
+                    <span>Контроль свободного места на накопителе</span>
+                  </label>
+                </div>
+              </div>
+            )}
+
+            {/* Threshold limits (Custom or Full) */}
+            {(mode === 'Custom' || mode === 'Full') && (
+              <div style={{ padding: '12px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+                <strong style={{ fontSize: '12px', display: 'block', marginBottom: '8px' }}>Пороговые значения срабатывания:</strong>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))', gap: '10px' }}>
+                  <div>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '3px' }}>Порог CPU (%):</span>
+                    <input type="number" min="50" max="99" value={cpuThreshold} onChange={(e) => setCpuThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '3px' }}>Порог RAM (%):</span>
+                    <input type="number" min="50" max="99" value={ramThreshold} onChange={(e) => setRamThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '3px' }}>Порог Диска (%):</span>
+                    <input type="number" min="50" max="99" value={diskThreshold} onChange={(e) => setDiskThreshold(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
+                  </div>
+                  <div>
+                    <span style={{ fontSize: '11px', color: 'var(--muted)', display: 'block', marginBottom: '3px' }}>Простой RDP (мин):</span>
+                    <input type="number" min="5" max="240" value={rdpIdleLimit} onChange={(e) => setRdpIdleLimit(Number(e.target.value))} className="text-input" style={{ width: '100%' }} />
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Notification Channels */}
+            <div>
+              <strong style={{ fontSize: '12px', display: 'block', marginBottom: '8px' }}>Каналы оповещений:</strong>
+              <div style={{ display: 'flex', gap: '18px', flexWrap: 'wrap' }}>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={webUiChannel} onChange={(e) => setWebUiChannel(e.target.checked)} />
+                  <span>Веб-интерфейс (Колокольчик и карточки)</span>
+                </label>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', cursor: 'pointer' }}>
+                  <input type="checkbox" checked={telegramChannel} onChange={(e) => setTelegramChannel(e.target.checked)} />
+                  <span>Telegram-бот</span>
+                </label>
+              </div>
+            </div>
+
+            {/* Cascading Scope Selector (For Groups & Buildings) */}
+            {(target.type === 'group' || target.type === 'building') && (
+              <div style={{ padding: '12px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+                <strong style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                  <Layers size={14} style={{ color: 'var(--blue)' }} /> Распространение политики (Наследование / Каскад)
+                </strong>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="cascadeGroupMode"
+                      checked={cascadeMode === 'scope'}
+                      onChange={() => setCascadeMode('scope')}
+                    />
+                    <span><strong>Применить ко всей группе</strong> (все этажи и кабинеты наследуют эту политику)</span>
+                  </label>
+                  {availableFloors.length > 0 && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="cascadeGroupMode"
+                        checked={cascadeMode === 'floors'}
+                        onChange={() => setCascadeMode('floors')}
+                      />
+                      <span><strong>Расшарить на конкретные этажи</strong></span>
+                    </label>
+                  )}
+                  {cascadeMode === 'floors' && availableFloors.length > 0 && (
+                    <div style={{ marginLeft: '22px', display: 'flex', flexWrap: 'wrap', gap: '8px', padding: '8px', background: 'var(--panel)', borderRadius: '6px', border: '1px solid var(--line)' }}>
+                      {availableFloors.map(f => (
+                        <label key={f} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedFloors.includes(f)}
+                            onChange={(e) => {
+                              if (e.target.checked) setSelectedFloors([...selectedFloors, f]);
+                              else setSelectedFloors(selectedFloors.filter(x => x !== f));
+                            }}
+                          />
+                          <span>{f}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                  {availableRooms.length > 0 && (
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                      <input
+                        type="radio"
+                        name="cascadeGroupMode"
+                        checked={cascadeMode === 'rooms'}
+                        onChange={() => setCascadeMode('rooms')}
+                      />
+                      <span><strong>Расшарить на конкретные кабинеты</strong></span>
+                    </label>
+                  )}
+                  {cascadeMode === 'rooms' && availableRooms.length > 0 && (
+                    <div style={{ marginLeft: '22px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(180px, 1fr))', gap: '6px', maxHeight: '160px', overflowY: 'auto', padding: '8px', background: 'var(--panel)', borderRadius: '6px', border: '1px solid var(--line)' }}>
+                      {availableRooms.map(r => (
+                        <label key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedRooms.includes(r.name)}
+                            onChange={(e) => {
+                              if (e.target.checked) setSelectedRooms([...selectedRooms, r.name]);
+                              else setSelectedRooms(selectedRooms.filter(x => x !== r.name));
+                            }}
+                          />
+                          <span>{r.roomName} <small style={{ color: 'var(--muted)' }}>({r.floor})</small></span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Cascading Scope Selector (For Floor) */}
+            {target.type === 'floor' && availableRooms.length > 0 && (
+              <div style={{ padding: '12px', background: 'var(--bg)', border: '1px solid var(--line)', borderRadius: '8px' }}>
+                <strong style={{ fontSize: '12px', display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '8px' }}>
+                  <Layers size={14} style={{ color: 'var(--purple)' }} /> Распространение политики этажа
+                </strong>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="cascadeFloorMode"
+                      checked={cascadeMode === 'scope'}
+                      onChange={() => setCascadeMode('scope')}
+                    />
+                    <span><strong>Применить ко всему этажу</strong> (все кабинеты этажа наследуют эту политику)</span>
+                  </label>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }}>
+                    <input
+                      type="radio"
+                      name="cascadeFloorMode"
+                      checked={cascadeMode === 'rooms'}
+                      onChange={() => setCascadeMode('rooms')}
+                    />
+                    <span><strong>Расшарить на конкретные кабинеты этого этажа</strong></span>
+                  </label>
+                  {cascadeMode === 'rooms' && (
+                    <div style={{ marginLeft: '22px', display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(160px, 1fr))', gap: '6px', maxHeight: '160px', overflowY: 'auto', padding: '8px', background: 'var(--panel)', borderRadius: '6px', border: '1px solid var(--line)' }}>
+                      {availableRooms.map(r => (
+                        <label key={r.name} style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '11px', cursor: 'pointer' }}>
+                          <input
+                            type="checkbox"
+                            checked={selectedRooms.includes(r.name)}
+                            onChange={(e) => {
+                              if (e.target.checked) setSelectedRooms([...selectedRooms, r.name]);
+                              else setSelectedRooms(selectedRooms.filter(x => x !== r.name));
+                            }}
+                          />
+                          <span>{r.roomName}</span>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Modal Actions */}
+            <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '10px', marginTop: '10px' }}>
+              <Button onClick={onClose} disabled={isSaving}>Отмена</Button>
+              <Button primary onClick={handleSave} disabled={isSaving}>
+                {isSaving ? 'Сохранение...' : 'Сохранить политику'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ----------------------------------------------------
 // 15. GROUPS WITH MULTI-GROUP MEMBERSHIP & EDIT MODALS
 // ----------------------------------------------------
 interface GroupData {
@@ -15394,6 +16059,16 @@ function Groups({
   const [deleteFloorTarget, setDeleteFloorTarget] = useState<{ building: string; floor: string; roomsCount: number; totalPcs: number } | null>(null);
   const [deleteRoomTarget, setDeleteRoomTarget] = useState<{ name: string; roomName: string; building: string; floor: string } | null>(null);
   const [editBuildingTarget, setEditBuildingTarget] = useState<{ originalName: string; name: string; color: GroupData['color']; floorsCount: string; hasBasement: boolean; hasSubFloor: boolean } | null>(null);
+
+  // Scope Alert Policy Modal State
+  const [scopePolicyModalTarget, setScopePolicyModalTarget] = useState<{
+    scope: string;
+    title: string;
+    type: 'group' | 'building' | 'floor' | 'room';
+    bldName?: string;
+    flrName?: string;
+    roomName?: string;
+  } | null>(null);
 
   const [selectedFloorOption, setSelectedFloorOption] = useState<string>('1 этаж');
   const [isCustomFloorMode, setIsCustomFloorMode] = useState<boolean>(false);
@@ -15524,6 +16199,30 @@ function Groups({
 
     return buildingsMap;
   }, [buildingConfigs, visibleGroups, parseGroupHierarchy, hasRestrictedScope, allowedGroups]);
+
+  const modalFloors = useMemo(() => {
+    if (!scopePolicyModalTarget) return [];
+    if (scopePolicyModalTarget.bldName && hierarchyData[scopePolicyModalTarget.bldName]) {
+      return Object.keys(hierarchyData[scopePolicyModalTarget.bldName].floors);
+    }
+    return [];
+  }, [scopePolicyModalTarget, hierarchyData]);
+
+  const modalRooms = useMemo(() => {
+    if (!scopePolicyModalTarget) return [];
+    if (scopePolicyModalTarget.type === 'floor' && scopePolicyModalTarget.bldName && scopePolicyModalTarget.flrName) {
+      const flr = hierarchyData[scopePolicyModalTarget.bldName]?.floors[scopePolicyModalTarget.flrName];
+      return (flr?.rooms || []).map(r => ({ name: r.name, roomName: r.roomName, floor: scopePolicyModalTarget.flrName || '' }));
+    }
+    if (scopePolicyModalTarget.bldName && hierarchyData[scopePolicyModalTarget.bldName]) {
+      const list: { name: string; roomName: string; floor: string }[] = [];
+      Object.entries(hierarchyData[scopePolicyModalTarget.bldName].floors).forEach(([fName, fObj]) => {
+        fObj.rooms.forEach(r => list.push({ name: r.name, roomName: r.roomName, floor: fName }));
+      });
+      return list;
+    }
+    return [];
+  }, [scopePolicyModalTarget, hierarchyData]);
 
   const availableBuildingOptions = useMemo(() => {
     let list: string[] = [];
@@ -16099,6 +16798,24 @@ function Groups({
                       Настройки группы
                     </Button>
                   )}
+                  {canManageGroup(selectedGroup.name) && (
+                    <Button
+                      icon={<Bell size={15} />}
+                      onClick={() => {
+                        const { building, floor, room } = parseGroupHierarchy(selectedGroup.name);
+                        setScopePolicyModalTarget({
+                          scope: selectedGroup.name,
+                          title: `Политика оповещений: ${selectedGroup.name}`,
+                          type: 'group',
+                          bldName: building !== 'Общие группы' ? building : undefined,
+                          flrName: floor !== 'Группы' && floor !== '1 этаж' ? floor : undefined,
+                          roomName: room
+                        });
+                      }}
+                    >
+                      Политика алертов
+                    </Button>
+                  )}
                   {canManageGroup(selectedGroup.name) && !isObserver && (
                     <Button
                       primary
@@ -16430,9 +17147,31 @@ function Groups({
                             <span><Monitor size={14} /> {group.count} {t('common.devices')}</span>
                             <span><Clock3 size={14} /> {group.schedule}</span>
                           </div>
-                          <Button onClick={(e) => { e.stopPropagation(); onSelectGroup(group.name); }}>
-                            Открыть ({group.name}) <ChevronRight size={14} />
-                          </Button>
+                          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                            <Button onClick={(e) => { e.stopPropagation(); onSelectGroup(group.name); }}>
+                              Открыть ({group.name}) <ChevronRight size={14} />
+                            </Button>
+                            {canManageGroup(group.name) && (
+                              <Button
+                                icon={<Bell size={14} />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  const { building, floor, room } = parseGroupHierarchy(group.name);
+                                  setScopePolicyModalTarget({
+                                    scope: group.name,
+                                    title: `Политика оповещений: ${group.name}`,
+                                    type: 'group',
+                                    bldName: building !== 'Общие группы' ? building : undefined,
+                                    flrName: floor !== 'Группы' && floor !== '1 этаж' ? floor : undefined,
+                                    roomName: room
+                                  });
+                                }}
+                                title="Политика оповещений группы"
+                              >
+                                Алерты
+                              </Button>
+                            )}
+                          </div>
                         </div>
                       </section>
                     ))}
@@ -16460,6 +17199,22 @@ function Groups({
                       <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
                         {canManageGroups && (!hasRestrictedScope || (allowedGroups && isBuildingVisibleInScope(bldName, allowedGroups))) && (
                           <>
+                            <button
+                              className="hero-more"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setScopePolicyModalTarget({
+                                  scope: bldName,
+                                  title: `Политика оповещений корпуса "${bldName}"`,
+                                  type: 'building',
+                                  bldName
+                                });
+                              }}
+                              title={`Политика оповещений корпуса "${bldName}"`}
+                              style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                            >
+                              <Bell size={15} />
+                            </button>
                             <button
                               className="hero-more"
                               onClick={(e) => {
@@ -16589,17 +17344,36 @@ function Groups({
                               <div className="group-symbol"><Layers size={24} /></div>
                               <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
                                 {canManageGroups && (!hasRestrictedScope || (allowedGroups && isFloorVisibleInScope(drillBuilding, flrName, allowedGroups))) && (
-                                  <button
-                                    className="hero-more"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      setDeleteFloorTarget({ building: drillBuilding, floor: flrName, roomsCount: fStats.roomsCount, totalPcs: fStats.totalPcs });
-                                    }}
-                                    title={`Удалить этаж "${flrName}"`}
-                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#ffb4b4', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                                  >
-                                    <Trash2 size={15} />
-                                  </button>
+                                  <>
+                                    <button
+                                      className="hero-more"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setScopePolicyModalTarget({
+                                          scope: `${drillBuilding}/${flrName}`,
+                                          title: `Политика оповещений этажа "${flrName}"`,
+                                          type: 'floor',
+                                          bldName: drillBuilding,
+                                          flrName
+                                        });
+                                      }}
+                                      title={`Политика оповещений этажа "${flrName}"`}
+                                      style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                    >
+                                      <Bell size={15} />
+                                    </button>
+                                    <button
+                                      className="hero-more"
+                                      onClick={(e) => {
+                                        e.stopPropagation();
+                                        setDeleteFloorTarget({ building: drillBuilding, floor: flrName, roomsCount: fStats.roomsCount, totalPcs: fStats.totalPcs });
+                                      }}
+                                      title={`Удалить этаж "${flrName}"`}
+                                      style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#ffb4b4', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                    >
+                                      <Trash2 size={15} />
+                                    </button>
+                                  </>
                                 )}
                                 {canManageGroups && (!hasRestrictedScope || (allowedGroups && isFloorVisibleInScope(drillBuilding, flrName, allowedGroups))) && (
                                   <button
@@ -16700,6 +17474,24 @@ function Groups({
                             <div style={{ position: 'absolute', top: '10px', right: '10px', display: 'flex', gap: '6px', alignItems: 'center' }}>
                               {canManageGroups && (!hasRestrictedScope || (allowedGroups && isRoomVisibleInScope(drillBuilding, drillFloor, roomGroup.roomName, allowedGroups))) && (
                                 <>
+                                  <button
+                                    className="hero-more"
+                                    onClick={(e) => {
+                                      e.stopPropagation();
+                                      setScopePolicyModalTarget({
+                                        scope: roomGroup.name,
+                                        title: `Политика оповещений кабинета "${roomGroup.roomName}"`,
+                                        type: 'room',
+                                        bldName: drillBuilding,
+                                        flrName: drillFloor,
+                                        roomName: roomGroup.roomName
+                                      });
+                                    }}
+                                    title="Политика оповещений кабинета"
+                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                  >
+                                    <Bell size={14} />
+                                  </button>
                                   <button
                                     className="hero-more"
                                     onClick={(e) => {
@@ -17615,6 +18407,18 @@ function Groups({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Scope Alert Policy Modal */}
+      {scopePolicyModalTarget && (
+        <ScopeAlertPolicyModal
+          target={scopePolicyModalTarget}
+          onClose={() => setScopePolicyModalTarget(null)}
+          onSaved={loadData}
+          notify={notify}
+          availableFloors={modalFloors}
+          availableRooms={modalRooms}
+        />
       )}
     </>
   );

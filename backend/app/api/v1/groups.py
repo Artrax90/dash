@@ -567,6 +567,69 @@ async def create_group(payload: Dict[str, Any], request: Request):
     save_groups(groups_store)
     return new_group
 
+@router.get("/alert-policies")
+async def list_scope_alert_policies():
+    from backend.app.services.scope_policy_service import load_all_scope_policies
+    return load_all_scope_policies()
+
+@router.get("/scope/alert-policy")
+async def get_single_scope_alert_policy(scope: str):
+    from backend.app.services.scope_policy_service import get_scope_policy
+    pol = get_scope_policy(scope)
+    return pol or {"scope": scope, "mode": "Inherit", "isInherited": True}
+
+@router.post("/scope/alert-policy")
+async def save_single_scope_alert_policy(payload: Dict[str, Any]):
+    from backend.app.services.scope_policy_service import save_scope_policy
+    scope = payload.get("scope") or payload.get("name") or ""
+    if not scope:
+        raise HTTPException(status_code=400, detail="Missing scope")
+    res = save_scope_policy(scope, payload)
+    return res
+
+@router.delete("/scope/alert-policy")
+async def delete_single_scope_alert_policy(scope: str):
+    from backend.app.services.scope_policy_service import delete_scope_policy
+    deleted = delete_scope_policy(scope)
+    return {"status": "deleted" if deleted else "not_found", "scope": scope}
+
+@router.get("/group-policy/{name:path}")
+async def get_group_alert_policy_route(name: str):
+    from backend.app.services.scope_policy_service import get_scope_policy, get_default_policy
+    scope = f"group:{name}"
+    pol = get_scope_policy(scope)
+    if not pol:
+        pol = get_scope_policy(f"building:{name}")
+    return pol or {"scope": scope, "mode": "Inherit", "isInherited": True, **get_default_policy()}
+
+@router.post("/group-policy/{name:path}")
+async def save_group_alert_policy_route(name: str, payload: Dict[str, Any]):
+    from backend.app.services.scope_policy_service import save_scope_policy, propagate_group_policy
+    scope = payload.get("scope") or f"group:{name}"
+    policy_data = payload.get("policy") or payload
+    target_floors = payload.get("targetFloors") or payload.get("target_floors") or []
+    target_rooms = payload.get("targetRooms") or payload.get("target_rooms") or []
+    target_scopes = payload.get("targetScopes") or payload.get("target_scopes") or []
+
+    all_targets = list(target_scopes)
+    for tf in target_floors:
+        k = tf if tf.startswith("floor:") else f"floor:{tf}"
+        if k not in all_targets:
+            all_targets.append(k)
+    for tr in target_rooms:
+        k = tr if tr.startswith("room:") else f"room:{tr}"
+        if k not in all_targets:
+            all_targets.append(k)
+
+    cascade = payload.get("cascade") or ("custom" if all_targets else "group")
+
+    if all_targets:
+        saved = propagate_group_policy(scope, policy_data, cascade=cascade, target_scopes=all_targets)
+        return {"status": "propagated", "scope": scope, "affectedScopes": saved}
+    else:
+        saved = save_scope_policy(scope, policy_data)
+        return {"status": "saved", "scope": scope, "policy": saved}
+
 @router.put("/{name}", response_model=Dict[str, Any])
 async def update_group(name: str, payload: Dict[str, Any]):
     existing = next((g for g in groups_store if g["name"].lower() == name.lower()), None)

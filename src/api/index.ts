@@ -1187,6 +1187,59 @@ export const groupsApi = {
       return res.ok;
     } catch {}
     return true;
+  },
+  getScopeAlertPolicies: async (): Promise<Record<string, any>> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/alert-policies`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return {};
+  },
+  getScopeAlertPolicy: async (scope: string): Promise<any> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/scope/alert-policy?scope=${encodeURIComponent(scope)}`, {
+        headers: getAuthHeaders()
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return null;
+  },
+  saveScopeAlertPolicy: async (scope: string, policy: any): Promise<any> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/scope/alert-policy`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scope, policy }),
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return null;
+  },
+  deleteScopeAlertPolicy: async (scope: string): Promise<boolean> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/scope/alert-policy?scope=${encodeURIComponent(scope)}`, {
+        method: 'DELETE',
+        headers: getAuthHeaders()
+      });
+      return res.ok;
+    } catch {}
+    return true;
+  },
+  saveGroupAlertPolicy: async (
+    groupName: string,
+    payload: { policy: any; cascade?: string; targetFloors?: string[]; targetRooms?: string[]; targetScopes?: string[] }
+  ): Promise<any> => {
+    try {
+      const res = await fetch(`${API_BASE}/groups/group-policy/${encodeURIComponent(groupName)}`, {
+        method: 'POST',
+        headers: { ...getAuthHeaders(), 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) return await res.json();
+    } catch {}
+    return null;
   }
 };
 

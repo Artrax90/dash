@@ -436,11 +436,20 @@ class AlertEngine:
                 except Exception:
                     pass
 
-            policy_dict = {
+            from backend.app.services.scope_policy_service import resolve_effective_policy
+            dev_pol = {
                 "mode": pol_model.mode,
                 "events_config": pol_model.events_config,
-                "notify_channels": pol_model.notify_channels
-            } if pol_model else {"mode": "Full", "events_config": {"agentDisconnect": True}, "notify_channels": {"webUi": True, "telegram": True}}
+                "notify_channels": pol_model.notify_channels,
+                "thresholds": pol_model.thresholds
+            } if (pol_model and pol_model.mode != "Inherit") else None
+            effective_pol = resolve_effective_policy(device, dev_pol)
+            policy_dict = {
+                "mode": effective_pol["mode"],
+                "events_config": effective_pol["events"],
+                "notify_channels": effective_pol["notifyChannels"],
+                "thresholds": effective_pol["thresholds"]
+            }
 
             channels = policy_dict.get("notify_channels", {}) if "notify_channels" in policy_dict else (policy_dict.get("notifyChannels", {}) or {})
             is_web_enabled = bool(channels.get("webUi", True))
@@ -530,11 +539,20 @@ class AlertEngine:
                 )
             )
             pol_model = pol_res.scalar_one_or_none()
-            policy_dict = {
+            from backend.app.services.scope_policy_service import resolve_effective_policy
+            dev_pol = {
                 "mode": pol_model.mode,
                 "events_config": pol_model.events_config,
-                "notify_channels": pol_model.notify_channels
-            } if pol_model else {"mode": "Full", "events_config": {"agentDisconnect": True}, "notify_channels": {"webUi": True, "telegram": True}}
+                "notify_channels": pol_model.notify_channels,
+                "thresholds": pol_model.thresholds
+            } if (pol_model and pol_model.mode != "Inherit") else None
+            effective_pol = resolve_effective_policy(device, dev_pol)
+            policy_dict = {
+                "mode": effective_pol["mode"],
+                "events_config": effective_pol["events"],
+                "notify_channels": effective_pol["notifyChannels"],
+                "thresholds": effective_pol["thresholds"]
+            }
             
             if cls.should_notify("ONLINE", policy_dict):
                 dev_title = device.name or device.hostname or device.id

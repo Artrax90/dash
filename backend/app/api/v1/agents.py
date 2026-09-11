@@ -776,13 +776,21 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                     except Exception:
                         pass
 
-                policy_dict = {
+                from backend.app.services.scope_policy_service import resolve_effective_policy
+                dev_pol = {
                     "mode": pol_model.mode,
                     "events_config": pol_model.events_config,
-                    "notify_channels": pol_model.notify_channels
-                } if pol_model else None
-
-                policy_channels = (policy_dict.get("notify_channels") or policy_dict.get("notifyChannels") or {}) if policy_dict else {"webUi": True, "telegram": True}
+                    "notify_channels": pol_model.notify_channels,
+                    "thresholds": pol_model.thresholds
+                } if (pol_model and pol_model.mode != "Inherit") else None
+                effective_pol = resolve_effective_policy(dev or {"id": real_device_id}, dev_pol)
+                policy_dict = {
+                    "mode": effective_pol["mode"],
+                    "events_config": effective_pol["events"],
+                    "notify_channels": effective_pol["notifyChannels"],
+                    "thresholds": effective_pol["thresholds"]
+                }
+                policy_channels = effective_pol["notifyChannels"]
                 is_web_enabled = bool(policy_channels.get("webUi", True))
                 is_tg_enabled = bool(policy_channels.get("telegram", True))
 
@@ -1721,12 +1729,21 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                         except Exception:
                                             pass
 
-                                    policy_dict = {
+                                    from backend.app.services.scope_policy_service import resolve_effective_policy
+                                    dev_pol = {
                                         "mode": pol_model.mode,
                                         "events_config": pol_model.events_config,
-                                        "notify_channels": pol_model.notify_channels
-                                    } if pol_model else None
-                                    policy_channels = (policy_dict.get("notify_channels") or policy_dict.get("notifyChannels") or {}) if policy_dict else {"webUi": True, "telegram": True}
+                                        "notify_channels": pol_model.notify_channels,
+                                        "thresholds": pol_model.thresholds
+                                    } if (pol_model and pol_model.mode != "Inherit") else None
+                                    effective_pol = resolve_effective_policy(device, dev_pol)
+                                    policy_dict = {
+                                        "mode": effective_pol["mode"],
+                                        "events_config": effective_pol["events"],
+                                        "notify_channels": effective_pol["notifyChannels"],
+                                        "thresholds": effective_pol["thresholds"]
+                                    }
+                                    policy_channels = effective_pol["notifyChannels"]
                                     is_web_enabled = bool(policy_channels.get("webUi", True))
                                     is_tg_enabled = bool(policy_channels.get("telegram", True))
 

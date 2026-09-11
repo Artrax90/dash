@@ -1819,29 +1819,23 @@ async def get_device(device_id: str, db: AsyncSession = Depends(get_db)):
             "spec": bl_model.spec
         }
 
-    # Fetch alert policy
+    # Fetch alert policy with cascading scope inheritance
     ap_res = await db.execute(select(AlertPolicyModel).where(AlertPolicyModel.device_id == device_id))
     ap_model = ap_res.scalar_one_or_none()
-    if ap_model:
-        data["alertPolicy"] = {
+    dev_pol = None
+    if ap_model and ap_model.mode != "Inherit":
+        dev_pol = {
             "deviceId": device_id,
             "mode": ap_model.mode,
             "events": ap_model.events_config,
             "thresholds": ap_model.thresholds,
             "notifyChannels": ap_model.notify_channels
         }
-    else:
-        data["alertPolicy"] = {
-            "deviceId": device_id,
-            "mode": "Full",
-            "events": {
-                "hardwareChanges": True, "powerStateFailed": True, "morningWakeFailed": True,
-                "eveningShutdownFailed": True, "rdpSessionTimeout": True, "agentDisconnect": True,
-                "highCpuUsage": True, "highRamUsage": True, "highDiskUsage": True
-            },
-            "thresholds": {"cpuPercent": 90, "ramPercent": 85, "diskPercent": 90, "rdpIdleMinutes": 30},
-            "notifyChannels": {"webUi": True, "telegram": True}
-        }
+    from backend.app.services.scope_policy_service import resolve_effective_policy
+    eff_alert_pol = resolve_effective_policy(device, dev_pol)
+    eff_alert_pol["deviceId"] = device_id
+    eff_alert_pol["hasCustomOverride"] = bool(dev_pol and dev_pol.get("mode") and dev_pol.get("mode") != "Inherit")
+    data["alertPolicy"] = eff_alert_pol
 
     # Fetch live reported processes across all aliases
     reported_procs = None
@@ -2220,6 +2214,41 @@ async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSe
         if dev.hostname:
             target_ids.add(dev.hostname)
 
+    from backend.app.services.scope_policy_service import resolve_effective_policy
+
+    if mode == "Inherit":
+        for tid in target_ids:
+            try:
+                await db.execute(
+                    delete(AlertPolicyModel).where(
+                        (AlertPolicyModel.device_id == tid) |
+                        (AlertPolicyModel.device_id == func.lower(tid)) |
+                        (AlertPolicyModel.device_id == func.upper(tid))
+                    )
+                )
+            except Exception:
+                pass
+        try:
+            await db.commit()
+        except Exception:
+            await db.rollback()
+
+        try:
+            cfgs = load_device_configs()
+            if "policies" in cfgs:
+                for tid in target_ids:
+                    cfgs["policies"].pop(tid, None)
+                    cfgs["policies"].pop(tid.lower(), None)
+                    cfgs["policies"].pop(tid.upper(), None)
+                save_device_configs(cfgs)
+        except Exception:
+            pass
+
+        eff = resolve_effective_policy(dev or {"id": device_id}, None)
+        eff["deviceId"] = device_id
+        eff["hasCustomOverride"] = False
+        return {"status": "saved", "deviceId": device_id, "policy": eff}
+
     for tid in target_ids:
         try:
             result = await db.execute(
@@ -2296,7 +2325,15 @@ async def save_alert_policy(device_id: str, payload: Dict[str, Any], db: AsyncSe
     except Exception:
         pass
 
-    return {"status": "saved", "deviceId": device_id}
+    eff = resolve_effective_policy(dev or {"id": device_id}, {
+        "mode": mode,
+        "events": events,
+        "thresholds": thresholds,
+        "notifyChannels": canonical_channels
+    })
+    eff["deviceId"] = device_id
+    eff["hasCustomOverride"] = True
+    return {"status": "saved", "deviceId": device_id, "policy": eff}
 
 @router.get("/{device_id}/alert-policy")
 async def get_alert_policy(device_id: str, db: AsyncSession = Depends(get_db)):
@@ -2315,6 +2352,7 @@ async def get_alert_policy(device_id: str, db: AsyncSession = Depends(get_db)):
         if dev.hostname:
             target_ids.extend([dev.hostname, dev.hostname.lower(), dev.hostname.upper()])
 
+    device_policy = None
     for tid in target_ids:
         result = await db.execute(
             select(AlertPolicyModel).where(
@@ -2324,11 +2362,11 @@ async def get_alert_policy(device_id: str, db: AsyncSession = Depends(get_db)):
             )
         )
         policy = result.scalar_one_or_none()
-        if policy:
+        if policy and policy.mode != "Inherit":
             channels = policy.notify_channels or {}
             w = channels.get("webUi") if channels.get("webUi") is not None else channels.get("web_ui", True)
             tg = channels.get("telegram") if channels.get("telegram") is not None else channels.get("tg", True)
-            return {
+            device_policy = {
                 "mode": policy.mode,
                 "events": policy.events_config or {},
                 "thresholds": policy.thresholds or {},
@@ -2339,51 +2377,33 @@ async def get_alert_policy(device_id: str, db: AsyncSession = Depends(get_db)):
                     "tg": bool(tg)
                 }
             }
+            break
     
-    # Fallback to DEVICE_CONFIGS_FILE
-    cfgs = load_device_configs()
-    policies_cfg = cfgs.get("policies", {})
-    for tid in target_ids:
-        if tid in policies_cfg:
-            entry = dict(policies_cfg[tid])
-            channels = entry.get("notifyChannels") or entry.get("notify_channels") or {}
-            w = channels.get("webUi") if channels.get("webUi") is not None else channels.get("web_ui", True)
-            tg = channels.get("telegram") if channels.get("telegram") is not None else channels.get("tg", True)
-            entry["notifyChannels"] = {
-                "webUi": bool(w),
-                "web_ui": bool(w),
-                "telegram": bool(tg),
-                "tg": bool(tg)
-            }
-            return entry
-        
-    return {
-        "mode": "Full",
-        "events": {
-            "hardwareChanges": True,
-            "usbStorage": False,
-            "powerStateFailed": True,
-            "morningWakeFailed": True,
-            "eveningShutdownFailed": True,
-            "rdpSessionTimeout": True,
-            "agentDisconnect": True,
-            "highCpuUsage": True,
-            "highRamUsage": True,
-            "highDiskUsage": True,
-        },
-        "thresholds": {
-            "cpuPercent": 90,
-            "ramPercent": 85,
-            "diskPercent": 90,
-            "rdpIdleMinutes": 30,
-        },
-        "notifyChannels": {
-            "webUi": True,
-            "web_ui": True,
-            "telegram": True,
-            "tg": True
-        }
-    }
+    if not device_policy:
+        # Fallback to DEVICE_CONFIGS_FILE
+        cfgs = load_device_configs()
+        policies_cfg = cfgs.get("policies", {})
+        for tid in target_ids:
+            if tid in policies_cfg:
+                entry = dict(policies_cfg[tid])
+                if entry.get("mode") != "Inherit":
+                    channels = entry.get("notifyChannels") or entry.get("notify_channels") or {}
+                    w = channels.get("webUi") if channels.get("webUi") is not None else channels.get("web_ui", True)
+                    tg = channels.get("telegram") if channels.get("telegram") is not None else channels.get("tg", True)
+                    entry["notifyChannels"] = {
+                        "webUi": bool(w),
+                        "web_ui": bool(w),
+                        "telegram": bool(tg),
+                        "tg": bool(tg)
+                    }
+                    device_policy = entry
+                    break
+
+    from backend.app.services.scope_policy_service import resolve_effective_policy
+    resolved = resolve_effective_policy(dev or {"id": device_id}, device_policy)
+    resolved["deviceId"] = device_id
+    resolved["hasCustomOverride"] = bool(device_policy and device_policy.get("mode") and device_policy.get("mode") != "Inherit")
+    return resolved
 
 @router.post("/{device_id}/wake")
 async def wake_device(device_id: str, request: Request, db: AsyncSession = Depends(get_db)):
