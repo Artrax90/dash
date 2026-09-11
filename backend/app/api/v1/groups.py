@@ -573,10 +573,14 @@ async def list_scope_alert_policies():
     return load_all_scope_policies()
 
 @router.get("/scope/alert-policy")
-async def get_single_scope_alert_policy(scope: str):
-    from backend.app.services.scope_policy_service import get_scope_policy
-    pol = get_scope_policy(scope)
-    return pol or {"scope": scope, "mode": "Inherit", "isInherited": True}
+async def get_single_scope_alert_policy(
+    scope: str,
+    building: Optional[str] = None,
+    floor: Optional[str] = None,
+    room: Optional[str] = None
+):
+    from backend.app.services.scope_policy_service import resolve_scope_effective_policy
+    return resolve_scope_effective_policy(scope, building=building, floor=floor, room=room)
 
 @router.post("/scope/alert-policy")
 async def save_single_scope_alert_policy(payload: Dict[str, Any]):

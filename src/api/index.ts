@@ -1197,9 +1197,16 @@ export const groupsApi = {
     } catch {}
     return {};
   },
-  getScopeAlertPolicy: async (scope: string): Promise<any> => {
+  getScopeAlertPolicy: async (
+    scope: string,
+    params?: { building?: string; floor?: string; room?: string }
+  ): Promise<any> => {
     try {
-      const res = await fetch(`${API_BASE}/groups/scope/alert-policy?scope=${encodeURIComponent(scope)}`, {
+      const q = new URLSearchParams({ scope });
+      if (params?.building) q.set('building', params.building);
+      if (params?.floor) q.set('floor', params.floor);
+      if (params?.room) q.set('room', params.room);
+      const res = await fetch(`${API_BASE}/groups/scope/alert-policy?${q.toString()}`, {
         headers: getAuthHeaders()
       });
       if (res.ok) return await res.json();

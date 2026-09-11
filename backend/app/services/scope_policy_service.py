@@ -92,15 +92,62 @@ def save_all_scope_policies(policies: Dict[str, Dict[str, Any]]):
     except Exception as e:
         print(f'[scope_policy_service] Error saving policies: {e}')
 
+def normalize_scope_lookup_keys(scope: str) -> List[str]:
+    if not scope:
+        return []
+    s = scope.strip()
+    keys = []
+    prefix = ""
+    clean = s
+    if ":" in s:
+        p, rest = s.split(":", 1)
+        if p.lower() in ["building", "floor", "room", "group"]:
+            prefix = p.lower()
+            clean = rest.strip()
+
+    slash_parts = [p.strip() for p in clean.split("/") if p.strip()]
+    spaced_slash = " / ".join(slash_parts)
+    tight_slash = "/".join(slash_parts)
+
+    variants = [clean]
+    if spaced_slash and spaced_slash != clean:
+        variants.append(spaced_slash)
+    if tight_slash and tight_slash != clean and tight_slash != spaced_slash:
+        variants.append(tight_slash)
+
+    for v in variants:
+        if not v:
+            continue
+        keys.append(v)
+        if prefix:
+            keys.append(f"{prefix}:{v}")
+        else:
+            keys.append(f"group:{v}")
+            keys.append(f"building:{v}")
+            keys.append(f"floor:{v}")
+            keys.append(f"room:{v}")
+
+    seen = set()
+    result = []
+    for k in keys:
+        lk = k.lower()
+        if lk not in seen:
+            seen.add(lk)
+            result.append(k)
+    return result
+
 def get_scope_policy(scope: str) -> Optional[Dict[str, Any]]:
-    key = canonicalize_scope_key(scope)
     policies = load_all_scope_policies()
-    if key in policies:
-        return policies[key]
-    l_key = key.lower()
-    for k, v in policies.items():
-        if k.lower() == l_key:
-            return v
+    candidates = normalize_scope_lookup_keys(scope)
+    # 1. Exact match
+    for c in candidates:
+        if c in policies:
+            return policies[c]
+    # 2. Case-insensitive match
+    lower_map = {k.lower(): v for k, v in policies.items()}
+    for c in candidates:
+        if c.lower() in lower_map:
+            return lower_map[c.lower()]
     return None
 
 def save_scope_policy(scope: str, policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -169,6 +216,103 @@ def propagate_group_policy(
 
     return saved_scopes
 
+def resolve_scope_effective_policy(
+    scope: str,
+    building: Optional[str] = None,
+    floor: Optional[str] = None,
+    room: Optional[str] = None
+) -> Dict[str, Any]:
+    clean_scope = scope.strip() if scope else ''
+    if clean_scope.startswith(('building:', 'floor:', 'room:', 'group:')):
+        clean_scope = clean_scope.split(':', 1)[1].strip()
+
+    if not building and not floor and not room and '/' in clean_scope:
+        parts = [p.strip() for p in clean_scope.split('/') if p.strip()]
+        if len(parts) >= 3:
+            building, floor, room = parts[0], parts[1], parts[2]
+        elif len(parts) == 2:
+            building, floor = parts[0], parts[1]
+
+    # 1. Direct custom policy for this scope
+    direct_pol = get_scope_policy(scope)
+    if direct_pol and direct_pol.get('mode') != 'Inherit':
+        return {
+            'scope': scope,
+            'mode': direct_pol.get('mode', 'Custom'),
+            'events': direct_pol.get('events', {}),
+            'thresholds': direct_pol.get('thresholds', {}),
+            'notifyChannels': direct_pol.get('notifyChannels', {'webUi': True, 'telegram': True}),
+            'hasCustomOverride': True,
+            'isInherited': False,
+            'source': 'direct',
+            'sourceName': scope
+        }
+
+    # 2. Check room -> floor inheritance
+    if room:
+        f_candidates = []
+        if building and floor:
+            f_candidates.extend([
+                f'floor:{building} / {floor}',
+                f'floor:{building}/{floor}',
+                f'{building} / {floor}',
+                f'{building}/{floor}'
+            ])
+        if floor:
+            f_candidates.extend([f'floor:{floor}', floor])
+        for fc in f_candidates:
+            f_pol = get_scope_policy(fc)
+            if f_pol and f_pol.get('mode') != 'Inherit':
+                src_name = f'{building} / {floor}' if building else floor
+                return {
+                    'scope': scope,
+                    'mode': f_pol.get('mode', 'Custom'),
+                    'events': f_pol.get('events', {}),
+                    'thresholds': f_pol.get('thresholds', {}),
+                    'notifyChannels': f_pol.get('notifyChannels', {'webUi': True, 'telegram': True}),
+                    'hasCustomOverride': False,
+                    'isInherited': True,
+                    'source': 'floor',
+                    'sourceName': src_name
+                }
+
+    # 3. Check floor / room -> building/group inheritance
+    target_bld = building or clean_scope
+    if target_bld:
+        b_candidates = [
+            f'building:{target_bld}',
+            f'group:{target_bld}',
+            target_bld
+        ]
+        for bc in b_candidates:
+            b_pol = get_scope_policy(bc)
+            if b_pol and b_pol.get('mode') != 'Inherit':
+                return {
+                    'scope': scope,
+                    'mode': b_pol.get('mode', 'Custom'),
+                    'events': b_pol.get('events', {}),
+                    'thresholds': b_pol.get('thresholds', {}),
+                    'notifyChannels': b_pol.get('notifyChannels', {'webUi': True, 'telegram': True}),
+                    'hasCustomOverride': False,
+                    'isInherited': True,
+                    'source': 'building',
+                    'sourceName': target_bld
+                }
+
+    # 4. Global default
+    def_pol = get_default_policy()
+    return {
+        'scope': scope,
+        'mode': def_pol['mode'],
+        'events': def_pol['events'],
+        'thresholds': def_pol['thresholds'],
+        'notifyChannels': def_pol['notifyChannels'],
+        'hasCustomOverride': False,
+        'isInherited': True,
+        'source': 'global',
+        'sourceName': 'По умолчанию'
+    }
+
 def resolve_effective_policy(device_obj: Any, device_policy: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     if isinstance(device_obj, dict):
         d_id = str(device_obj.get('id') or device_obj.get('deviceId') or '')
@@ -184,6 +328,17 @@ def resolve_effective_policy(device_obj: Any, device_policy: Optional[Dict[str, 
         d_bld = str(getattr(device_obj, 'building', '') or '')
         d_flr = str(getattr(device_obj, 'floor', '') or '')
         d_rm = str(getattr(device_obj, 'room', '') or '')
+
+    # Auto-extract hierarchical components if group string has slashes
+    if d_grp and '/' in d_grp:
+        parts = [p.strip() for p in d_grp.split('/') if p.strip()]
+        if len(parts) >= 3:
+            if not d_bld: d_bld = parts[0]
+            if not d_flr: d_flr = parts[1]
+            if not d_rm: d_rm = parts[2]
+        elif len(parts) == 2:
+            if not d_bld: d_bld = parts[0]
+            if not d_flr: d_flr = parts[1]
 
     if device_policy:
         d_mode = device_policy.get('mode')
@@ -203,11 +358,19 @@ def resolve_effective_policy(device_obj: Any, device_policy: Optional[Dict[str, 
 
     room_candidates = []
     if d_bld and d_flr and d_rm:
-        room_candidates.append(f'room:{d_bld} / {d_flr} / {d_rm}')
+        room_candidates.extend([
+            f'room:{d_bld} / {d_flr} / {d_rm}',
+            f'room:{d_bld}/{d_flr}/{d_rm}',
+            f'{d_bld} / {d_flr} / {d_rm}',
+            f'{d_bld}/{d_flr}/{d_rm}'
+        ])
     if d_grp and d_flr and d_rm:
-        room_candidates.append(f'room:{d_grp} / {d_flr} / {d_rm}')
+        room_candidates.extend([
+            f'room:{d_grp} / {d_flr} / {d_rm}',
+            f'{d_grp} / {d_flr} / {d_rm}'
+        ])
     if d_rm:
-        room_candidates.append(f'room:{d_rm}')
+        room_candidates.extend([f'room:{d_rm}', d_rm])
 
     for rc in room_candidates:
         pol = get_scope_policy(rc)
@@ -226,11 +389,19 @@ def resolve_effective_policy(device_obj: Any, device_policy: Optional[Dict[str, 
 
     floor_candidates = []
     if d_bld and d_flr:
-        floor_candidates.append(f'floor:{d_bld} / {d_flr}')
+        floor_candidates.extend([
+            f'floor:{d_bld} / {d_flr}',
+            f'floor:{d_bld}/{d_flr}',
+            f'{d_bld} / {d_flr}',
+            f'{d_bld}/{d_flr}'
+        ])
     if d_grp and d_flr:
-        floor_candidates.append(f'floor:{d_grp} / {d_flr}')
+        floor_candidates.extend([
+            f'floor:{d_grp} / {d_flr}',
+            f'{d_grp} / {d_flr}'
+        ])
     if d_flr:
-        floor_candidates.append(f'floor:{d_flr}')
+        floor_candidates.extend([f'floor:{d_flr}', d_flr])
 
     for fc in floor_candidates:
         pol = get_scope_policy(fc)
@@ -247,14 +418,17 @@ def resolve_effective_policy(device_obj: Any, device_policy: Optional[Dict[str, 
             }
 
     group_candidates = []
+    if d_bld:
+        group_candidates.extend([f'building:{d_bld}', f'group:{d_bld}', d_bld])
     if d_grp:
         for g in d_grp.split(','):
             g_clean = g.strip()
             if g_clean:
-                group_candidates.append(f'group:{g_clean}')
-    if d_bld:
-        group_candidates.append(f'building:{d_bld}')
-        group_candidates.append(f'group:{d_bld}')
+                group_candidates.extend([f'group:{g_clean}', g_clean])
+                if '/' in g_clean:
+                    top_bld = g_clean.split('/')[0].strip()
+                    if top_bld:
+                        group_candidates.extend([f'building:{top_bld}', f'group:{top_bld}', top_bld])
 
     for gc in group_candidates:
         pol = get_scope_policy(gc)

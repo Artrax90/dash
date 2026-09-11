@@ -15411,6 +15411,7 @@ function ScopeAlertPolicyModal({
 }: ScopeAlertPolicyModalProps) {
   const [loading, setLoading] = useState(true);
   const [hasCustomPolicy, setHasCustomPolicy] = useState(false);
+  const [inheritedSource, setInheritedSource] = useState<string>('');
   const [mode, setMode] = useState<'Full' | 'Critical Only' | 'Hardware Only' | 'Custom' | 'Muted'>('Full');
 
   // Granular events
@@ -15450,30 +15451,37 @@ function ScopeAlertPolicyModal({
 
   useEffect(() => {
     setLoading(true);
-    groupsApi.getScopeAlertPolicy(target.scope).then(pol => {
-      if (pol && pol.mode && pol.mode !== 'Inherit') {
-        setHasCustomPolicy(true);
-        setMode(pol.mode);
+    groupsApi.getScopeAlertPolicy(target.scope, {
+      building: target.bldName,
+      floor: target.flrName,
+      room: target.roomName
+    }).then(pol => {
+      if (pol) {
+        setHasCustomPolicy(Boolean(pol.hasCustomOverride));
+        setInheritedSource(pol.sourceName || '');
+        if (pol.mode) {
+          setMode(pol.mode);
+        }
         const ev = pol.events || {};
-        if (ev.hardwareChanges !== undefined) setHwCritical(ev.hardwareChanges);
-        if (ev.hwDisks !== undefined) setHwDisks(ev.hwDisks);
-        if (ev.usbStorage !== undefined) setHwUsb(ev.usbStorage);
-        if (ev.remoteDisplayAdapter !== undefined) setHwVirtualGpu(ev.remoteDisplayAdapter);
-        if (ev.hwNetwork !== undefined) setHwNetwork(ev.hwNetwork);
+        if (ev.hardwareChanges !== undefined) setHwCritical(Boolean(ev.hardwareChanges));
+        if (ev.hwDisks !== undefined) setHwDisks(Boolean(ev.hwDisks));
+        if (ev.usbStorage !== undefined) setHwUsb(Boolean(ev.usbStorage));
+        if (ev.remoteDisplayAdapter !== undefined) setHwVirtualGpu(Boolean(ev.remoteDisplayAdapter));
+        if (ev.hwNetwork !== undefined) setHwNetwork(Boolean(ev.hwNetwork));
 
-        if (ev.morningWakeFailed !== undefined) setPowerWake(ev.morningWakeFailed);
-        if (ev.eveningShutdownFailed !== undefined) setPowerShutdown(ev.eveningShutdownFailed);
-        if (ev.powerStateFailed !== undefined) setPowerUnexpected(ev.powerStateFailed);
+        if (ev.morningWakeFailed !== undefined) setPowerWake(Boolean(ev.morningWakeFailed));
+        if (ev.eveningShutdownFailed !== undefined) setPowerShutdown(Boolean(ev.eveningShutdownFailed));
+        if (ev.powerStateFailed !== undefined) setPowerUnexpected(Boolean(ev.powerStateFailed));
 
-        if (ev.agentDisconnect !== undefined) setAgentDisconnect(ev.agentDisconnect);
-        if (ev.agentOnline !== undefined) setAgentOnline(ev.agentOnline);
+        if (ev.agentDisconnect !== undefined) setAgentDisconnect(Boolean(ev.agentDisconnect));
+        if (ev.agentOnline !== undefined) setAgentOnline(Boolean(ev.agentOnline));
 
-        if (ev.rdpSessionTimeout !== undefined) setRdpIdle(ev.rdpSessionTimeout);
-        if (ev.rdpLogon !== undefined) setRdpLogon(ev.rdpLogon);
+        if (ev.rdpSessionTimeout !== undefined) setRdpIdle(Boolean(ev.rdpSessionTimeout));
+        if (ev.rdpLogon !== undefined) setRdpLogon(Boolean(ev.rdpLogon));
 
-        if (ev.highCpuUsage !== undefined) setResourceCpu(ev.highCpuUsage);
-        if (ev.highRamUsage !== undefined) setResourceRam(ev.highRamUsage);
-        if (ev.highDiskUsage !== undefined) setResourceDisk(ev.highDiskUsage);
+        if (ev.highCpuUsage !== undefined) setResourceCpu(Boolean(ev.highCpuUsage));
+        if (ev.highRamUsage !== undefined) setResourceRam(Boolean(ev.highRamUsage));
+        if (ev.highDiskUsage !== undefined) setResourceDisk(Boolean(ev.highDiskUsage));
 
         if (pol.thresholds) {
           if (pol.thresholds.cpuPercent !== undefined) setCpuThreshold(pol.thresholds.cpuPercent);
@@ -15492,7 +15500,7 @@ function ScopeAlertPolicyModal({
       }
       setLoading(false);
     }).catch(() => setLoading(false));
-  }, [target.scope]);
+  }, [target.scope, target.bldName, target.flrName, target.roomName]);
 
   const handleResetToInherit = async () => {
     setIsSaving(true);
@@ -15649,12 +15657,12 @@ function ScopeAlertPolicyModal({
                   <strong style={{ fontSize: '12px', display: 'block', color: 'var(--text)' }}>
                     {hasCustomPolicy
                       ? 'Настроена индивидуальная политика для этого уровня'
-                      : 'В данный момент действует наследование вышестоящей политики'}
+                      : `В данный момент действует наследование: ${inheritedSource || 'Вышестоящая политика'}`}
                   </strong>
                   <span style={{ fontSize: '11px', color: 'var(--muted)' }}>
                     {hasCustomPolicy
                       ? 'Все дочерние объекты и ПК наследуют эти правила (если не переопределены персонально)'
-                      : 'Сохранение настроек создаст переопределение специально для этой группы/локации'}
+                      : `Параметры унаследованы от «${inheritedSource || 'вышестоящего уровня'}». Вы можете изменить их и нажать Сохранить для создания персонального переопределения.`}
                   </span>
                 </div>
               </div>

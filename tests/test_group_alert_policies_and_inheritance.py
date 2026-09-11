@@ -230,7 +230,8 @@ def test_group_and_device_alert_policy_api_endpoints():
     assert del_resp.status_code == 200
     floor_after_del = client.get('/api/v1/groups/scope/alert-policy?scope=floor:Корпус А / 3 этаж')
     assert floor_after_del.status_code == 200
-    assert floor_after_del.json().get('mode') == 'Inherit'
+    assert floor_after_del.json().get('isInherited') is True
+    assert floor_after_del.json().get('hasCustomOverride') is False
 
 def test_device_alert_policy_inheritance_and_reset_endpoints():
     from fastapi.testclient import TestClient
@@ -282,6 +283,63 @@ def test_device_alert_policy_inheritance_and_reset_endpoints():
     pol_after_reset = get_after_reset.json()
     assert pol_after_reset['hasCustomOverride'] is False
     assert pol_after_reset['isInherited'] is True
+
+def test_building_unprefixed_policy_and_floor_scope_effective_resolution():
+    from backend.app.services.scope_policy_service import (
+        save_scope_policy,
+        resolve_effective_policy,
+        resolve_scope_effective_policy
+    )
+    from fastapi.testclient import TestClient
+    from backend.app.main import app
+
+    # 1. User saves policy for building without "building:" prefix (exactly as passed from UI tile)
+    saved = save_scope_policy('ЦК В4', {
+        'mode': 'Custom',
+        'events': {'hardwareChanges': True, 'hwDisks': True, 'hwNetwork': False},
+        'thresholds': {'cpuPercent': 90, 'ramPercent': 85},
+        'notifyChannels': {'webUi': True, 'telegram': True}
+    })
+    assert saved['mode'] == 'Custom'
+    assert saved['events']['hwNetwork'] is False
+
+    # 2. Device with group string "ЦК В4 / 5 этаж / Кабинет 501" inherits from "ЦК В4"
+    dev1 = {'id': 'DEV-001', 'group': 'ЦК В4 / 5 этаж / Кабинет 501'}
+    eff1 = resolve_effective_policy(dev1)
+    assert eff1['mode'] == 'Custom'
+    assert eff1['events']['hwNetwork'] is False
+    assert eff1['source'] == 'group'
+    assert 'ЦК В4' in eff1['sourceName']
+    assert eff1['isInherited'] is True
+
+    # 3. Device with separate fields building="ЦК В4", floor="5 этаж", room="501" inherits from "ЦК В4"
+    dev2 = {'id': 'DEV-002', 'building': 'ЦК В4', 'floor': '5 этаж', 'room': '501'}
+    eff2 = resolve_effective_policy(dev2)
+    assert eff2['mode'] == 'Custom'
+    assert eff2['events']['hwNetwork'] is False
+    assert eff2['source'] == 'group'
+    assert 'ЦК В4' in eff2['sourceName']
+
+    # 4. Scope resolution for floor "ЦК В4/5 этаж" inherits from "ЦК В4"
+    floor_scope = resolve_scope_effective_policy('ЦК В4/5 этаж', building='ЦК В4', floor='5 этаж')
+    assert floor_scope['mode'] == 'Custom'
+    assert floor_scope['events']['hwNetwork'] is False
+    assert floor_scope['hasCustomOverride'] is False
+    assert floor_scope['isInherited'] is True
+    assert floor_scope['source'] == 'building'
+    assert floor_scope['sourceName'] == 'ЦК В4'
+
+    # 5. Test API endpoint GET /api/v1/groups/scope/alert-policy with building & floor query params
+    client = TestClient(app)
+    api_res = client.get('/api/v1/groups/scope/alert-policy?scope=ЦК%20В4/5%20этаж&building=ЦК%20В4&floor=5%20этаж')
+    assert api_res.status_code == 200
+    data = api_res.json()
+    assert data['mode'] == 'Custom'
+    assert data['events']['hwNetwork'] is False
+    assert data['hasCustomOverride'] is False
+    assert data['isInherited'] is True
+    assert data['sourceName'] == 'ЦК В4'
+
 
 
 
