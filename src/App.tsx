@@ -711,7 +711,26 @@ export const canManageFleetGroups = (role?: string) => {
 function App() {
   const { lang, setLang, t } = useLanguage();
   const [route, setRoute] = useState<RouteState>(() => parseUrlHash());
-  const [dark, setDark] = useState(false);
+  const [dark, setDark] = useState<boolean>(() => {
+    try {
+      const savedTheme = localStorage.getItem('wm_theme');
+      if (savedTheme === 'dark') return true;
+      if (savedTheme === 'light') return false;
+      return false;
+    } catch {
+      return false;
+    }
+  });
+
+  const toggleDark = useCallback(() => {
+    setDark(prev => {
+      const next = !prev;
+      try {
+        localStorage.setItem('wm_theme', next ? 'dark' : 'light');
+      } catch {}
+      return next;
+    });
+  }, []);
   const [mobileNav, setMobileNav] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' | 'warning' | 'info' } | null>(null);
@@ -898,6 +917,32 @@ function App() {
     };
   }, []);
 
+  // Synchronize dark mode class on documentElement and body & keep localStorage in sync
+  useEffect(() => {
+    try {
+      localStorage.setItem('wm_theme', dark ? 'dark' : 'light');
+      if (dark) {
+        document.documentElement.classList.add('dark');
+        document.body.classList.add('dark');
+        document.documentElement.style.colorScheme = 'dark';
+      } else {
+        document.documentElement.classList.remove('dark');
+        document.body.classList.remove('dark');
+        document.documentElement.style.colorScheme = 'light';
+      }
+    } catch {}
+  }, [dark]);
+
+  // Synchronize theme across browser tabs in real-time
+  useEffect(() => {
+    const handleStorage = (e: StorageEvent) => {
+      if (e.key === 'wm_theme' && (e.newValue === 'dark' || e.newValue === 'light')) {
+        setDark(e.newValue === 'dark');
+      }
+    };
+    window.addEventListener('storage', handleStorage);
+    return () => window.removeEventListener('storage', handleStorage);
+  }, []);
 
   // Update live counters periodically
   useEffect(() => {
@@ -1120,7 +1165,7 @@ function App() {
             <button className="lang-badge" onClick={() => setLang(lang === 'ru' ? 'en' : 'ru')} title="Switch language">
               <Globe size={14} /> {lang.toUpperCase()}
             </button>
-            <button className="icon-button" onClick={() => setDark(!dark)} aria-label="Toggle theme" title="Переключить тему">
+            <button className="icon-button" onClick={toggleDark} aria-label="Toggle theme" title="Переключить тему">
               {dark ? <Sun size={17} /> : <Moon size={17} />}
             </button>
             <button className="icon-button notification" onClick={() => navigateTo({ page: 'Alerts' })} aria-label="Notifications" title="Оповещения">
@@ -1161,6 +1206,8 @@ function App() {
                 workspaceName={workspaceName}
                 onSaveWorkspaceName={handleUpdateWorkspaceName}
                 notify={notify}
+                dark={dark}
+                onToggleTheme={toggleDark}
               />
             ) : null)}
           </ErrorBoundary>
@@ -1238,6 +1285,22 @@ function App() {
                 </span>
               </div>
               <span className="pulse-dot" title="Сессия онлайн" />
+            </div>
+
+            <div className="setting-row" style={{ padding: '10px 0' }}>
+              <div>
+                <strong>Тема оформления</strong>
+                <span>{dark ? 'Тёмная тема (активна)' : 'Светлая тема (активна)'}</span>
+              </div>
+              <button
+                type="button"
+                className="button secondary"
+                onClick={toggleDark}
+                style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', fontSize: '12px', padding: '6px 12px' }}
+              >
+                {dark ? <Sun size={14} /> : <Moon size={14} />}
+                {dark ? 'Светлая тема' : 'Тёмная тема'}
+              </button>
             </div>
 
             {/* Change Password Block */}
@@ -18438,11 +18501,15 @@ function Groups({
 function SettingsPage({
   workspaceName,
   onSaveWorkspaceName,
-  notify
+  notify,
+  dark,
+  onToggleTheme
 }: {
   workspaceName: string;
   onSaveWorkspaceName: (name: string) => void;
   notify: (message: string) => void;
+  dark?: boolean;
+  onToggleTheme?: () => void;
 }) {
   const { lang, setLang, t } = useLanguage();
   const [activeTab, setActiveTab] = useState<'general' | 'storage'>('general');
@@ -18651,6 +18718,18 @@ function SettingsPage({
                   <option value="ru">Русский (RU)</option>
                   <option value="en">English (EN)</option>
                 </select>
+              </div>
+              <div className="setting-row">
+                <div><strong>Тема оформления</strong><span>Светлая или тёмная тема интерфейса рабочей среды</span></div>
+                <button
+                  type="button"
+                  className="button secondary"
+                  onClick={onToggleTheme}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '8px', padding: '6px 14px', fontSize: '13px' }}
+                >
+                  {dark ? <Sun size={15} /> : <Moon size={15} />}
+                  {dark ? 'Светлая тема' : 'Тёмная тема'}
+                </button>
               </div>
               <div className="setting-row">
                 <div><strong>Часовой пояс по умолчанию</strong><span>Используется для расписаний и меток времени</span></div>
