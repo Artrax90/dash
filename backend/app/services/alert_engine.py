@@ -450,7 +450,10 @@ class AlertEngine:
                     (AlertPolicyModel.device_id == (device.hostname.upper() if device.hostname else ""))
                 )
             )
-            pol_model = pol_res.scalar_one_or_none()
+            try:
+                pol_model = pol_res.scalar_one_or_none()
+            except Exception:
+                pol_model = pol_res.scalars().first()
             if not pol_model:
                 try:
                     from backend.app.api.v1.devices import load_device_configs
@@ -555,10 +558,18 @@ class AlertEngine:
                 if a.get("deviceId") == device.id and a.get("type") in ["OFFLINE", "AGENT_DISCONNECTED"] and a.get("state") == "Open":
                     a["state"] = "Resolved"
                     
+            from backend.app.models.device import PowerStatus
+            is_explicit = (
+                any(k in (reason or "").upper() for k in ["ВКЛЮЧЕН", "ВЫШЕЛ НА СВЯЗЬ", "STARTUP", "BOOT", "WAKE", "INVENTORY"])
+                or getattr(device, "power_status", None) in [PowerStatus.BOOTING, PowerStatus.OFF]
+            )
+
             # 2. Anti-flapping: DO NOT spam Telegram if device was already online
             # or was offline for less than 15 seconds (micro-glitch / service restart)
-            if prev_state == "ONLINE" or (last_off > 0 and offline_duration < 15):
-                return
+            # UNLESS it is an explicit startup/boot event from a newly connected agent
+            if not is_explicit:
+                if prev_state == "ONLINE" or (last_off > 0 and offline_duration < 15):
+                    return
                 
             # Rate-limit Telegram dispatch: at most once per 30s
             if now_ts - tracker.get("last_online_alert_ts", 0) < 30:
@@ -574,7 +585,10 @@ class AlertEngine:
                     (AlertPolicyModel.device_id == (device.hostname.upper() if device.hostname else ""))
                 )
             )
-            pol_model = pol_res.scalar_one_or_none()
+            try:
+                pol_model = pol_res.scalar_one_or_none()
+            except Exception:
+                pol_model = pol_res.scalars().first()
             if not pol_model:
                 try:
                     from backend.app.api.v1.devices import load_device_configs

@@ -139,12 +139,16 @@ class SchedulerService:
         if act_upper == "WAKE":
             dev_ids_booting = []
             for dev in target_devs:
+                dev_id = getattr(dev, "id", None)
+                if dev_id:
+                    dev_key = str(dev_id).upper()
+                    self._consecutive_ping_failures[dev_key] = 0
+                    self.set_power_grace(dev_id, 120.0)
                 mac = getattr(dev, "mac_address", None)
                 bip = getattr(dev, "broadcast_ip", None)
                 ip = getattr(dev, "ip_address", None)
                 if mac:
                     await wol_service.send_magic_packet(mac, bip, ip_address=ip)
-                dev_id = getattr(dev, "id", None)
                 if dev_id and str(getattr(dev, "power_status", "")).upper() in ["OFF", "POWERSTATUS.OFF"]:
                     from backend.app.models.device import PowerStatus
                     setattr(dev, "power_status", PowerStatus.BOOTING)
@@ -165,6 +169,10 @@ class SchedulerService:
         elif act_upper in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
             for dev in target_devs:
                 dev_id = getattr(dev, "id", None)
+                if dev_id:
+                    dev_key = str(dev_id).upper()
+                    self._consecutive_ping_failures[dev_key] = 0
+                    self.set_power_grace(dev_id, 90.0)
                 hostname = getattr(dev, "hostname", None)
                 ip = getattr(dev, "ip_address", None)
                 mac = getattr(dev, "mac_address", None)
@@ -184,6 +192,10 @@ class SchedulerService:
         elif act_upper == "REBOOT":
             for dev in target_devs:
                 dev_id = getattr(dev, "id", None)
+                if dev_id:
+                    dev_key = str(dev_id).upper()
+                    self._consecutive_ping_failures[dev_key] = 0
+                    self.set_power_grace(dev_id, 90.0)
                 hostname = getattr(dev, "hostname", None)
                 ip = getattr(dev, "ip_address", None)
                 mac = getattr(dev, "mac_address", None)
@@ -383,7 +395,9 @@ class SchedulerService:
                     if agent_alive:
                         # Agent is actively sending Heartbeat -> Hardware is 100% ON
                         self._consecutive_ping_failures[dev_key] = 0
-                        if dev.power_status != PowerStatus.ON:
+                        # DO NOT resurrect an agent-managed device from OFF/SHUTTING_DOWN based on stale last_seen;
+                        # only live incoming requests from the physical agent can turn it back ON.
+                        if dev.power_status != PowerStatus.ON and not (not is_agentless and dev.power_status in [PowerStatus.OFF, PowerStatus.SHUTTING_DOWN]):
                             dev.power_status = PowerStatus.ON
                             dev_ch["power_status"] = PowerStatus.ON
                             online_reason = f"Компьютер {dev.name or dev.hostname or dev.id} включен (агент на связи)"

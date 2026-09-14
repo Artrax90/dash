@@ -1590,6 +1590,7 @@ function Invoke-Inventory() {
         `$json = `$invPayload | ConvertTo-Json -Depth 5 -Compress
         `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
         `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/inventory")
+        `$req.Proxy = `$null
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
         `$req.Timeout = 8000

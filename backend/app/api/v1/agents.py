@@ -602,7 +602,7 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
             (Device.hostname == device_id) | (Device.hostname == payload.get("hostname", ""))
         )
     )
-    dev = dev_res.scalar_one_or_none()
+    dev = dev_res.scalars().first()
     
     # Foreign Key Safety: If device does not exist in DB yet, create it immediately
     if not dev:
@@ -658,7 +658,7 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
             (HardwareSpecModel.device_id == real_device_id.upper())
         )
     )
-    spec_model = result.scalar_one_or_none()
+    spec_model = result.scalars().first()
     prev_spec = copy.deepcopy(spec_model.raw_spec) if (spec_model and spec_model.raw_spec and isinstance(spec_model.raw_spec, dict)) else None
 
     # If no previous live spec, fallback to baseline spec if exists
@@ -669,7 +669,7 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                 (HardwareBaselineModel.device_id == device_id)
             )
         )
-        bl_model = bl_res.scalar_one_or_none()
+        bl_model = bl_res.scalars().first()
         if bl_model and bl_model.spec and isinstance(bl_model.spec, dict):
             prev_spec = copy.deepcopy(bl_model.spec)
 
@@ -2102,14 +2102,20 @@ async def report_agent_power_event(payload: Dict[str, Any], db: AsyncSession = D
             )
         )
     )
-    device = result.scalar_one_or_none()
+    device = result.scalars().first()
     if device:
+        from backend.app.services.scheduler_service import scheduler_service
+        dev_key = str(device.id).upper()
         if action in ["BOOT", "STARTUP", "WAKE", "ON"]:
             device.power_status = PowerStatus.ON
             device.agent_status = AgentStatus.CONNECTED
+            scheduler_service._consecutive_ping_failures[dev_key] = 0
+            scheduler_service.set_power_grace(device.id, 60.0)
         elif action in ["SHUTDOWN", "POWEROFF", "OFF"]:
             device.power_status = PowerStatus.OFF
             device.agent_status = AgentStatus.DISCONNECTED
+            scheduler_service._consecutive_ping_failures[dev_key] = 0
+            scheduler_service.set_power_grace(device.id, 90.0)
 
         from backend.app.api.v1.devices import log_device_power_event, format_device_summary, record_telemetry_snapshot
         log_device_power_event(
