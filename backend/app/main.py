@@ -324,6 +324,23 @@ if os.path.isdir(dist_dir) and os.path.exists(os.path.join(dist_dir, "index.html
         fav = os.path.join(dist_dir, "favicon.ico")
         if os.path.exists(fav):
             return FileResponse(fav)
+        public_fav = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "public", "favicon.ico"))
+        if os.path.exists(public_fav):
+            return FileResponse(public_fav)
+        return Response(status_code=204)
+
+    @app.get("/favicon.png")
+    @app.get("/favicon-32x32.png")
+    @app.get("/favicon-16x16.png")
+    @app.get("/apple-touch-icon.png")
+    async def serve_favicon_images(request: Request):
+        fname = os.path.basename(request.url.path)
+        fav = os.path.join(dist_dir, fname)
+        if os.path.exists(fav):
+            return FileResponse(fav, media_type="image/png")
+        public_fav = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "public", fname))
+        if os.path.exists(public_fav):
+            return FileResponse(public_fav, media_type="image/png")
         return Response(status_code=204)
 else:
     @app.get("/")
