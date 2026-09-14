@@ -25,7 +25,7 @@ interface FaqArticle {
 export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('all');
-  const [expandedArticleId, setExpandedArticleId] = useState<string | null>('quickstart_ps');
+  const [expandedArticleId, setExpandedArticleId] = useState<string | null>('engineer_master_guide');
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
 
   const copyToClipboard = (text: string, key: string) => {
@@ -38,6 +38,7 @@ export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose }) => {
 
   const categories = [
     { id: 'all', label: 'Все темы', icon: CircleHelp },
+    { id: 'engineer_guide', label: 'Инструкция инженера (Раскатка)', icon: Wrench },
     { id: 'quickstart', label: 'Быстрый старт и Агенты', icon: Laptop },
     { id: 'tokens', label: 'Токены безопасности', icon: Key },
     { id: 'power', label: 'Питание и Wake-on-LAN', icon: Power },
@@ -54,8 +55,272 @@ export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose }) => {
 
   const articles: FaqArticle[] = [
     // -------------------------------------------------------------
-    // БЫСТРЫЙ СТАРТ И АГЕНТЫ
+    // ПОШАГОВАЯ ИНСТРУКЦИЯ ДЛЯ ИНЖЕНЕРА (РАСКАТКА ПО АУДИТОРИЯМ)
     // -------------------------------------------------------------
+    {
+      id: 'engineer_master_guide',
+      category: 'engineer_guide',
+      title: 'Пошаговая шпаргалка инженера: Как раскатать агенты в кабинете (Инструкция на пальцах)',
+      summary: 'Простой пошаговый алгоритм от входа в аудиторию до появления всех ПК на сервере. Время на 1 компьютер: 20 секунд.',
+      badge: 'Главная инструкция инженера',
+      badgeColor: 'green',
+      content: (
+        <div>
+          <p>
+            Эта инструкция написана максимально просто и понятно. Ваша задача как инженера — прийти в аудиторию с флешкой,
+            подключить компьютеры к серверу управления и убедиться, что они появились в панели.
+          </p>
+          <div className="faq-grid-badges">
+            <div className="faq-mini-card">
+              <strong>⏱ 20 секунд на 1 ПК</strong>
+              <span>Вставил флешку → нажал правой кнопкой → запустить → готово</span>
+            </div>
+            <div className="faq-mini-card">
+              <strong>📦 Всё включено в 1 файл</strong>
+              <span>IP сервера и ключ уже зашиты внутри — ничего писать не надо</span>
+            </div>
+            <div className="faq-mini-card">
+              <strong>🛡️ Полная безопасность</strong>
+              <span>Служба сразу прописывается в автозапуск и прячется в фон</span>
+            </div>
+          </div>
+
+          <h4 style={{ marginTop: '16px', marginBottom: '8px', color: 'var(--text)' }}>Порядок действий у каждого компьютера:</h4>
+          <ol className="faq-steps-list">
+            <li>
+              <strong>Включите компьютер и войдите в Windows:</strong>
+              <p>Дождитесь полной загрузки рабочего стола. Войдите под учетной записью с правами администратора (локального или доменного).</p>
+            </li>
+            <li>
+              <strong>Вставьте вашу рабочую флешку:</strong>
+              <p>Откройте «Этот компьютер» и зайдите на флешку. Там должен лежать заранее подготовленный файл <code>Install-WorkstationAgent.bat</code>.</p>
+            </li>
+            <li>
+              <strong style={{ color: 'var(--amber, #f59e0b)' }}>ВНИМАНИЕ! САМЫЙ ВАЖНЫЙ ШАГ (Главная ошибка новичков):</strong>
+              <p>
+                <strong>НЕ кликайте два раза левой кнопкой мыши!</strong> Обычный двойной клик запустит установку без прав администратора, и Windows запретит создавать службу.
+              </p>
+              <div className="faq-callout alert" style={{ margin: '8px 0' }}>
+                <AlertTriangle size={18} />
+                <div>
+                  <strong>Как запускать правильно:</strong>
+                  <p>
+                    Нажмите по файлу <code>Install-WorkstationAgent.bat</code> <strong>ПРАВОЙ кнопкой мыши</strong> и выберите пункт меню: <br />
+                    👉 <strong>«Запуск от имени администратора»</strong> (рядом с ним нарисован сине-желтый щит 🛡️).
+                  </p>
+                </div>
+              </div>
+            </li>
+            <li>
+              <strong>Подтвердите запуск:</strong>
+              <p>Если Windows покажет синее окно UAC с вопросом <em>«Разрешить этому приложению вносить изменения на вашем устройстве?»</em> — смело нажимайте кнопку <strong>«Да»</strong>.</p>
+            </li>
+            <li>
+              <strong>Подождите ровно 5 секунд:</strong>
+              <p>
+                Откроется черное окно командной строки. В нем пробегут строчки:
+                <br /><code>[1/4] Проверка прав администратора... ОК</code>
+                <br /><code>[2/4] Регистрация службы DashAgent... ОК</code>
+                <br /><code>[3/4] Открытие порта 48123 UDP в Брандмауэре... ОК</code>
+                <br /><code>[4/4] Сбор характеристик железа и отправка на сервер... ОК</code>
+                <br /><strong>После этого черное окно САМО закроется. Ничего нажимать и писать не нужно!</strong>
+              </p>
+            </li>
+            <li>
+              <strong>Вытащите флешку и переходите к следующему компьютеру:</strong>
+              <p>Всё! Компьютер уже подключен, служба работает в фоне и каждые 30 секунд сообщает серверу, что он в сети.</p>
+            </li>
+          </ol>
+
+          <div className="faq-callout tip">
+            <CheckCircle2 size={18} />
+            <div>
+              <strong>Что делать, если забыли флешку?</strong>
+              <p>
+                Нажмите клавиши <code>Win + X</code> на клавиатуре → выберите <strong>«Терминал (Администратор)»</strong> или <strong>«PowerShell (администратор)»</strong> → вставьте команду из раздела «Быстрый старт» и нажмите Enter.
+              </p>
+            </div>
+          </div>
+        </div>
+      )
+    },
+    {
+      id: 'engineer_flashdrive_prep',
+      category: 'engineer_guide',
+      title: 'Подготовка флешки перед выходом в аудитории (1 минута на подготовку)',
+      summary: 'Где взять правильный файл установщика и как скинуть его на флешку перед походом по этажам.',
+      badge: 'Подготовка к выезду',
+      badgeColor: 'blue',
+      content: (
+        <div>
+          <p>Перед тем как идти по кабинетам, подготовьте флешку на своем рабочем компьютере или ноутбуке:</p>
+          <ol className="faq-steps-list">
+            <li>
+              <strong>Возьмите любую флешку:</strong>
+              <p>Подойдет совершенно любая флешка любого размера (хоть на 1 ГБ, хоть на 64 ГБ), файл установщика весит всего несколько килобайт.</p>
+            </li>
+            <li>
+              <strong>Откройте панель управления в браузере:</strong>
+              <p>Зайдите в панель Workstation Manager под своей учетной записью.</p>
+            </li>
+            <li>
+              <strong>Скачайте файл установщика:</strong>
+              <p>В левом меню перейдите в раздел <strong>«Агенты»</strong>. В верхней части страницы нажмите большую синюю кнопку <strong>«Скачать пакетный .bat установщик»</strong>.</p>
+            </li>
+            <li>
+              <strong>Скопируйте файл на флешку:</strong>
+              <p>
+                В папке «Загрузки» появится файл <code>Install-WorkstationAgent.bat</code>. Скопируйте его прямо в корень вашей флешки (чтобы потом не искать его по вложенным папкам).
+              </p>
+            </li>
+          </ol>
+          <div className="faq-callout info">
+            <Info size={18} />
+            <div>
+              <strong>В чём секрет этого файла?</strong>
+              <p>
+                Когда вы нажимаете кнопку скачивания в панели, сервер автоматически вшивает внутрь файла текущий IP-адрес вашего сервера и действующий ключ безопасности (токен). Вам <strong>не нужно ничего редактировать внутри файла</strong> — он полностью готов к работе сразу «из коробки».
+              </p>
+            </div>
+          </div>
+        </div>
+      )
+    },
+    {
+      id: 'engineer_bios_faststartup',
+      category: 'engineer_guide',
+      title: 'Настройка BIOS и отключение «Быстрого запуска» (Чтобы ПК включались по сети и расписанию)',
+      summary: 'Две обязательные настройки, без которых компьютеры не смогут просыпаться по расписанию и кнопке WoL.',
+      badge: 'Обязательно для Wake-on-LAN',
+      badgeColor: 'amber',
+      content: (
+        <div>
+          <p>
+            Если вы хотите, чтобы компьютеры в кабинетах включались сами по утреннему расписанию или по кнопке «Включить (WoL)» со смартфона,
+            на каждом компьютере нужно выполнить две простые настройки. Без них сетевая карта при выключении ПК полностью обесточивается.
+          </p>
+
+          <h4 style={{ marginTop: '16px', marginBottom: '8px', color: 'var(--text)' }}>Настройка 1: Отключение «Быстрого запуска» в Windows (15 секунд):</h4>
+          <ol className="faq-steps-list">
+            <li>Нажмите на клавиатуре комбинацию клавиш <code>Win + R</code> (откроется окно «Выполнить»).</li>
+            <li>Введите <code>powercfg.cpl</code> и нажмите <strong>Enter</strong> (откроется стандартное окно «Электропитание»).</li>
+            <li>В левой колонке нажмите ссылку <strong>«Действие кнопок питания»</strong>.</li>
+            <li>В верхней части окна нажмите синюю ссылку со щитом: <strong>«Изменение параметров, которые сейчас недоступны»</strong>.</li>
+            <li>
+              Внизу окна найдите блок «Параметры завершения работы» и <strong style={{ color: 'var(--red, #ef4444)' }}>СНИМИТЕ ГАЛОЧКУ</strong> с пункта:
+              <br /><code>[ ] Включить быстрый запуск (рекомендуется)</code>
+            </li>
+            <li>Нажмите кнопку <strong>«Сохранить изменения»</strong> внизу окна.</li>
+          </ol>
+          <div className="faq-callout alert">
+            <AlertTriangle size={18} />
+            <div>
+              <strong>Почему это критично?</strong>
+              <p>
+                «Быстрый запуск» Windows вместо настоящего выключения уводит ядро в гибернацию и <em>наглухо обесточивает сетевой адаптер</em>.
+                После снятия этой галочки сетевая карта всегда остаётся на дежурном питании (на ней горит маленький зеленый/оранжевый светодиод) и ждет магический пакет включения.
+              </p>
+            </div>
+          </div>
+
+          <h4 style={{ marginTop: '20px', marginBottom: '8px', color: 'var(--text)' }}>Настройка 2: Включение Wake-on-LAN в BIOS/UEFI материнской платы:</h4>
+          <ol className="faq-steps-list">
+            <li>При включении или перезагрузке компьютера непрерывно нажимайте клавишу <code>Del</code> или <code>F2</code>, пока не откроется BIOS.</li>
+            <li>
+              Перейдите в раздел управления питанием. В зависимости от производителя материнской платы он называется:
+              <br />• ASUS: <em>Advanced → APM Configuration → Power On By PCI-E/PCI</em> → выставить <strong>Enabled</strong>.
+              <br />• Gigabyte: <em>Power → ErP</em> → выставить <strong>Disabled</strong>, а <em>Wake on LAN</em> → <strong>Enabled</strong>.
+              <br />• MSI: <em>Settings → Advanced → Wake Up Event Setup → Resume By PCI-E Device</em> → <strong>Enabled</strong>.
+              <br />• HP / Dell / Lenovo: <em>Power Management → Wake on LAN</em> → <strong>LAN Only</strong> или <strong>LAN with Boot Support</strong>.
+            </li>
+            <li>Если в BIOS есть пункт <strong>ErP / EuP Ready</strong> (глубокое энергосбережение) — <strong>обязательно выключите его (Disabled)</strong>! Иначе плата не подает дежурные 3.3V на сетевую карту.</li>
+            <li>Нажмите клавишу <strong>F10</strong> на клавиатуре и подтвердите сохранение настроек (<strong>Yes / Enter</strong>).</li>
+          </ol>
+        </div>
+      )
+    },
+    {
+      id: 'engineer_checklist_verify',
+      category: 'engineer_guide',
+      title: 'Чек-лист проверки: 3 простых способа убедиться за 5 секунд, что компьютер подключился',
+      summary: 'Как инженеру прямо на месте быстро проверить качество установки и убедиться, что отчёт ушёл на сервер.',
+      badge: 'Контроль качества',
+      badgeColor: 'purple',
+      content: (
+        <div>
+          <p>После того как вы запустили установщик и черное окно закрылось, проверьте результат любым удобным способом:</p>
+          <div className="faq-steps-list">
+            <div style={{ marginBottom: '16px' }}>
+              <strong>Способ 1: Прямо на экране настраиваемого ПК (через горячие клавиши)</strong>
+              <p>Нажмите <code>Win + R</code>, введите команду <code>powershell Get-Service Dash*</code> и нажмите Enter. Вы увидите:</p>
+              <div className="faq-code-block">
+                <code>Status: Running   Name: DashWorkstationAgent   DisplayName: DashAgent Service</code>
+              </div>
+              <p>Статус <strong>Running</strong> означает, что агент работает и всё в полном порядке!</p>
+            </div>
+
+            <div style={{ marginBottom: '16px' }}>
+              <strong>Способ 2: В веб-интерфейсе со смартфона или рабочего ноутбука</strong>
+              <p>Откройте панель управления во вкладке <strong>«Компьютеры»</strong>:</p>
+              <ul style={{ paddingLeft: '20px', margin: '6px 0', fontSize: '13px', color: 'var(--muted)' }}>
+                <li>Компьютер должен появиться в самом верху списка с зеленым кружком 🟢 <strong>«В сети»</strong>.</li>
+                <li>В его карточке должны быть заполнены процессор, модель материнской платы, объем ОЗУ и диски.</li>
+              </ul>
+            </div>
+
+            <div>
+              <strong>Способ 3: В рабочем Telegram-боте</strong>
+              <p>Если к вашей системе привязан Telegram-бот, при первом запуске агента вам в чат мгновенно прилетит уведомление с конфетти:</p>
+              <div className="faq-callout tip" style={{ margin: '8px 0' }}>
+                <Bot size={18} />
+                <div>
+                  <strong>🟢 СВЯЗЬ ВОССТАНОВЛЕНА / ПК ВКЛЮЧЕН</strong>
+                  <p>Устройство: <code>AUD401-PC05</code> • Компьютер включен и вышел на связь</p>
+                </div>
+              </div>
+              <p>Прилетело уведомление — значит связь идеальная, переходите к следующему ПК!</p>
+            </div>
+          </div>
+        </div>
+      )
+    },
+    {
+      id: 'engineer_group_binding',
+      category: 'engineer_guide',
+      title: 'Привязка компьютеров к кабинету (Здание → Этаж → Аудитория)',
+      summary: 'Как навести идеальный порядок в парке, чтобы преподаватель или дежурный управлял целым классом в 1 клик.',
+      badge: 'Порядок в парке',
+      badgeColor: 'blue',
+      content: (
+        <div>
+          <p>
+            Когда вы установили агенты на все 15–20 компьютеров в аудитории, они изначально попадают в общую группу по умолчанию.
+            Чтобы дежурный преподаватель или администратор мог выключать или включать весь класс одной кнопкой, привяжите компьютеры к кабинету:
+          </p>
+          <ol className="faq-steps-list">
+            <li>Откройте панель управления, раздел <strong>«Компьютеры»</strong>.</li>
+            <li>Отметьте галочками все новые компьютеры из этой аудитории (или выделите нужные в списке).</li>
+            <li>В верхней синей панели массовых действий нажмите кнопку <strong>«Назначить группу»</strong>.</li>
+            <li>
+              В появившемся окне выберите или введите структуру: <br />
+              <code>Главный корпус / 4 этаж / Кабинет 401</code>
+            </li>
+            <li>Нажмите синюю кнопку <strong>«Сохранить»</strong>.</li>
+          </ol>
+          <div className="faq-callout tip">
+            <CheckCircle2 size={18} />
+            <div>
+              <strong>Что это даёт?</strong>
+              <p>
+                Теперь в разделе «Группы» эта аудитория выделится в отдельную плитку. На ней появятся кнопки:
+                <br />⚡ <strong>«Включить весь класс»</strong> — разбудит все 20 компьютеров разом.
+                <br />🛑 <strong>«Выключить весь класс»</strong> — завершит сеансы и выключит питание после уроков.
+              </p>
+            </div>
+          </div>
+        </div>
+      )
+    },
     {
       id: 'quickstart_agent_intro',
       category: 'quickstart',
@@ -1107,7 +1372,7 @@ export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose }) => {
             <Search size={18} className="faq-search-icon" />
             <input
               type="text"
-              placeholder="Поиск по инструкции (например: политика алертов, наследование, GPO, списание, архив, итилиум, WoL, OTA)..."
+              placeholder="Поиск по инструкции (например: раскатка, инженер, флешка, bat, WoL, BIOS, архив, итилиум, GPO)..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               autoFocus
