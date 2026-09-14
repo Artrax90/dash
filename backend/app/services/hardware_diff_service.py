@@ -312,8 +312,10 @@ class HardwareDiffService:
         # 4. Compare CPU (Processor replacement)
         base_cpu = prev_spec.get("cpu", {}) or {}
         curr_cpu = current_spec.get("cpu", {}) or {}
-        base_cpu_model = (base_cpu.get("model") or "").strip()
-        curr_cpu_model = (curr_cpu.get("model") or "").strip()
+        base_cpu_val = (base_cpu.get("model") if isinstance(base_cpu, dict) else base_cpu) or ""
+        curr_cpu_val = (curr_cpu.get("model") if isinstance(curr_cpu, dict) else curr_cpu) or ""
+        base_cpu_model = str(base_cpu_val).strip()
+        curr_cpu_model = str(curr_cpu_val).strip()
 
         if base_cpu_model and curr_cpu_model and base_cpu_model != curr_cpu_model:
             changes.append({

@@ -631,9 +631,25 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
     real_device_id = dev.id
     dev_name = dev.name or dev.hostname or real_device_id
 
+    prev_power = dev.power_status
+    prev_seen = dev.last_seen
+    now_utc = datetime.utcnow()
+    sec_since_seen = (now_utc - prev_seen).total_seconds() if isinstance(prev_seen, datetime) else 999999
+
     dev.power_status = PowerStatus.ON
     dev.agent_status = AgentStatus.CONNECTED
-    dev.last_seen = datetime.utcnow()
+    dev.last_seen = now_utc
+
+    if prev_power in [PowerStatus.OFF, PowerStatus.BOOTING] or sec_since_seen > 120:
+        try:
+            from backend.app.services.alert_engine import alert_engine
+            await alert_engine.trigger_device_online(
+                session=db,
+                device=dev,
+                reason=f"Компьютер {dev.name or dev.hostname or dev.id} включен и вышел на связь"
+            )
+        except Exception as on_err:
+            print(f"[Online Alert Trigger Error (Inventory)] {on_err}")
 
     result = await db.execute(
         select(HardwareSpecModel).where(
@@ -1279,7 +1295,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             sec_since_last_seen = (now_utc - prev_last_seen).total_seconds() if isinstance(prev_last_seen, datetime) else 999999
             is_startup = payload.get("isStartup", False) or payload.get("isBoot", False)
 
-            if (prev_status == PowerStatus.OFF or sec_since_last_seen > 120 or is_startup):
+            if (prev_status in [PowerStatus.OFF, PowerStatus.BOOTING] or sec_since_last_seen > 120 or is_startup):
                 from backend.app.api.v1.devices import device_power_logs, log_device_power_event
                 recent_logs = device_power_logs.get(device.id.upper(), [])
                 has_recent_remote = False
@@ -1309,7 +1325,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         device_name=device.name
                     )
 
-                if prev_status == PowerStatus.OFF:
+                if prev_status in [PowerStatus.OFF, PowerStatus.BOOTING] or sec_since_last_seen > 120 or is_startup:
                     try:
                         from backend.app.services.alert_engine import alert_engine
                         await alert_engine.trigger_device_online(

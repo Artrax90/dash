@@ -137,12 +137,30 @@ class SchedulerService:
         act_upper = action.upper()
         
         if act_upper == "WAKE":
+            dev_ids_booting = []
             for dev in target_devs:
                 mac = getattr(dev, "mac_address", None)
                 bip = getattr(dev, "broadcast_ip", None)
                 ip = getattr(dev, "ip_address", None)
                 if mac:
                     await wol_service.send_magic_packet(mac, bip, ip_address=ip)
+                dev_id = getattr(dev, "id", None)
+                if dev_id and str(getattr(dev, "power_status", "")).upper() in ["OFF", "POWERSTATUS.OFF"]:
+                    from backend.app.models.device import PowerStatus
+                    setattr(dev, "power_status", PowerStatus.BOOTING)
+                    dev_ids_booting.append(dev_id)
+            if dev_ids_booting:
+                try:
+                    from backend.app.db.session import AsyncSessionLocal
+                    from backend.app.models.device import Device, PowerStatus
+                    async with AsyncSessionLocal() as b_sess:
+                        for bid in dev_ids_booting:
+                            bd = await b_sess.get(Device, bid)
+                            if bd and bd.power_status == PowerStatus.OFF:
+                                bd.power_status = PowerStatus.BOOTING
+                        await b_sess.commit()
+                except Exception as b_err:
+                    print(f"[Scheduler WAKE] Error marking devices BOOTING: {b_err}")
             summary = f"WoL Magic Packet отправлен на {dev_count} ПК"
         elif act_upper in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
             for dev in target_devs:

@@ -568,10 +568,30 @@ class AlertEngine:
             # 3. Dispatch ONLINE alert to Telegram
             pol_res = await session.execute(
                 select(AlertPolicyModel).where(
-                    (AlertPolicyModel.device_id == device.id) | (AlertPolicyModel.device_id == device.hostname)
+                    (AlertPolicyModel.device_id == device.id) | 
+                    (AlertPolicyModel.device_id == (device.hostname or "")) |
+                    (AlertPolicyModel.device_id == (device.id.upper() if device.id else "")) |
+                    (AlertPolicyModel.device_id == (device.hostname.upper() if device.hostname else ""))
                 )
             )
             pol_model = pol_res.scalar_one_or_none()
+            if not pol_model:
+                try:
+                    from backend.app.api.v1.devices import load_device_configs
+                    cfgs = load_device_configs().get("policies", {})
+                    for candidate in (device.id, (device.hostname or ""), (device.id.upper() if device.id else "")):
+                        if candidate in cfgs:
+                            c_p = cfgs[candidate]
+                            pol_model = AlertPolicyModel(
+                                device_id=device.id,
+                                mode=c_p.get("mode", "Full"),
+                                events_config=c_p.get("events", {}),
+                                thresholds=c_p.get("thresholds", {}),
+                                notify_channels=c_p.get("notifyChannels") or c_p.get("notify_channels", {})
+                            )
+                            break
+                except Exception:
+                    pass
             from backend.app.services.scope_policy_service import resolve_effective_policy
             dev_pol = {
                 "mode": pol_model.mode,
