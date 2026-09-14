@@ -316,3 +316,107 @@ def test_service_startup_quoting_and_power_cascades():
     # 6. Target matching in UDP listener
     assert '$isTargetMatch = $false' in content or '`$isTargetMatch = `$false' in content, "isTargetMatch should initialize to false before matching"
     assert '$targetHost.ToUpper() -eq $myHostName' in content or '`$targetHost.ToUpper() -eq `$myHostName' in content, "Missing hostname matching in UDP listener"
+
+
+@pytest.mark.anyio
+async def test_scheduler_wake_clears_pending_power_commands():
+    """
+    When scheduled WAKE action executes for devices, all pending SHUTDOWN or REBOOT commands
+    for those devices must be purged so the booted machine doesn't execute an old shutdown.
+    """
+    from backend.app.services.scheduler_service import scheduler_service
+    test_dev_id = "PC-SCHED-WAKE-PURGE-01"
+    clean_id = test_dev_id.upper()
+    clear_pending_power_commands(clean_id)
+    
+    # Queue a forced shutdown command (like a prior 10:50 scheduled shutdown)
+    queue_device_command(clean_id, "SHUTDOWN", force=True, reason="Previous scheduled shutdown")
+    assert len(pending_device_commands.get(clean_id, [])) >= 1
+
+    try:
+        class DummyDev:
+            id = test_dev_id
+            mac_address = "00:11:22:33:44:55"
+            broadcast_ip = "192.168.1.255"
+            ip_address = "192.168.1.155"
+            hostname = "HOST-SCHED-WAKE-01"
+            power_status = PowerStatus.OFF
+
+        # Execute scheduled WAKE
+        await scheduler_service.execute_action_for_devices(
+            action="WAKE",
+            target_devs=[DummyDev()],
+            sch_name="Morning Wake",
+            sch_id="SCH-TEST-WAKE",
+            target_grp="Office"
+        )
+
+        # Pending power commands must be cleared
+        assert len(pending_device_commands.get(clean_id, [])) == 0, "Scheduled WAKE did not purge pending shutdown commands!"
+    finally:
+        clear_pending_power_commands(clean_id)
+
+
+@pytest.mark.anyio
+async def test_fresh_boot_drops_stale_preboot_forced_shutdown():
+    """
+    When a machine boots up and contacts the backend, any SHUTDOWN or REBOOT command
+    created BEFORE the current boot time (even with force=True) must be dropped unconditionally!
+    """
+    from datetime import timezone as dt_timezone
+    test_dev_id = "PC-PREBOOT-FORCED-01"
+    clean_id = test_dev_id.upper()
+    clear_pending_power_commands(clean_id)
+
+    async with AsyncSessionLocal() as db:
+        try:
+            scope = {'type': 'http', 'client': ('192.168.1.155', 54321), 'headers': []}
+            req = Request(scope)
+
+            # Boot happened 30 seconds ago
+            now_ts = time.time()
+            boot_ts = now_ts - 30
+            boot_dt = datetime.fromtimestamp(boot_ts, tz=dt_timezone.utc)
+            boot_iso = boot_dt.isoformat()
+
+            # Command was queued 120 seconds ago (before boot) with force=True (like 10:50 schedule vs 10:58 wake)
+            old_cmd = queue_device_command(
+                clean_id,
+                "SHUTDOWN",
+                force=True,
+                reason="Scheduled shutdown from 2 mins ago"
+            )
+            old_cmd["createdTimestamp"] = now_ts - 120
+            old_cmd["createdAt"] = datetime.fromtimestamp(now_ts - 120, tz=dt_timezone.utc).isoformat()
+
+            payload_booted = {
+                "deviceId": test_dev_id,
+                "hostname": "HOST-PREBOOT-01",
+                "uptime": "Только что",
+                "uptimeSeconds": 30,
+                "bootTime": boot_iso,
+                "cpu": 10,
+                "ram": 20,
+                "disk": 30
+            }
+
+            res = await agent_heartbeat(payload_booted, req, db)
+            dispatched = [c["action"] for c in res.get("pendingCommands", [])]
+            assert "SHUTDOWN" not in dispatched, f"Stale pre-boot forced shutdown was dispatched to freshly booted PC! Dispatched: {dispatched}"
+        finally:
+            clear_pending_power_commands(clean_id)
+            await db.execute(delete(Device).where(Device.id == test_dev_id))
+            await db.commit()
+
+
+def test_agent_installer_has_unattended_sleep_timeout_disabled():
+    """
+    Verify agent installer and service script configure Windows power settings
+    to disable unattended sleep timeout (GUID 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0)
+    and use SetThreadExecutionState to prevent spontaneous sleep 2-3 mins after WoL.
+    """
+    with open("agent/standalone_installer.ps1", "r", encoding="utf-8-sig") as f:
+        content = f.read()
+
+    assert "7bc4a2f9-d8fc-4469-b07b-33eb785aaca0" in content, "Missing powercfg unattended sleep timeout GUID in standalone_installer.ps1"
+    assert "SetThreadExecutionState" in content, "Missing SetThreadExecutionState in standalone_installer.ps1"

@@ -545,6 +545,13 @@ try {
         }
     } catch {}
 
+    # Configure Windows Power Scheme: disable unattended sleep timeout after Wake-on-LAN (default is 120-180s)
+    try {
+        & powercfg.exe /SETACVALUEINDEX SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>&1 | Out-Null
+        & powercfg.exe /SETDCVALUEINDEX SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>&1 | Out-Null
+        & powercfg.exe /SETACTIVE SCHEME_CURRENT 2>&1 | Out-Null
+    } catch {}
+
     # Clean up legacy WtsManager.cs if present to avoid heuristic antivirus flags
     try {
         $legacyCs = Join-Path $InstallDir "WtsManager.cs"
@@ -643,6 +650,17 @@ if (-not `$createdNew) {
 Write-AgentLog "Service started. Server: `$ServerUrl, DeviceId: `$DeviceId, Version: `$AgentVersion"
 
 # Native Windows administration mode - dynamic compilation disabled
+# Prevent Windows from going to unattended sleep (default 120-180s) after WoL
+try {
+    & powercfg.exe /SETACVALUEINDEX SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>`$null | Out-Null
+    & powercfg.exe /SETDCVALUEINDEX SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>`$null | Out-Null
+    & powercfg.exe /SETACTIVE SCHEME_CURRENT 2>`$null | Out-Null
+} catch {}
+
+Add-Type -TypeDefinition "using System; using System.Runtime.InteropServices; public class Win32PowerGuard { [DllImport(`"kernel32.dll`", CharSet = CharSet.Auto, SetLastError = true)] public static extern uint SetThreadExecutionState(uint esFlags); }" -ErrorAction SilentlyContinue
+try {
+    [Win32PowerGuard]::SetThreadExecutionState(0x80000000 -bor 0x00000001 -bor 0x00000040)
+} catch {}
 
 function Update-AgentService([string]`$targetVer = "2.9.16") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
@@ -724,24 +742,27 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
         return
     }
 
-    # Guard: Do not execute queued shutdown if computer booted less than 90 seconds ago (prevents loop on startup)
-    if ((`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') -and -not `$isDirectSignal) {
+    # Guard: Do not execute queued shutdown/reboot if issued before current boot session or during startup grace
+    if ((`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF' -or `$act -eq 'REBOOT' -or `$act -eq 'RESTART') -and -not `$isDirectSignal) {
         try {
             `$bt = (Get-CimInstance Win32_OperatingSystem -ErrorAction SilentlyContinue).LastBootUpTime
-            if (`$bt -and ((Get-Date) - `$bt).TotalSeconds -lt 90) {
-                `$isForced = `$false
-                if (`$cmdObj -and (`$cmdObj.force -eq `$true -or `$cmdObj.source -eq 'MANUAL' -or (`$cmdObj.extra -and `$cmdObj.extra.source -eq 'MANUAL'))) {
-                    `$isForced = `$true
-                }
+            if (`$bt) {
+                `$bootEpoch = [double]([DateTimeOffset]`$bt).ToUnixTimeSeconds()
+                `$cmdEpoch = 0
                 if (`$cmdObj -and `$cmdObj.createdTimestamp) {
                     `$cmdEpoch = [double]`$cmdObj.createdTimestamp
-                    `$bootEpoch = [double]([DateTimeOffset]`$bt).ToUnixTimeSeconds()
-                    if (`$cmdEpoch -gt (`$bootEpoch - 5)) {
-                        `$isForced = `$true
-                    }
                 }
-                if (-not `$isForced) {
+                # If command was created before this boot cycle, reject unconditionally
+                if (`$cmdEpoch -gt 0 -and `$cmdEpoch -lt (`$bootEpoch - 5)) {
+                    Write-AgentLog "Dropped stale pre-boot power command `$act (cmd: `$cmdEpoch, boot: `$bootEpoch)"
                     return
+                }
+                # Reject queued shutdown during 90s startup grace period unless command was created distinctly AFTER boot
+                if ((`$act -match 'SHUTDOWN|POWEROFF') -and ((Get-Date) - `$bt).TotalSeconds -lt 90) {
+                    if (`$cmdEpoch -le 0 -or `$cmdEpoch -lt (`$bootEpoch + 10)) {
+                        Write-AgentLog "Rejected queued shutdown during 90s startup grace period"
+                        return
+                    }
                 }
             }
         } catch {}

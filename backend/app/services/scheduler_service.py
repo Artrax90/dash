@@ -137,13 +137,18 @@ class SchedulerService:
         act_upper = action.upper()
         
         if act_upper == "WAKE":
+            from backend.app.api.v1.agents import clear_pending_power_commands
             dev_ids_booting = []
             for dev in target_devs:
                 dev_id = getattr(dev, "id", None)
+                hostname = getattr(dev, "hostname", None)
                 if dev_id:
                     dev_key = str(dev_id).upper()
                     self._consecutive_ping_failures[dev_key] = 0
                     self.set_power_grace(dev_id, 120.0)
+                    clear_pending_power_commands(dev_id)
+                if hostname and hostname != dev_id:
+                    clear_pending_power_commands(hostname)
                 mac = getattr(dev, "mac_address", None)
                 bip = getattr(dev, "broadcast_ip", None)
                 ip = getattr(dev, "ip_address", None)

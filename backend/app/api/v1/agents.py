@@ -5,7 +5,7 @@ import secrets
 import os
 import io
 import zipfile
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import time
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -1041,9 +1041,8 @@ def queue_device_command(device_id: str, action: str, force: bool = True, reason
             if k not in cmd:
                 cmd[k] = v
     if device_id:
-        pending_device_commands[device_id].append(cmd)
-        pending_device_commands[device_id.upper()].append(cmd)
-        pending_device_commands[device_id.lower()].append(cmd)
+        for k in {device_id, device_id.upper(), device_id.lower()}:
+            pending_device_commands[k].append(cmd)
 
         # Real-time WebSocket push if agent is connected
         try:
@@ -1208,7 +1207,6 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
     boot_dt = None
     if boot_time_val:
         try:
-            from datetime import timezone
             clean_bt = str(boot_time_val).replace("Z", "+00:00")
             parsed_bt = datetime.fromisoformat(clean_bt)
             if parsed_bt.tzinfo is not None:
@@ -1304,7 +1302,6 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                     entry_act = entry.get("action", "")
                     if entry_act in ["WAKE", "REBOOT", "BOOT"] and entry.get("source") != "LOCAL":
                         try:
-                            from datetime import timezone
                             t_entry = datetime.fromisoformat(entry_ts.replace("Z", "+00:00"))
                             if (datetime.now(timezone.utc) - t_entry).total_seconds() < 90:
                                 has_recent_remote = True
@@ -1953,6 +1950,14 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
     is_fresh_boot = False
     if uptime_val and ("Только что" in str(uptime_val) or "0м" in str(uptime_val) or "0ч 0м" in str(uptime_val) or "0ч 1м" in str(uptime_val)):
         is_fresh_boot = True
+    elif payload.get("isStartup"):
+        is_fresh_boot = True
+    if payload.get("uptimeSeconds") is not None:
+        try:
+            if float(payload.get("uptimeSeconds")) < 300:
+                is_fresh_boot = True
+        except Exception:
+            pass
 
     unique_cmds = []
     seen_ids = set()
@@ -1961,7 +1966,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
         c_time = c.get("createdTimestamp") or 0
         if not c_time and c.get("createdAt"):
             try:
-                c_time = datetime.fromisoformat(c.get("createdAt")).timestamp()
+                c_dt = datetime.fromisoformat(c.get("createdAt"))
+                c_time = c_dt.replace(tzinfo=timezone.utc).timestamp() if c_dt.tzinfo is None else c_dt.timestamp()
             except Exception:
                 c_time = now_ts
 
@@ -1970,18 +1976,18 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             print(f"[Command Expired] Dropped stale command {c.get('action')} ({cid}) for {device_id} (age: {int(now_ts - c_time)}s)")
             continue
 
-        # 2. Prevent executing stale shutdown on fresh boot (only drop if created before boot and not forced)
-        if is_fresh_boot and c.get("action") in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
+        # 2. Prevent executing stale shutdown/reboot from previous boot session (unconditionally drop pre-boot commands)
+        if c.get("action") in ["SHUTDOWN", "FORCE_SHUTDOWN", "REBOOT"]:
             is_stale_preboot = False
             if boot_dt:
-                boot_ts = boot_dt.timestamp()
+                boot_ts = boot_dt.replace(tzinfo=timezone.utc).timestamp() if boot_dt.tzinfo is None else boot_dt.timestamp()
                 if c_time < (boot_ts - 5):
                     is_stale_preboot = True
-            elif (now_ts - c_time) > 90:
+            elif is_fresh_boot and (now_ts - c_time) > 60:
                 is_stale_preboot = True
 
-            if is_stale_preboot and not c.get("force") and c.get("source") != "MANUAL":
-                print(f"[Command Dropped] Dropped stale pre-boot shutdown command {cid} for {device_id}")
+            if is_stale_preboot:
+                print(f"[Command Dropped] Dropped stale pre-boot power command {c.get('action')} ({cid}) for {device_id} (created: {int(c_time)}, boot: {int(boot_ts) if boot_dt else 'unknown'})")
                 continue
 
         if cid not in seen_ids:
