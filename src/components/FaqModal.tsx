@@ -1,6 +1,6 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
-  CircleHelp, Search, X, ChevronDown, ChevronRight, Copy, Check, Terminal,
+  CircleHelp, Search, X, ChevronRight, Copy, Check, Terminal,
   Key, Power, ShieldAlert, Users, Bot, Calendar, Cpu, Layers, AlertTriangle,
   CheckCircle2, Info, Laptop, Zap, RefreshCw, LogOut, Wrench, ShieldCheck,
   Radio, HardDrive, Usb, ArrowRight, ExternalLink, Archive, RotateCcw,
@@ -25,8 +25,47 @@ interface FaqArticle {
 export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose }) => {
   const [searchQuery, setSearchQuery] = useState('');
   const [activeCategory, setActiveCategory] = useState<string>('all');
-  const [expandedArticleId, setExpandedArticleId] = useState<string | null>('engineer_master_guide');
+  const [expandedArticleIds, setExpandedArticleIds] = useState<Set<string>>(() => new Set(['engineer_master_guide']));
   const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
+  const articleRefs = useRef<{ [id: string]: HTMLDivElement | null }>({});
+
+  const toggleArticle = (id: string) => {
+    setExpandedArticleIds((prev) => {
+      const next = new Set(prev);
+      const isExpanding = !next.has(id);
+      if (isExpanding) {
+        next.add(id);
+        // Smoothly scroll the container so the article header is aligned near the top
+        requestAnimationFrame(() => {
+          setTimeout(() => {
+            const container = scrollContainerRef.current;
+            const card = articleRefs.current[id];
+            if (container && card) {
+              const containerRect = container.getBoundingClientRect();
+              const cardRect = card.getBoundingClientRect();
+              const targetScroll = container.scrollTop + (cardRect.top - containerRect.top) - 12;
+              container.scrollTo({
+                top: Math.max(0, targetScroll),
+                behavior: 'smooth'
+              });
+            }
+          }, 40);
+        });
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  };
+
+  // Reset scroll position on category or search changes
+  useEffect(() => {
+    if (scrollContainerRef.current) {
+      scrollContainerRef.current.scrollTop = 0;
+    }
+  }, [activeCategory, searchQuery]);
 
   const copyToClipboard = (text: string, key: string) => {
     navigator.clipboard.writeText(text);
@@ -1465,6 +1504,14 @@ export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose }) => {
     });
   }, [articles, activeCategory, searchQuery]);
 
+  const expandAll = () => {
+    setExpandedArticleIds(new Set(filteredArticles.map((a) => a.id)));
+  };
+
+  const collapseAll = () => {
+    setExpandedArticleIds(new Set());
+  };
+
   if (!isOpen) return null;
 
   return (
@@ -1532,7 +1579,7 @@ export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose }) => {
           </div>
 
           {/* Articles list */}
-          <div className="faq-articles-scroll">
+          <div className="faq-articles-scroll" ref={scrollContainerRef}>
             {filteredArticles.length === 0 ? (
               <div className="faq-empty-results">
                 <CircleHelp size={48} className="text-muted" />
@@ -1543,45 +1590,75 @@ export const FaqModal: React.FC<FaqModalProps> = ({ isOpen, onClose }) => {
                 </button>
               </div>
             ) : (
-              <div className="faq-articles-list">
-                {filteredArticles.map((article) => {
-                  const isExpanded = expandedArticleId === article.id;
-                  return (
-                    <div
-                      key={article.id}
-                      className={`faq-article-card ${isExpanded ? 'expanded' : ''}`}
+              <>
+                <div className="faq-list-header">
+                  <div className="faq-list-count">
+                    Статей в разделе: <strong>{filteredArticles.length}</strong>
+                  </div>
+                  <div className="faq-list-actions">
+                    <button
+                      type="button"
+                      className="faq-action-link"
+                      onClick={expandAll}
                     >
+                      Развернуть все
+                    </button>
+                    <span className="faq-action-divider">•</span>
+                    <button
+                      type="button"
+                      className="faq-action-link"
+                      onClick={collapseAll}
+                    >
+                      Свернуть все
+                    </button>
+                  </div>
+                </div>
+
+                <div className="faq-articles-list">
+                  {filteredArticles.map((article) => {
+                    const isExpanded = expandedArticleIds.has(article.id);
+                    return (
                       <div
-                        className="faq-article-header"
-                        onClick={() => setExpandedArticleId(isExpanded ? null : article.id)}
+                        key={article.id}
+                        ref={(el) => {
+                          articleRefs.current[article.id] = el;
+                        }}
+                        className={`faq-article-card ${isExpanded ? 'expanded' : ''}`}
                       >
-                        <div className="faq-article-header-left">
-                          <div className="faq-expand-chevron">
-                            {isExpanded ? <ChevronDown size={18} /> : <ChevronRight size={18} />}
-                          </div>
-                          <div>
-                            <div className="faq-article-meta">
-                              {article.badge && (
-                                <span className={`faq-article-badge ${article.badgeColor || 'blue'}`}>
-                                  {article.badge}
-                                </span>
-                              )}
+                        <div
+                          className="faq-article-header"
+                          onClick={() => toggleArticle(article.id)}
+                        >
+                          <div className="faq-article-header-left">
+                            <div className="faq-expand-chevron">
+                              <ChevronRight size={18} />
                             </div>
-                            <h3 className="faq-article-title">{article.title}</h3>
-                            <p className="faq-article-summary">{article.summary}</p>
+                            <div>
+                              <div className="faq-article-meta">
+                                {article.badge && (
+                                  <span className={`faq-article-badge ${article.badgeColor || 'blue'}`}>
+                                    {article.badge}
+                                  </span>
+                                )}
+                              </div>
+                              <h3 className="faq-article-title">{article.title}</h3>
+                              <p className="faq-article-summary">{article.summary}</p>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="faq-article-collapse">
+                          <div className="faq-article-collapse-inner">
+                            <div className="faq-article-content">
+                              {article.content}
+                            </div>
                           </div>
                         </div>
                       </div>
-
-                      {isExpanded && (
-                        <div className="faq-article-content">
-                          {article.content}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
+                    );
+                  })}
+                </div>
+              </>
             )}
           </div>
         </div>
