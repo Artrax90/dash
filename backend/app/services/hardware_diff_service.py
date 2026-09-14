@@ -1,4 +1,5 @@
 import re
+import uuid
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 
@@ -7,6 +8,13 @@ def clean_hw_str(val: Any) -> str:
     if val is None:
         return ""
     return re.sub(r'[\x00-\x1f\x7f-\x9f]', '', str(val)).strip()
+
+def gen_hwc_id(device_id: str, comp: str, action: str, extra: str = "") -> str:
+    rnd = uuid.uuid4().hex[:6]
+    clean_extra = re.sub(r'[^A-Za-z0-9]', '', str(extra).upper())[:8]
+    if clean_extra:
+        return f"HWC-{device_id}-{comp}-{action}-{clean_extra}-{rnd}"
+    return f"HWC-{device_id}-{comp}-{action}-{rnd}"
 
 class HardwareDiffService:
     @staticmethod
@@ -99,7 +107,7 @@ class HardwareDiffService:
                (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count < base_slot_count) or \
                (base_slot_count > 0 and curr_slot_count == 0 and base_ram_total > 0):
                 changes.append({
-                    "id": f"HWC-{device_id}-RAM-REM-{ts_suffix}",
+                    "id": gen_hwc_id(device_id, "RAM", "REM"),
                     "deviceId": device_id,
                     "timestamp": now_str,
                     "component": "RAM",
@@ -116,7 +124,7 @@ class HardwareDiffService:
                  (base_slot_count > 0 and curr_slot_count > 0 and curr_slot_count > base_slot_count) or \
                  (base_slot_count == 0 and curr_slot_count > 0 and curr_ram_total > 0):
                 changes.append({
-                    "id": f"HWC-{device_id}-RAM-ADD-{ts_suffix}",
+                    "id": gen_hwc_id(device_id, "RAM", "ADD"),
                     "deviceId": device_id,
                     "timestamp": now_str,
                     "component": "RAM",
@@ -134,7 +142,7 @@ class HardwareDiffService:
                 curr_sns = {s.get("serialNumber") for s in curr_slots if isinstance(s, dict) and s.get("serialNumber") and not str(s.get("serialNumber")).startswith("RAM-")}
                 if base_sns and curr_sns and base_sns != curr_sns:
                     changes.append({
-                        "id": f"HWC-{device_id}-RAM-MOD-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "RAM", "MOD"),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "RAM",
@@ -166,7 +174,7 @@ class HardwareDiffService:
                         clean_sn = clean_hw_str(sn)
                         desc = f"Извлечен съемный USB-накопитель: {clean_model} (S/N: {clean_sn})" if is_usb else f"Извлечен накопитель: {clean_model} (S/N: {clean_sn})"
                         changes.append({
-                            "id": f"HWC-{device_id}-{'USB' if is_usb else 'DISK'}-REM-{clean_sn[:8]}-{ts_suffix}",
+                            "id": gen_hwc_id(device_id, 'USB' if is_usb else 'DISK', 'REM', clean_sn),
                             "deviceId": device_id,
                             "timestamp": now_str,
                             "component": comp_name,
@@ -188,7 +196,7 @@ class HardwareDiffService:
                         clean_sn = clean_hw_str(sn)
                         desc = f"Подключен съемный USB-накопитель: {clean_model} (S/N: {clean_sn})" if is_usb else f"Подключен новый накопитель: {clean_model} (S/N: {clean_sn})"
                         changes.append({
-                            "id": f"HWC-{device_id}-{'USB' if is_usb else 'DISK'}-ADD-{clean_sn[:8]}-{ts_suffix}",
+                            "id": gen_hwc_id(device_id, 'USB' if is_usb else 'DISK', 'ADD', clean_sn),
                             "deviceId": device_id,
                             "timestamp": now_str,
                             "component": comp_name,
@@ -218,7 +226,7 @@ class HardwareDiffService:
                 if len(physical_curr) > len(physical_base):
                     added = [g for g in physical_curr if g not in physical_base] or physical_curr
                     changes.append({
-                        "id": f"HWC-{device_id}-GPU-ADD-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "GPU", "ADD"),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "GPU",
@@ -234,7 +242,7 @@ class HardwareDiffService:
                 elif len(physical_curr) < len(physical_base):
                     removed = [g for g in physical_base if g not in physical_curr] or physical_base
                     changes.append({
-                        "id": f"HWC-{device_id}-GPU-REM-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "GPU", "REM"),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "GPU",
@@ -249,7 +257,7 @@ class HardwareDiffService:
                     })
                 else:
                     changes.append({
-                        "id": f"HWC-{device_id}-GPU-MOD-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "GPU", "MOD"),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "GPU",
@@ -272,7 +280,7 @@ class HardwareDiffService:
                 removed_v = [g for g in virtual_base if g not in virtual_curr]
                 if added_v:
                     changes.append({
-                        "id": f"HWC-{device_id}-VGPU-ADD-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "VGPU", "ADD"),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "RDP-видеоадаптер",
@@ -287,7 +295,7 @@ class HardwareDiffService:
                     })
                 if removed_v:
                     changes.append({
-                        "id": f"HWC-{device_id}-VGPU-REM-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "VGPU", "REM"),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "RDP-видеоадаптер",
@@ -309,7 +317,7 @@ class HardwareDiffService:
 
         if base_cpu_model and curr_cpu_model and base_cpu_model != curr_cpu_model:
             changes.append({
-                "id": f"HWC-{device_id}-CPU-{ts_suffix}",
+                "id": gen_hwc_id(device_id, "CPU", "MOD"),
                 "deviceId": device_id,
                 "timestamp": now_str,
                 "component": "CPU",
@@ -330,7 +338,7 @@ class HardwareDiffService:
 
         if base_mb_model and curr_mb_model and base_mb_model != curr_mb_model and base_mb_model not in ["Motherboard", "Default string", "To be filled by O.E.M."]:
             changes.append({
-                "id": f"HWC-{device_id}-MB-{ts_suffix}",
+                "id": gen_hwc_id(device_id, "MB", "MOD"),
                 "deviceId": device_id,
                 "timestamp": now_str,
                 "component": "Motherboard",
@@ -379,7 +387,7 @@ class HardwareDiffService:
                 if k not in curr_pci_dict:
                     name = p.get("name") if isinstance(p, dict) else str(p)
                     changes.append({
-                        "id": f"HWC-{device_id}-PCI-REM-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "PCI", "REM", k),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "PCI Device",
@@ -396,7 +404,7 @@ class HardwareDiffService:
                 if k not in base_pci_dict:
                     name = p.get("name") if isinstance(p, dict) else str(p)
                     changes.append({
-                        "id": f"HWC-{device_id}-PCI-ADD-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "PCI", "ADD", k),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "PCI Device",
@@ -426,7 +434,7 @@ class HardwareDiffService:
                 if k not in curr_net_dict:
                     name = n.get("name") if isinstance(n, dict) else str(n)
                     changes.append({
-                        "id": f"HWC-{device_id}-NET-REM-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "NET", "REM", k),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "Network",
@@ -443,7 +451,7 @@ class HardwareDiffService:
                 if k not in base_net_dict:
                     name = n.get("name") if isinstance(n, dict) else str(n)
                     changes.append({
-                        "id": f"HWC-{device_id}-NET-ADD-{ts_suffix}",
+                        "id": gen_hwc_id(device_id, "NET", "ADD", k),
                         "deviceId": device_id,
                         "timestamp": now_str,
                         "component": "Network",

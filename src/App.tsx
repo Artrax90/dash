@@ -16315,9 +16315,32 @@ function Groups({
     return list.length > 0 ? list : ['Главный корпус', 'Учебный корпус'];
   }, [buildingConfigs, hierarchyData, hasRestrictedScope, allowedGroups]);
 
+  const effectiveSelectedBuilding = useMemo(() => {
+    if (drillBuilding && availableBuildingOptions.some(b => b.toLowerCase() === drillBuilding.toLowerCase())) {
+      const match = availableBuildingOptions.find(b => b.toLowerCase() === drillBuilding.toLowerCase());
+      if (match) return match;
+    }
+    if (selectedBuildingOption && availableBuildingOptions.some(b => b.toLowerCase() === selectedBuildingOption.toLowerCase())) {
+      const match = availableBuildingOptions.find(b => b.toLowerCase() === selectedBuildingOption.toLowerCase());
+      if (match) return match;
+    }
+    return availableBuildingOptions[0] || 'Главный корпус';
+  }, [drillBuilding, selectedBuildingOption, availableBuildingOptions]);
+
   const activeBuildingName = isNewBuildingMode
     ? newBuildingNameInput.trim()
-    : (selectedBuildingOption || availableBuildingOptions[0] || 'Главный корпус');
+    : effectiveSelectedBuilding;
+
+  useEffect(() => {
+    if (drillBuilding && availableBuildingOptions.some(b => b.toLowerCase() === drillBuilding.toLowerCase())) {
+      const match = availableBuildingOptions.find(b => b.toLowerCase() === drillBuilding.toLowerCase());
+      if (match && selectedBuildingOption !== match) {
+        setSelectedBuildingOption(match);
+      }
+    } else if (availableBuildingOptions.length > 0 && !availableBuildingOptions.some(b => b.toLowerCase() === selectedBuildingOption.toLowerCase())) {
+      setSelectedBuildingOption(availableBuildingOptions[0]);
+    }
+  }, [drillBuilding, availableBuildingOptions, selectedBuildingOption]);
 
   const parsedNewBuildingFloorsCount = Math.max(1, Math.min(50, parseInt(newBuildingFloorsCount, 10) || 1));
 
@@ -16428,10 +16451,10 @@ function Groups({
           floors: genFloors
         }]);
       } else {
-        bldVal = selectedBuildingOption.trim() || availableBuildingOptions[0] || 'Главный корпус';
+        bldVal = effectiveSelectedBuilding;
       }
 
-      flrVal = (isCustomFloorMode ? customFloorInput.trim() : (selectedFloorOption || availableFloorsForActiveBuilding[0] || '1 этаж')).trim();
+      flrVal = (isCustomFloorMode ? customFloorInput.trim() : (selectedFloorOption && availableFloorsForActiveBuilding.includes(selectedFloorOption) ? selectedFloorOption : (availableFloorsForActiveBuilding[0] || '1 этаж'))).trim();
       rmVal = createRoom.trim() || newGroupName.trim();
       if (!rmVal) {
         notify('Пожалуйста, укажите название или номер кабинета');
@@ -17117,7 +17140,24 @@ function Groups({
             actions={
               <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                 {canManageGroups && (
-                  <Button primary icon={<Plus size={15} />} onClick={() => setShowCreateGroup(true)}>
+                  <Button
+                    primary
+                    icon={<Plus size={15} />}
+                    onClick={() => {
+                      if (drillBuilding && availableBuildingOptions.some(b => b.toLowerCase() === drillBuilding.toLowerCase())) {
+                        const match = availableBuildingOptions.find(b => b.toLowerCase() === drillBuilding.toLowerCase());
+                        if (match) setSelectedBuildingOption(match);
+                      } else if (availableBuildingOptions.length > 0 && !availableBuildingOptions.some(b => b.toLowerCase() === selectedBuildingOption.toLowerCase())) {
+                        setSelectedBuildingOption(availableBuildingOptions[0]);
+                      }
+                      if (drillFloor) {
+                        setSelectedFloorOption(drillFloor);
+                        setIsCustomFloorMode(false);
+                      }
+                      setIsNewBuildingMode(false);
+                      setShowCreateGroup(true);
+                    }}
+                  >
                     Создать группу / кабинет
                   </Button>
                 )}
@@ -17691,7 +17731,7 @@ function Groups({
                     <select
                       className="text-input"
                       style={{ width: '100%' }}
-                      value={isNewBuildingMode ? '__new__' : selectedBuildingOption}
+                      value={isNewBuildingMode ? '__new__' : effectiveSelectedBuilding}
                       onChange={(e) => {
                         if (e.target.value === '__new__') {
                           setIsNewBuildingMode(true);
@@ -17796,7 +17836,7 @@ function Groups({
                       <select
                         className="text-input"
                         style={{ flex: 1 }}
-                        value={isCustomFloorMode ? '__custom__' : (selectedFloorOption || availableFloorsForActiveBuilding[0])}
+                        value={isCustomFloorMode ? '__custom__' : (selectedFloorOption && availableFloorsForActiveBuilding.includes(selectedFloorOption) ? selectedFloorOption : (availableFloorsForActiveBuilding[0] || '1 этаж'))}
                         onChange={(e) => {
                           if (e.target.value === '__custom__') {
                             setIsCustomFloorMode(true);

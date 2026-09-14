@@ -7,6 +7,7 @@ import io
 import zipfile
 from datetime import datetime, timedelta
 import time
+import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, delete
 from backend.app.db.session import get_db
@@ -764,34 +765,42 @@ async def report_inventory(payload: Dict[str, Any], db: AsyncSession = Depends(g
                         dev.health_status = HealthStatus.CRITICAL
                     elif str(c["severity"]).lower() == "warning":
                         dev.health_status = HealthStatus.WARNING
-                hw_change = HardwareChangeModel(
-                    id=c["id"],
-                    device_id=real_device_id,
-                    component=c["component"],
-                    change_type=c["changeType"],
-                    severity="Info" if is_suppressed_hardware else c["severity"],
-                    previous_value=c["previousValue"],
-                    current_value=c["currentValue"],
-                    diff_status="INFO" if is_suppressed_hardware else c["diffStatus"]
-                )
-                db.add(hw_change)
+                try:
+                    async with db.begin_nested():
+                        hw_change = HardwareChangeModel(
+                            id=c["id"],
+                            device_id=real_device_id,
+                            component=c["component"],
+                            change_type=c["changeType"],
+                            severity="Info" if is_suppressed_hardware else c["severity"],
+                            previous_value=c["previousValue"],
+                            current_value=c["currentValue"],
+                            diff_status="INFO" if is_suppressed_hardware else c["diffStatus"]
+                        )
+                        db.add(hw_change)
+                except Exception as e_hw:
+                    print(f"[Hardware Change Insert Warning] {e_hw}")
                 hardware_changes_db.insert(0, c)
 
                 # Create persistent Alert
                 cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else ("VIRTUAL_GPU_CHANGED" if is_virtual_gpu else "HARDWARE_MISMATCH")
                 cur_category = "Security" if is_usb else ("Remote" if is_virtual_gpu else "Hardware")
 
-                alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
-                new_alert = AlertModel(
-                    id=alert_id,
-                    device_id=real_device_id,
-                    alert_type=cur_alert_type,
-                    category=cur_category,
-                    severity="Info" if is_suppressed_hardware else c["severity"],
-                    state="Resolved" if is_suppressed_hardware else "Open",
-                    description=alert_desc
-                )
-                db.add(new_alert)
+                alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}-{uuid.uuid4().hex[:6]}"
+                try:
+                    async with db.begin_nested():
+                        new_alert = AlertModel(
+                            id=alert_id,
+                            device_id=real_device_id,
+                            alert_type=cur_alert_type,
+                            category=cur_category,
+                            severity="Info" if is_suppressed_hardware else c["severity"],
+                            state="Resolved" if is_suppressed_hardware else "Open",
+                            description=alert_desc
+                        )
+                        db.add(new_alert)
+                except Exception as e_alt:
+                    print(f"[Alert Insert Warning] {e_alt}")
 
                 alert_dict = {
                     "id": alert_id,
@@ -1728,34 +1737,42 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                             device.health_status = HealthStatus.CRITICAL
                                         elif str(c["severity"]).lower() == "warning":
                                             device.health_status = HealthStatus.WARNING
-                                    hw_change = HardwareChangeModel(
-                                        id=c["id"],
-                                        device_id=device.id,
-                                        component=c["component"],
-                                        change_type=c["changeType"],
-                                        severity="Info" if is_suppressed_hardware else c["severity"],
-                                        previous_value=c["previousValue"],
-                                        current_value=c["currentValue"],
-                                        diff_status="INFO" if is_suppressed_hardware else c["diffStatus"]
-                                    )
-                                    db.add(hw_change)
+                                    try:
+                                        async with db.begin_nested():
+                                            hw_change = HardwareChangeModel(
+                                                id=c["id"],
+                                                device_id=device.id,
+                                                component=c["component"],
+                                                change_type=c["changeType"],
+                                                severity="Info" if is_suppressed_hardware else c["severity"],
+                                                previous_value=c["previousValue"],
+                                                current_value=c["currentValue"],
+                                                diff_status="INFO" if is_suppressed_hardware else c["diffStatus"]
+                                            )
+                                            db.add(hw_change)
+                                    except Exception as e_hw:
+                                        print(f"[Heartbeat Hardware Change Insert Warning] {e_hw}")
                                     hardware_changes_db.insert(0, c)
 
                                     # Create persistent Alert
                                     cur_alert_type = "USB_STORAGE_CHANGED" if is_usb else ("VIRTUAL_GPU_CHANGED" if is_virtual_gpu else "HARDWARE_MISMATCH")
                                     cur_category = "Security" if is_usb else ("Remote" if is_virtual_gpu else "Hardware")
 
-                                    alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}"
-                                    new_alert = AlertModel(
-                                        id=alert_id,
-                                        device_id=device.id,
-                                        alert_type=cur_alert_type,
-                                        category=cur_category,
-                                        severity="Info" if is_suppressed_hardware else c["severity"],
-                                        state="Resolved" if is_suppressed_hardware else "Open",
-                                        description=alert_desc
-                                    )
-                                    db.add(new_alert)
+                                    alert_id = f"ALT-{int(datetime.utcnow().timestamp()*1000)%1000000}-{uuid.uuid4().hex[:6]}"
+                                    try:
+                                        async with db.begin_nested():
+                                            new_alert = AlertModel(
+                                                id=alert_id,
+                                                device_id=device.id,
+                                                alert_type=cur_alert_type,
+                                                category=cur_category,
+                                                severity="Info" if is_suppressed_hardware else c["severity"],
+                                                state="Resolved" if is_suppressed_hardware else "Open",
+                                                description=alert_desc
+                                            )
+                                            db.add(new_alert)
+                                    except Exception as e_alt:
+                                        print(f"[Heartbeat Alert Insert Warning] {e_alt}")
                                     dev_name = device.name or device.hostname or device.id
                                     alert_dict = {
                                         "id": alert_id,
@@ -1810,6 +1827,10 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                     print(f"[Hardware Alert] Generated discrepancy alert via Heartbeat for {device.id}: {alert_desc}")
                 except Exception as hw_err:
                     print(f"[Heartbeat] Error updating live hardware RAM specs: {hw_err}")
+                    try:
+                        await db.rollback()
+                    except Exception:
+                        pass
 
             # Priority 1: Specific device override
             if device.heartbeat_interval and device.heartbeat_interval > 0:
