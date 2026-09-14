@@ -1376,12 +1376,31 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                                 "completedAt": datetime.utcnow().isoformat() + "Z"
                             }
                     # Also resolve any open UPDATING log entries for this device
+                    had_open_updating = False
                     for log_ent in agent_update_logs:
                         if (log_ent.get("deviceId") in (device.id, device.hostname) or log_ent.get("deviceName") in (device.name, device.hostname)) and log_ent.get("status") == "UPDATING":
                             log_ent["status"] = "SUCCESS"
                             log_ent["newVersion"] = rep_ver
                             log_ent["details"] = f"Обновление успешно завершено (v{rep_ver})"
                             log_ent["timestamp"] = datetime.utcnow().isoformat() + "Z"
+                            had_open_updating = True
+
+                    from backend.app.api.v1.devices import log_device_power_event, device_power_logs
+                    dev_logs = device_power_logs.get(device.id, [])
+                    has_pending_update = any(
+                        l.get("action") == "UPDATE_AGENT" and (l.get("status") in ("Pending", "UPDATING") or "Загрузка обновления" in (l.get("details") or ""))
+                        for l in dev_logs
+                    )
+                    if had_open_updating or has_pending_update:
+                        save_update_logs(agent_update_logs)
+                        log_device_power_event(
+                            device_id=device.id,
+                            action="UPDATE_AGENT",
+                            details=f"Обновление службы успешно завершено (v{rep_ver})",
+                            status="Success",
+                            initiator="Система (Агент)",
+                            source="REMOTE"
+                        )
 
             # Dynamic Dual-Boot OS detection update
             hb_os_type = payload.get("osType") or payload.get("os_type")

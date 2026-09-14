@@ -579,6 +579,7 @@ async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", 
     """
     Serve dynamic Windows installer script with embedded server URL & token.
     Allows one-liner: irm "http://<server>:2301/install.ps1?token=XYZ" | iex
+    Direct file downloads (WebClient, curl, browser) receive UTF-8 with BOM so powershell.exe -File parses with 0 AST errors.
     """
     import urllib.parse
     base_url = resolve_request_base_url(request, server_url)
@@ -587,11 +588,18 @@ async def get_windows_installer_ps1_endpoint(request: Request, token: str = "", 
     content = get_windows_installer_ps1(base_url, effective_token)
 
     headers = {}
-    if download:
+    user_agent = request.headers.get("user-agent", "")
+    ua_lower = user_agent.lower()
+    is_download = download or "download" in str(request.query_params).lower() or "x-agent-version" in request.headers
+
+    if is_download:
+        # File downloads (Web UI, download=1, agent updates via X-Agent-Version)
+        # MUST include UTF-8 BOM so that powershell.exe -File parses with 0 AST errors on CP1251 Windows.
         safe_group = "".join(c for c in group if c.isalnum() or c in ("-", "_", " ")).strip()
         group_suffix = f"-{safe_group}" if safe_group else ""
         filename = f"Install-Agent{group_suffix}.ps1"
-        headers["Content-Disposition"] = make_safe_attachment_header(filename, fallback_ascii="Install-Agent.ps1")
+        if download or "download" in str(request.query_params).lower():
+            headers["Content-Disposition"] = make_safe_attachment_header(filename, fallback_ascii="Install-Agent.ps1")
         return Response(content=content.encode("utf-8-sig"), media_type="text/plain; charset=utf-8", headers=headers)
 
     # In-memory execution (irm ... | iex) requires pure UTF-8 WITHOUT BOM so PowerShell 5.1 doesn't treat \uFEFF as command name
@@ -629,8 +637,18 @@ def get_windows_agent_service_ps1(base_url: str, device_id: str = "", mac: str =
         code_part = code_part.replace("'$deviceId'", f"'{device_id}'" if device_id else "''")
         code_part = code_part.replace("'$mac'", f"'{mac}'" if mac else "''")
         code_part = code_part.replace("'$ServerUrl'", f"'{base_url}'" if base_url else "''")
+
+        # Guarantee $InstallDir is declared at top of service script
+        safe_installdir_decl = '$InstallDir = if ($PSScriptRoot -and (Test-Path $PSScriptRoot)) { $PSScriptRoot } elseif (Test-Path "C:\\Program Files\\WorkstationManagerAgent") { "C:\\Program Files\\WorkstationManagerAgent" } else { (Join-Path $env:LOCALAPPDATA "WorkstationManagerAgent") }'
+        if "$InstallDir = if ($PSScriptRoot" not in code_part:
+            if "param()" in code_part:
+                code_part = code_part.replace("param()", f"param()\n{safe_installdir_decl}\n", 1)
+            else:
+                code_part = f"{safe_installdir_decl}\n{code_part}"
+
         return code_part
     return content
+
 
 @app.get("/agent.ps1")
 @app.get("/api/v1/agents/service-script")

@@ -91,17 +91,18 @@ if (-not $Token) { $Token = "__TOKEN__" }
 # Installation directory
 $IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 $InstallDir = if ($IsAdmin) { "C:\Program Files\WorkstationManagerAgent" } else { (Join-Path $env:LOCALAPPDATA "WorkstationManagerAgent") }
-$PermMode = if ($IsAdmin) { "Администратор (Системная служба)" } else { "Пользователь (Автозапуск текущего профиля)" }
+$PermMode = if ($IsAdmin) { "Administrator (SYSTEM)" } else { "User ($env:USERNAME)" }
 
 Write-Host "==============================================================================" -ForegroundColor Cyan
-Write-Host "       WORKSTATION MANAGER - АВТОМАТИЧЕСКАЯ УСТАНОВКА АГЕНТА И СЛУЖБЫ        " -ForegroundColor Cyan
+Write-Host "       WORKSTATION MANAGER - AGENT & SERVICE INSTALLER                        " -ForegroundColor Cyan
 Write-Host "==============================================================================" -ForegroundColor Cyan
-Write-Host ("  Целевой сервер: " + $ServerUrl) -ForegroundColor Gray
-Write-Host ("  Рабочая группа: Office (по умолчанию)") -ForegroundColor Gray
-Write-Host ("  Режим прав:     " + $PermMode) -ForegroundColor Yellow
-Write-Host ("  Папка службы:   " + $InstallDir) -ForegroundColor Gray
+Write-Host ("  Target Server:  " + $ServerUrl) -ForegroundColor Gray
+Write-Host ("  Workgroup:      Office") -ForegroundColor Gray
+Write-Host ("  Privileges:     " + $PermMode) -ForegroundColor Yellow
+Write-Host ("  Service Dir:    " + $InstallDir) -ForegroundColor Gray
 Write-Host "==============================================================================" -ForegroundColor Cyan
 Write-Host ""
+
 
 # 1. Проверка доступности сервера
 Write-Host "[1/7] Проверка соединения с сервером $ServerUrl ..." -ForegroundColor Yellow
@@ -463,7 +464,7 @@ try {
 $diskCount = $disks.Count
 $gpuCount = $gpus.Count
 $pciCount = $pciDevices.Count
-Write-Host ("      [OK] Обнаружено: CPU " + $cpuModel + " (" + $cpuCores + " ядер), RAM " + $totalRamGb + " GB, Дисков " + $diskCount + ", GPU " + $gpuCount + ", PCI " + $pciCount) -ForegroundColor Green
+Write-Host ("      [OK] Hardware detected: CPU " + $cpuModel + " (" + $cpuCores + " cores), RAM " + $totalRamGb + " GB, Disks " + $diskCount + ", GPU " + $gpuCount + ", PCI " + $pciCount) -ForegroundColor Green
 
 
 
@@ -501,7 +502,7 @@ $deviceId = "PC-" + $mac.Replace(':', '').Substring(8,4)
 if ($enrollRes -and $enrollRes.deviceId) { $deviceId = $enrollRes.deviceId }
 $assignedGroup = "Office"
 if ($enrollRes -and $enrollRes.group) { $assignedGroup = $enrollRes.group }
-Write-Host ("      [OK] Станция успешно зарегистрирована: ID = " + $deviceId + ", Группа = " + $assignedGroup) -ForegroundColor Green
+Write-Host ("      [OK] Station registered: ID = " + $deviceId + ", Group = " + $assignedGroup) -ForegroundColor Green
 
 # 4. Передача полной спецификации оборудования (Inventory)
 Write-Host "[4/7] Отправка полной аппаратной спецификации на сервер..." -ForegroundColor Yellow
@@ -524,7 +525,7 @@ $hardwarePayload = @{
     }
 }
 $invRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/inventory" $hardwarePayload
-Write-Host "      [OK] Спецификация оборудования успешно сохранена в базе данных!" -ForegroundColor Green
+Write-Host "      [OK] Hardware specification saved to database." -ForegroundColor Green
 
 # 5. Регистрация фоновой службы
 Write-Host "[5/7] Создание и запуск системной фоновой службы..." -ForegroundColor Yellow
@@ -535,7 +536,8 @@ try {
     $cfgPath = Join-Path $InstallDir "config.json"
     $cfg = @{ server_url = "$ServerUrl/api/v1"; enrollment_token = $Token; device_id = $deviceId; heartbeat_interval_seconds = 30 } | ConvertTo-Json
     Set-Content -Path $cfgPath -Value $cfg -Encoding UTF8
-    Write-Host ("      [OK] Конфигурация сохранена: " + $cfgPath) -ForegroundColor Green
+    Write-Host ("      [OK] Configuration saved: " + $cfgPath) -ForegroundColor Green
+
 
     # Enable Wake-on-LAN and configure Power Management on physical adapters
     try {
@@ -567,6 +569,7 @@ try {
 param()
 
 `$ErrorActionPreference = 'SilentlyContinue'
+`$InstallDir = if (`$PSScriptRoot -and (Test-Path `$PSScriptRoot)) { `$PSScriptRoot } elseif (Test-Path "C:\Program Files\WorkstationManagerAgent") { "C:\Program Files\WorkstationManagerAgent" } else { (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent") }
 `$ServerUrl = '$ServerUrl'
 if (`$ServerUrl) {
     `$ServerUrl = `$ServerUrl.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
@@ -581,7 +584,7 @@ if (`$ServerUrl) {
 # Dynamic config loader: read local config.json if present
 try {
     `$localCfgDir = `$PSScriptRoot
-    if (-not `$localCfgDir -or -not (Test-Path `$localCfgDir)) { `$localCfgDir = '$InstallDir' }
+    if (-not `$localCfgDir -or -not (Test-Path `$localCfgDir)) { `$localCfgDir = `$InstallDir }
     `$localCfgPath = Join-Path `$localCfgDir "config.json"
     if (Test-Path `$localCfgPath) {
         `$dynCfg = Get-Content `$localCfgPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
@@ -648,6 +651,7 @@ function Update-AgentService([string]`$targetVer = "2.9.16") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
         `$targetVer = "2.9.16"
     }
+    Write-AgentLog "Update-AgentService triggered: current=`$AgentVersion, target=`$targetVer"
     try {
         # 1. Report update in progress
         `$updPayload = @{
@@ -671,43 +675,96 @@ function Update-AgentService([string]`$targetVer = "2.9.16") {
         `$resp.Close()
     } catch {}
 
+    `$servicePath = Join-Path `$InstallDir "run_service.ps1"
+    `$tempPath = Join-Path `$InstallDir "run_service_update.ps1"
+
+    `$dlSuccess = `$false
+    `$lastErrorMsg = ""
+
     try {
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
         
         `$baseHost = `$ServerUrl -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
-        `$serviceUrl = "`$baseHost/api/v1/agents/service-script?deviceId=`$DeviceId&mac=`$DeviceMac"
-        `$servicePath = Join-Path '$InstallDir' "run_service.ps1"
-        `$tempPath = Join-Path '$InstallDir' "run_service_update.ps1"
+        `$candidateUrls = @(
+            "`$baseHost/api/v1/agents/service-script?deviceId=`$DeviceId&mac=`$DeviceMac",
+            "`$baseHost/agent.ps1?deviceId=`$DeviceId&mac=`$DeviceMac",
+            "`$baseHost/api/v1/agents/service-script",
+            "`$baseHost/agent.ps1"
+        )
 
-        Invoke-WebRequest -Uri `$serviceUrl -Headers @{ "X-Agent-Version" = "`$AgentVersion" } -OutFile `$tempPath -UseBasicParsing -TimeoutSec 15
+        foreach (`$u in `$candidateUrls) {
+            try {
+                if (Test-Path `$tempPath) { Remove-Item -Path `$tempPath -Force -ErrorAction SilentlyContinue }
+                `$wc = New-Object System.Net.WebClient
+                `$wc.Proxy = `$null
+                `$wc.Headers.Add("X-Agent-Version", "`$AgentVersion")
+                `$wc.DownloadFile(`$u, `$tempPath)
 
-        if ((Test-Path `$tempPath) -and (Get-Item `$tempPath).Length -gt 1000) {
-            # AST verification
-            `$tokens = `$null
-            `$astErrs = `$null
-            [System.Management.Automation.Language.Parser]::ParseFile(`$tempPath, [ref]`$tokens, [ref]`$astErrs) | Out-Null
-            if (-not `$astErrs -or `$astErrs.Count -eq 0) {
-                Move-Item -Path `$tempPath -Destination `$servicePath -Force -ErrorAction SilentlyContinue
-
-                # Release mutex before starting new instance
-                if (`$global:agentMutex) {
-                    try { `$global:agentMutex.ReleaseMutex() } catch {}
-                    try { `$global:agentMutex.Dispose() } catch {}
+                if ((Test-Path `$tempPath) -and (Get-Item `$tempPath).Length -gt 1000) {
+                    # AST syntax validation
+                    `$astTokens = `$null
+                    `$astErrs = `$null
+                    [System.Management.Automation.Language.Parser]::ParseFile(`$tempPath, [ref]`$astTokens, [ref]`$astErrs) | Out-Null
+                    if (-not `$astErrs -or `$astErrs.Count -eq 0) {
+                        `$dlSuccess = `$true
+                        Write-AgentLog "Update downloaded successfully from `${u} (bytes: `$((Get-Item `$tempPath).Length))"
+                        break
+                    } else {
+                        `$lastErrorMsg = "AST syntax error in `${u}: `$(`$astErrs[0].Message)"
+                        Write-AgentLog `$lastErrorMsg
+                        Remove-Item -Path `$tempPath -Force -ErrorAction SilentlyContinue
+                    }
                 }
-
-                # Start updated service
-                try { Get-ChildItem -Path '$InstallDir' -Filter "*.vbs" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
-
-                # Start updated service cleanly via powershell.exe
-                `$psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
-                if (-not (Test-Path `$psExe)) { `$psExe = "powershell.exe" }
-                Start-Process -FilePath `$psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`$servicePath") -WindowStyle Hidden
-                exit 0
-            } else {
-                Remove-Item -Path `$tempPath -Force -ErrorAction SilentlyContinue
+            } catch {
+                `$lastErrorMsg = `$_.Exception.Message
             }
         }
-    } catch {}
+
+        if (`$dlSuccess) {
+            Move-Item -Path `$tempPath -Destination `$servicePath -Force -ErrorAction SilentlyContinue
+
+            # Release mutex before starting new instance
+            if (`$global:agentMutex) {
+                try { `$global:agentMutex.ReleaseMutex() } catch {}
+                try { `$global:agentMutex.Dispose() } catch {}
+            }
+
+            try { Get-ChildItem -Path `$svcDir -Filter "*.vbs" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
+
+            # Start updated service cleanly with detached 2s delay
+            `$psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+            if (-not (Test-Path `$psExe)) { `$psExe = "powershell.exe" }
+            `$cmd = "Start-Sleep -Seconds 2; Start-Process -FilePath `"`$psExe`" -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', `"`$servicePath`"') -WindowStyle Hidden"
+            Start-Process -FilePath `$psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-Command', `$cmd) -WindowStyle Hidden
+            exit 0
+        } else {
+            Write-AgentLog "Update-AgentService failed. Last error: `$lastErrorMsg"
+            # Report failure to server
+            try {
+                `$failPayload = @{
+                    deviceId = `$DeviceId
+                    status = 'FAILED'
+                    previousVersion = `$AgentVersion
+                    targetVersion = `$targetVer
+                    details = "Ошибка загрузки обновления службы: `$lastErrorMsg"
+                }
+                `$fJson = `$failPayload | ConvertTo-Json -Depth 3 -Compress
+                `$fBytes = [System.Text.Encoding]::UTF8.GetBytes(`$fJson)
+                `$fReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
+                `$fReq.Proxy = `$null
+                `$fReq.Method = 'POST'
+                `$fReq.ContentType = 'application/json; charset=utf-8'
+                `$fReq.Timeout = 4000
+                `$fStream = `$fReq.GetRequestStream()
+                `$fStream.Write(`$fBytes, 0, `$fBytes.Length)
+                `$fStream.Close()
+                `$fResp = `$fReq.GetResponse()
+                `$fResp.Close()
+            } catch {}
+        }
+    } catch {
+        Write-AgentLog "Update-AgentService exception: $($_.Exception.Message)"
+    }
 }
 
 function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false, `$cmdObj = `$null) {
@@ -715,9 +772,11 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     Write-AgentLog "Execute-PowerCommand: action=`$act, directSignal=`$isDirectSignal"
 
     if (`$act -eq 'UPDATE_AGENT' -or `$act -eq 'UPGRADE_AGENT' -or `$act -eq 'UPDATE') {
-        Update-AgentService "`$AgentVersion"
+        `$target = if (`$cmdObj -and `$cmdObj.targetVersion) { `$cmdObj.targetVersion } else { "2.9.16" }
+        Update-AgentService `$target
         return
     }
+
 
     if (`$act -eq 'SYNC' -or `$act -eq 'REFRESH' -or `$act -eq 'POLL' -or `$act -eq 'HEARTBEAT' -or `$act -eq 'INVENTORY') {
         Invoke-Heartbeat `$true
@@ -2448,12 +2507,13 @@ try {
     try {
         Get-NetAdapterAdvancedProperty -ErrorAction SilentlyContinue | Where-Object {
             $_.RegistryKeyword -match 'Wake|Magic|PME|Shutdown|LinkSpeed' -or
-            $_.DisplayName -match 'Wake|Magic|Магическ|Пробужд|Питани|Shutdown|PME'
+            $_.DisplayName -match 'Wake|Magic|Shutdown|PME'
         } | ForEach-Object {
             try { Set-NetAdapterAdvancedProperty -Name $_.Name -RegistryKeyword $_.RegistryKeyword -RegistryValue "1" -ErrorAction SilentlyContinue } catch {}
         }
-        Write-Host "      [OK] Параметры драйверов Windows: *WakeOnMagicPacket=1, ShutdownWakeOnLan=1, EnablePME=1" -ForegroundColor Green
+        Write-Host "      [OK] Driver properties: *WakeOnMagicPacket=1, ShutdownWakeOnLan=1, EnablePME=1" -ForegroundColor Green
     } catch {}
+
 
     # 6.3. Активация параметров сетевых адаптеров напрямую в системном реестре Windows
     $nicClassKey = "HKLM:\SYSTEM\CurrentControlSet\Control\Class\{4d36e972-e325-11ce-bfc1-08002be10318}"
@@ -2650,9 +2710,9 @@ function Get-InstallerLiveSessions() {
                                 deviceId = $deviceId
                                 username = $uName
                                 sessionName = if ($sessName) { $sessName } else { ('rdp-tcp#' + $sessId) }
-                                type = 'Входящий RDP'
+                                type = 'RDP-In'
                                 state = if ($sessState -match '(?i)Disc') { 'Disconnected' } else { 'Active' }
-                                idleTime = if ($idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0 мин' } else { $idle }
+                                idleTime = if ($idle -match '(?i)^(\.|none|00:00|0\s*m)') { '0m' } else { $idle }
                                 logonTime = if ($logon) { $logon } else { (Get-Date).ToString('yyyy-MM-dd HH:mm') }
                                 clientIp = ''
                             }
@@ -2685,9 +2745,9 @@ function Get-InstallerLiveSessions() {
                     deviceId = $deviceId
                     username = if ($env:USERNAME) { $env:USERNAME } else { 'User' }
                     sessionName = "mstsc -> $display"
-                    type = "Исходящий RDP ($display)"
+                    type = "RDP-Out ($display)"
                     state = 'Active'
-                    idleTime = '0 мин'
+                    idleTime = '0m'
                     logonTime = (Get-Date).ToString('yyyy-MM-dd HH:mm')
                     clientIp = $cleanIp
                 }
@@ -2695,6 +2755,7 @@ function Get-InstallerLiveSessions() {
             }
         }
     } catch {}
+
 
     return @($sess)
 }
@@ -2811,16 +2872,17 @@ for ($attempt = 1; $attempt -le 4; $attempt++) {
 }
 
 if ($hbOk) {
-    Write-Host "      [OK] Первичная телеметрия успешно передана на сервер." -ForegroundColor Green
+    Write-Host "      [OK] Initial telemetry sent to server." -ForegroundColor Green
 } else {
-    Write-Host "      [OK] Фоновая служба запущена и передает телеметрию в штатном цикле." -ForegroundColor Green
+    Write-Host "      [OK] Background monitoring service active." -ForegroundColor Green
 }
 
 Write-Host ""
 Write-Host "==============================================================================" -ForegroundColor Green
-Write-Host "  [OK] АГЕНТ И СЛУЖБА УСПЕШНО УСТАНОВЛЕНЫ И СВЯЗАНЫ С СЕРВЕРОМ!" -ForegroundColor Green
-Write-Host ("  Имя ПК:      " + $hostname + " (" + $ip + ")") -ForegroundColor White
-Write-Host ("  ID машины:   " + $deviceId) -ForegroundColor White
-Write-Host ("  Сервер:      " + $ServerUrl) -ForegroundColor White
-Write-Host "  Состояние:   Онлайн. Компьютер теперь отображается в панели мониторинга." -ForegroundColor White
+Write-Host "  [OK] WORKSTATION MANAGER AGENT INSTALLED SUCCESSFULLY!" -ForegroundColor Green
+Write-Host ("  Computer:    " + $hostname + " (" + $ip + ")") -ForegroundColor White
+Write-Host ("  Device ID:   " + $deviceId) -ForegroundColor White
+Write-Host ("  Server:      " + $ServerUrl) -ForegroundColor White
+Write-Host "  Status:      Online." -ForegroundColor White
 Write-Host "==============================================================================" -ForegroundColor Green
+

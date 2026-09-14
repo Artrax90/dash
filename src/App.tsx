@@ -8412,7 +8412,9 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
     action: string;
     detail: string;
     time: string;
-    status: 'ok' | 'fail';
+    initiator?: string;
+    source?: string;
+    status: 'ok' | 'pending' | 'fail';
   }>>([]);
 
   // Schedules state (default: disabled for newly added devices)
@@ -8525,7 +8527,9 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
       devicesApi.getPowerLogs(device.id).then(logs => {
         if (!isMounted || !logs || !Array.isArray(logs)) return;
         const formatted = logs.map((l: any) => {
-          const isSuccess = String(l.status || '').toUpperCase() === 'SUCCESS';
+          const rawStatus = String(l.status || '').toUpperCase();
+          const isSuccess = rawStatus === 'SUCCESS';
+          const isPending = ['PENDING', 'UPDATING', 'IN_PROGRESS', 'RUNNING'].includes(rawStatus) || (l.action === 'UPDATE_AGENT' && !isSuccess && (l.details || '').includes('Загрузка обновления'));
           const isSch = String(l.source || '').toUpperCase() === 'SCHEDULE';
           const isLocal = String(l.source || '').toUpperCase() === 'LOCAL';
           const isTelegram = ['TELEGRAM', 'TG'].includes(String(l.source || '').toUpperCase());
@@ -8545,16 +8549,21 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
             : (l.action === 'WAKE' ? 'Удаленное включение (Wake-on-LAN)' :
                l.action === 'SHUTDOWN' ? 'Удаленное выключение (Shutdown)' :
                l.action === 'FORCE_SHUTDOWN' ? 'Удаленное принудительное выключение (Force Shutdown)' :
-               l.action === 'REBOOT' ? 'Удаленная перезагрузка (Reboot)' : `Удаленная команда: ${l.action}`);
+               l.action === 'REBOOT' ? 'Удаленная перезагрузка (Reboot)' :
+               l.action === 'UPDATE_AGENT' ? 'Обновление агента (OTA Update)' : `Удаленная команда: ${l.action}`);
 
           return {
             id: l.id || Math.random().toString(),
             action: l.title || defaultTitle,
-            detail: isSuccess ? `${l.details || 'Сигнал успешно отправлен'}` : `Ошибка: ${l.details || 'Сбой выполнения'}`,
+            detail: isSuccess
+              ? `${l.details || 'Сигнал успешно отправлен'}`
+              : isPending
+              ? `${l.details || 'Выполняется...'}`
+              : `Ошибка: ${l.details || 'Сбой выполнения'}`,
             initiator: l.initiator || (isSch ? 'Планировщик' : isLocal ? 'Локальный пользователь' : isTelegram ? 'Telegram-бот' : getActiveUserName()),
             source: l.source || (isSch ? 'SCHEDULE' : isLocal ? 'LOCAL' : isTelegram ? 'TELEGRAM' : 'MANUAL'),
             time: l.timestamp ? formatLogTime(l.timestamp) : 'Недавно',
-            status: (isSuccess ? 'ok' : 'fail') as 'ok' | 'fail'
+            status: (isSuccess ? 'ok' : isPending ? 'pending' : 'fail') as 'ok' | 'pending' | 'fail'
           };
         });
 
@@ -8780,8 +8789,22 @@ function PowerPanel({ device, notify }: { device: Device; notify: (message: stri
               devicePowerLogs.map(log => (
                 <div key={log.id} className="operation-row" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '10px 18px', borderBottom: '1px solid var(--line)' }}>
                   <div style={{ display: 'flex', alignItems: 'flex-start', gap: '10px', flex: 1, minWidth: 0 }}>
-                    <div className={log.status === 'ok' ? 'operation-ok' : 'operation-fail'} style={{ marginTop: '2px', flexShrink: 0, width: '22px', height: '22px', minWidth: '22px' }}>
-                      {log.status === 'ok' ? <Check size={12} /> : <AlertTriangle size={12} />}
+                    <div
+                      className={log.status === 'ok' ? 'operation-ok' : log.status === 'pending' ? 'operation-pending' : 'operation-fail'}
+                      style={{
+                        marginTop: '2px',
+                        flexShrink: 0,
+                        width: '22px',
+                        height: '22px',
+                        minWidth: '22px',
+                        borderRadius: '50%',
+                        display: 'grid',
+                        placeItems: 'center',
+                        background: log.status === 'ok' ? 'var(--green-soft)' : log.status === 'pending' ? 'var(--blue-soft)' : 'var(--red-soft)',
+                        color: log.status === 'ok' ? 'var(--green)' : log.status === 'pending' ? 'var(--blue)' : 'var(--red)'
+                      }}
+                    >
+                      {log.status === 'ok' ? <Check size={12} /> : log.status === 'pending' ? <RefreshCw size={12} className="spin" /> : <AlertTriangle size={12} />}
                     </div>
                     <div className="operation-info" style={{ minWidth: 0 }}>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>

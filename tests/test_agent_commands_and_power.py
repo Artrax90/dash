@@ -316,3 +316,138 @@ def test_service_startup_quoting_and_power_cascades():
     # 6. Target matching in UDP listener
     assert '$isTargetMatch = $false' in content or '`$isTargetMatch = `$false' in content, "isTargetMatch should initialize to false before matching"
     assert '$targetHost.ToUpper() -eq $myHostName' in content or '`$targetHost.ToUpper() -eq `$myHostName' in content, "Missing hostname matching in UDP listener"
+
+
+def test_windows_agent_service_script_safe_installdir_and_webclient():
+    """
+    TDD Test:
+    1. get_windows_agent_service_ps1 generates script where $InstallDir is explicitly defined at the top
+    2. Update-AgentService uses System.Net.WebClient with Proxy = $null to bypass WPAD proxy delays
+    3. Update-AgentService tries multi-candidate URLs and logs failure
+    4. PowerShell AST parser confirms 0 syntax errors on generated service script
+    """
+    import subprocess
+    import base64
+    from backend.app.main import get_windows_agent_service_ps1
+
+    script = get_windows_agent_service_ps1("http://192.168.1.109:2301", "PC-TEST", "AA:BB:CC:DD:EE:FF")
+
+    # 1. $InstallDir explicitly initialized at top
+    assert "$InstallDir = if ($PSScriptRoot" in script or "$InstallDir = if (`$PSScriptRoot" in script, "Missing safe $InstallDir initialization at top of run_service.ps1"
+
+    # 2. WebClient with Proxy = $null in Update-AgentService
+    assert "System.Net.WebClient" in script, "Update-AgentService must use System.Net.WebClient for fast download"
+    assert "$wc.Proxy = $null" in script or "$wc.Proxy = `$null" in script or "`$wc.Proxy = `$null" in script, "WebClient in Update-AgentService must have Proxy = $null"
+
+    # 3. Fallback candidate URLs in Update-AgentService
+    assert "candidateUrls" in script or "candidateList" in script or "service-script" in script, "Update-AgentService must include candidate URLs"
+
+    # 4. AST syntax validation with 0 errors
+    import tempfile
+    import os
+    with tempfile.NamedTemporaryFile(suffix=".ps1", delete=False, mode="w", encoding="utf-8-sig") as tmp_file:
+        tmp_file.write(script)
+        tmp_path = tmp_file.name
+
+    try:
+        ps_cmd = (
+            f"$errs = $null; "
+            f"[System.Management.Automation.Language.Parser]::ParseFile('{tmp_path}', [ref]$null, [ref]$errs); "
+            f"if ($errs.Count -gt 0) {{ $errs | ForEach-Object {{ Write-Error $_.Message }}; exit 1 }} else {{ Write-Host 'VALID' }}"
+        )
+        b64 = base64.b64encode(ps_cmd.encode("utf-16le")).decode("ascii")
+        res = subprocess.run(["powershell.exe", "-NoProfile", "-EncodedCommand", b64], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        stdout = res.stdout.decode("utf-8", errors="replace")
+        stderr = res.stderr.decode("utf-8", errors="replace")
+        assert res.returncode == 0, f"Service script syntax validation failed:\n{stderr}\n{stdout}"
+    finally:
+        if os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+def test_windows_installer_ps1_endpoint_serves_bom_on_file_download():
+    """
+    TDD Test:
+    When /install.ps1 is requested by WebClient (User-Agent without PowerShell, or download=True),
+    it must return UTF-8 with BOM (0xEF, 0xBB, 0xBF) so powershell.exe -File parses with 0 errors.
+    When requested by PowerShell (irm ... | iex), it must return UTF-8 without BOM so iex does not fail.
+    """
+    from starlette.testclient import TestClient
+    from backend.app.main import app
+
+    client = TestClient(app)
+
+    # 1. WebClient with X-Agent-Version header -> with BOM
+    res_wc = client.get("/install.ps1", headers={"X-Agent-Version": "2.8.8"})
+    assert res_wc.status_code == 200
+    assert res_wc.content.startswith(b"\xef\xbb\xbf"), "Expected UTF-8 BOM when downloaded with X-Agent-Version"
+
+    # 2. Explicit download parameter -> with BOM
+    res_dl = client.get("/install.ps1?download=1", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; PowerShell/5.1)"})
+    assert res_dl.status_code == 200
+    assert res_dl.content.startswith(b"\xef\xbb\xbf"), "Expected UTF-8 BOM when download=1 is set"
+
+    # 3. irm ... | iex (PowerShell user agent, no download param) -> without BOM
+    res_irm = client.get("/install.ps1", headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Microsoft Windows 10.0.19045; en-US) PowerShell/5.1.19041.5776"})
+    assert res_irm.status_code == 200
+    assert not res_irm.content.startswith(b"\xef\xbb\xbf"), "Expected NO BOM for irm | iex"
+
+
+@pytest.mark.anyio
+async def test_agent_heartbeat_updates_power_log_success_on_latest_version():
+    """
+    TDD Test:
+    When device heartbeat reports agentVersion == settings.LATEST_AGENT_VERSION:
+    1. Any open UPDATING log entry is resolved to SUCCESS
+    2. Power log records a Success event
+    """
+    test_dev_id = "TEST-DEV-HB-VER-SUCCESS"
+    from backend.app.core.config import settings
+    from backend.app.api.v1.agents import agent_update_logs, agent_update_statuses
+    from backend.app.api.v1.devices import get_device_power_logs
+
+    agent_update_logs.clear()
+    agent_update_statuses.clear()
+
+    # Pre-populate an in-progress update log
+    agent_update_logs.append({
+        "deviceId": test_dev_id,
+        "deviceName": "Test Dev",
+        "previousVersion": "2.9.14",
+        "targetVersion": settings.LATEST_AGENT_VERSION,
+        "status": "UPDATING",
+        "details": f"Загрузка обновления службы v{settings.LATEST_AGENT_VERSION}",
+        "timestamp": datetime.utcnow().isoformat() + "Z"
+    })
+
+    async with AsyncSessionLocal() as db:
+        try:
+            scope = {'type': 'http', 'client': ('192.168.1.199', 54321), 'headers': []}
+            req = Request(scope)
+
+            payload = {
+                "deviceId": test_dev_id,
+                "hostname": "HOST-VER-001",
+                "agentVersion": settings.LATEST_AGENT_VERSION,
+                "uptime": "1д 5ч",
+                "cpu": 10,
+                "ram": 20,
+                "disk": 30
+            }
+            res = await agent_heartbeat(payload, req, db)
+            assert res["status"] == "ok"
+
+            # Check agent_update_logs
+            resolved = [entry for entry in agent_update_logs if entry.get("deviceId") == test_dev_id]
+            assert len(resolved) >= 1
+            assert resolved[0]["status"] == "SUCCESS"
+
+            # Check power logs
+            p_logs = await get_device_power_logs(test_dev_id, db)
+            update_logs = [l for l in p_logs if l.get("action") == "UPDATE_AGENT"]
+            assert len(update_logs) >= 1
+            assert update_logs[0]["status"] == "Success"
+        finally:
+            await db.execute(delete(Device).where(Device.id == test_dev_id))
+            await db.commit()
+
