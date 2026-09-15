@@ -5,7 +5,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 from sqlalchemy import select, func, delete, or_, and_
-from backend.app.db.session import get_db, engine, is_postgres_url
+from backend.app.db.session import get_db, engine, is_postgres_url, AsyncSessionLocal
 from backend.app.models.device import Device, PowerStatus, HealthStatus, AgentStatus
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
 from backend.app.models.alert import AlertPolicyModel, AlertModel
@@ -607,7 +607,7 @@ def format_device_summary(d: Device) -> Dict[str, Any]:
     }
 
 @router.post("/probe")
-async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(get_db)):
+async def probe_device(payload: DeviceProbeSchema):
     """
     Probes an IP address on the local network via ICMP/TCP ping and inspects ARP cache 
     to automatically discover the physical MAC address for Wake-on-LAN.
@@ -719,8 +719,15 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
                     pass
             
             from backend.app.api.v1.agents import pending_device_commands
-            dev_res = await db.execute(select(Device).where(Device.ip_address.isnot(None)))
-            for dev_row in dev_res.scalars().all():
+            dev_rows = []
+            try:
+                async with AsyncSessionLocal() as s_probe:
+                    dev_res = await s_probe.execute(select(Device).where(Device.ip_address.isnot(None)))
+                    dev_rows = dev_res.scalars().all()
+            except Exception as e_p:
+                print(f"[Probe] Error querying devices for UDP probe: {e_p}")
+
+            for dev_row in dev_rows:
                 if dev_row.ip_address and not dev_row.ip_address.startswith("127."):
                     try:
                         probe_sock.sendto(probe_msg, (dev_row.ip_address, 48123))
@@ -746,10 +753,14 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
 
     # Strategy 4: Check existing DB record
     if not mac:
-        db_res = await db.execute(select(Device).where(Device.ip_address == ip))
-        dev = db_res.scalars().first()
-        if dev and dev.mac_address and dev.mac_address != "00:00:00:00:00:00":
-            mac = dev.mac_address
+        try:
+            async with AsyncSessionLocal() as s_rec:
+                db_res = await s_rec.execute(select(Device).where(Device.ip_address == ip))
+                dev = db_res.scalars().first()
+                if dev and dev.mac_address and dev.mac_address != "00:00:00:00:00:00":
+                    mac = dev.mac_address
+        except Exception as e_rec:
+            print(f"[Probe] Error checking existing DB record: {e_rec}")
 
     # 3. Resolve hostname
     hostname = None
@@ -774,57 +785,62 @@ async def probe_device(payload: DeviceProbeSchema, db: AsyncSession = Depends(ge
         if formatted_mac:
             lookup_dev_conds.append(Device.mac_address == formatted_mac)
         if lookup_dev_conds:
-            db_res = await db.execute(select(Device).where(or_(*lookup_dev_conds)))
-            found_dev = db_res.scalars().first()
-            if found_dev:
-                # If current IP failed to respond, but we have a MAC, check if device migrated to another IP
-                if not is_online and formatted_mac and formatted_mac != "00:00:00:00:00:00":
-                    from backend.app.api.v1.agents import fleet_mac_to_ip
-                    m_cand = fleet_mac_to_ip.get(formatted_mac)
-                    if m_cand and isinstance(m_cand, dict):
-                        alt_ip = m_cand.get("ip")
-                        if alt_ip and alt_ip != ip:
-                            # Verify alt_ip with ping
-                            alt_ok = False
-                            try:
-                                alt_p = ["ping", "-n", "1", "-w", "500", alt_ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", alt_ip]
-                                a_proc = await asyncio.create_subprocess_exec(*alt_p, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
-                                alt_rc = await asyncio.wait_for(a_proc.wait(), timeout=1.2)
-                                alt_ok = (alt_rc == 0)
-                            except Exception:
-                                pass
-                            if not alt_ok:
-                                for p in [3389, 80, 443, 22, 8080, 5900]:
-                                    try:
-                                        _, w = await asyncio.wait_for(asyncio.open_connection(alt_ip, p), timeout=0.25)
-                                        w.close()
-                                        await w.wait_closed()
-                                        alt_ok = True
-                                        break
-                                    except Exception:
-                                        pass
-                            if alt_ok:
-                                print(f"[Probe] Thin client {found_dev.id} ({formatted_mac}) auto-migrated IP: {ip} -> {alt_ip}")
-                                old_ip_logged = ip
-                                ip = alt_ip
-                                found_dev.ip_address = alt_ip
-                                is_online = True
+            summary_to_broadcast = None
+            async with AsyncSessionLocal() as s_sync:
+                db_res = await s_sync.execute(select(Device).where(or_(*lookup_dev_conds)))
+                found_dev = db_res.scalars().first()
+                if found_dev:
+                    # If current IP failed to respond, but we have a MAC, check if device migrated to another IP
+                    if not is_online and formatted_mac and formatted_mac != "00:00:00:00:00:00":
+                        from backend.app.api.v1.agents import fleet_mac_to_ip
+                        m_cand = fleet_mac_to_ip.get(formatted_mac)
+                        if m_cand and isinstance(m_cand, dict):
+                            alt_ip = m_cand.get("ip")
+                            if alt_ip and alt_ip != ip:
+                                # Verify alt_ip with ping
+                                alt_ok = False
+                                try:
+                                    alt_p = ["ping", "-n", "1", "-w", "500", alt_ip] if os.name == "nt" else ["ping", "-c", "1", "-W", "1", alt_ip]
+                                    a_proc = await asyncio.create_subprocess_exec(*alt_p, stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL)
+                                    alt_rc = await asyncio.wait_for(a_proc.wait(), timeout=1.2)
+                                    alt_ok = (alt_rc == 0)
+                                except Exception:
+                                    pass
+                                if not alt_ok:
+                                    for p in [3389, 80, 443, 22, 8080, 5900]:
+                                        try:
+                                            _, w = await asyncio.wait_for(asyncio.open_connection(alt_ip, p), timeout=0.25)
+                                            w.close()
+                                            await w.wait_closed()
+                                            alt_ok = True
+                                            break
+                                        except Exception:
+                                            pass
+                                if alt_ok:
+                                    print(f"[Probe] Thin client {found_dev.id} ({formatted_mac}) auto-migrated IP: {ip} -> {alt_ip}")
+                                    old_ip_logged = ip
+                                    ip = alt_ip
+                                    found_dev.ip_address = alt_ip
+                                    is_online = True
 
-                if is_online:
-                    found_dev.power_status = PowerStatus.ON
-                    found_dev.agent_status = AgentStatus.CONNECTED
-                    found_dev.last_seen = datetime.utcnow()
-                else:
-                    found_dev.power_status = PowerStatus.OFF
-                    found_dev.agent_status = AgentStatus.DISCONNECTED
-                    if ip in fleet_arp_cache:
-                        del fleet_arp_cache[ip]
+                    if is_online:
+                        found_dev.power_status = PowerStatus.ON
+                        found_dev.agent_status = AgentStatus.CONNECTED
+                        found_dev.last_seen = datetime.utcnow()
+                    else:
+                        found_dev.power_status = PowerStatus.OFF
+                        found_dev.agent_status = AgentStatus.DISCONNECTED
+                        if ip in fleet_arp_cache:
+                            del fleet_arp_cache[ip]
 
-                if formatted_mac and (not found_dev.mac_address or found_dev.mac_address == "00:00:00:00:00:00"):
-                    found_dev.mac_address = formatted_mac
-                await db.commit()
-                await db.refresh(found_dev)
-                await ws_manager.broadcast_event("device.updated", format_device_summary(found_dev))
+                    if formatted_mac and (not found_dev.mac_address or found_dev.mac_address == "00:00:00:00:00:00"):
+                        found_dev.mac_address = formatted_mac
+                    await s_sync.commit()
+                    await s_sync.refresh(found_dev)
+                    summary_to_broadcast = format_device_summary(found_dev)
+
+            if summary_to_broadcast:
+                await ws_manager.broadcast_event("device.updated", summary_to_broadcast)
     except Exception as upd_err:
         print(f"[Probe] Error updating device online state in DB: {upd_err}")
 

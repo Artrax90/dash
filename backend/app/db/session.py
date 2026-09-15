@@ -19,9 +19,9 @@ def get_engine_options(database_url: str) -> Dict[str, Any]:
     if is_postgres_url(database_url):
         # Enterprise high-concurrency connection pooling (thousands of agents & dashboards)
         opts.update({
-            "pool_size": 30,
-            "max_overflow": 20,
-            "pool_timeout": 15,
+            "pool_size": settings.DB_POOL_SIZE,
+            "max_overflow": settings.DB_MAX_OVERFLOW,
+            "pool_timeout": settings.DB_POOL_TIMEOUT,
             "pool_pre_ping": True,
             "pool_recycle": 300,
             "pool_reset_on_return": "rollback",

@@ -17,9 +17,9 @@ def test_is_postgres_url_detection():
 
 def test_get_engine_options_postgres_vs_sqlite():
     pg_opts = get_engine_options("postgresql+asyncpg://user:pass@localhost:5432/db")
-    assert pg_opts.get("pool_size") == 30
-    assert pg_opts.get("max_overflow") == 20
-    assert pg_opts.get("pool_timeout") == 15
+    assert pg_opts.get("pool_size") == 60
+    assert pg_opts.get("max_overflow") == 60
+    assert pg_opts.get("pool_timeout") == 30
     assert pg_opts.get("pool_pre_ping") is True
     assert pg_opts.get("pool_recycle") == 300
     assert pg_opts.get("pool_reset_on_return") == "rollback"
@@ -201,4 +201,36 @@ async def test_alert_engine_dispatch_non_blocking_task(monkeypatch):
 
     # Verify that dispatch_alert was dispatched asynchronously via create_task
     assert len(task_created) >= 1
+
+def test_probe_device_does_not_hold_db_dependency():
+    import inspect
+    from backend.app.api.v1.devices import probe_device
+    sig = inspect.signature(probe_device)
+    # Ensure db parameter is not present or not holding Depends(get_db)
+    assert "db" not in sig.parameters
+
+@pytest.mark.anyio
+async def test_version_info_cache_bypasses_db():
+    from unittest.mock import AsyncMock, patch
+    from backend.app.api.v1.agents import get_agent_version_info, _set_cached_version_info, invalidate_version_info_cache
+    
+    test_cache = {
+        "currentVersion": "2.9.16",
+        "releaseDate": "2026-08-23",
+        "totalAgents": 42,
+        "upToDateCount": 42,
+        "outdatedCount": 0,
+        "updatingCount": 0
+    }
+    _set_cached_version_info(test_cache)
+    
+    mock_request = MagicMock()
+    # If cache is valid, get_agent_version_info must return immediately without calling AsyncSessionLocal
+    with patch("backend.app.api.v1.agents.AsyncSessionLocal") as mock_session_local:
+        res = await get_agent_version_info(mock_request)
+        assert res["currentVersion"] == "2.9.16"
+        assert res["totalAgents"] == 42
+        mock_session_local.assert_not_called()
+    
+    invalidate_version_info_cache()
 

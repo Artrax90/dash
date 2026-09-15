@@ -10,7 +10,7 @@ import time
 import uuid
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_, delete
-from backend.app.db.session import get_db
+from backend.app.db.session import get_db, AsyncSessionLocal
 from backend.app.models.device import Device, PowerStatus, AgentStatus, HealthStatus, RdpStatus
 from backend.app.models.hardware import HardwareSpecModel, HardwareBaselineModel, HardwareChangeModel
 from backend.app.models.alert import AlertModel, AlertPolicyModel
@@ -1248,20 +1248,57 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         "reportedBy": device_id or payload.get("hostname")
                     }
 
-    lookup_conds = []
-    if device_id:
-        lookup_conds.append(func.lower(Device.id) == str(device_id).lower())
-        lookup_conds.append(func.lower(Device.hostname) == str(device_id).lower())
-    if payload.get("hostname"):
-        lookup_conds.append(func.lower(Device.hostname) == str(payload.get("hostname")).lower())
-    if payload.get("mac"):
-        mac_clean = str(payload.get("mac")).replace("-", ":").upper()
-        lookup_conds.append(Device.mac_address == mac_clean)
-        lookup_conds.append(func.lower(Device.mac_address) == mac_clean.lower())
+    device = None
+    clean_dev_id = str(device_id).strip() if device_id else None
+    if clean_dev_id:
+        # Fast-path 1: Direct Primary Key lookup (instant O(1) indexed seek in <0.1ms)
+        try:
+            get_res = await db.get(Device, clean_dev_id)
+            if isinstance(get_res, Device):
+                device = get_res
+        except Exception:
+            pass
+        if not device and clean_dev_id.lower() != clean_dev_id:
+            try:
+                get_res = await db.get(Device, clean_dev_id.lower())
+                if isinstance(get_res, Device):
+                    device = get_res
+            except Exception:
+                pass
+        if not device and clean_dev_id.upper() != clean_dev_id:
+            try:
+                get_res = await db.get(Device, clean_dev_id.upper())
+                if isinstance(get_res, Device):
+                    device = get_res
+            except Exception:
+                pass
 
-    if lookup_conds:
-        result = await db.execute(select(Device).where(or_(*lookup_conds)))
-        device = result.scalars().first()
+    # Fast-path 2: Exact hostname or mac lookup if device not found by ID
+    if not device and payload.get("hostname"):
+        res = await db.execute(select(Device).where(Device.hostname == str(payload.get("hostname")).strip()))
+        device = res.scalars().first()
+
+    if not device and payload.get("mac"):
+        clean_mac_val = str(payload.get("mac")).replace("-", ":").upper().strip()
+        if clean_mac_val != "00:00:00:00:00:00":
+            res = await db.execute(select(Device).where(Device.mac_address == clean_mac_val))
+            device = res.scalars().first()
+
+    # Fallback: Case-insensitive scan only if not matched by exact indexed keys
+    if not device:
+        lookup_conds = []
+        if clean_dev_id:
+            lookup_conds.append(func.lower(Device.id) == clean_dev_id.lower())
+            lookup_conds.append(func.lower(Device.hostname) == clean_dev_id.lower())
+        if payload.get("hostname"):
+            lookup_conds.append(func.lower(Device.hostname) == str(payload.get("hostname")).lower())
+        if payload.get("mac"):
+            mac_clean = str(payload.get("mac")).replace("-", ":").upper()
+            lookup_conds.append(func.lower(Device.mac_address) == mac_clean.lower())
+
+        if lookup_conds:
+            result = await db.execute(select(Device).where(or_(*lookup_conds)))
+            device = result.scalars().first()
 
     if not device and device_id:
         clean_name = payload.get("hostname") or device_id
@@ -1591,14 +1628,14 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             if reported_hw or reported_ram_slots is not None or reported_ram_total is not None or reported_pci is not None or reported_gpus is not None or reported_storage is not None or reported_network is not None:
                 try:
                     hw_res = await db.execute(
-                        select(HardwareSpecModel).where(
-                            (HardwareSpecModel.device_id == device.id) |
-                            (HardwareSpecModel.device_id == device.id.upper()) |
-                            (func.lower(HardwareSpecModel.device_id) == str(device.id).lower()) |
-                            (func.lower(HardwareSpecModel.device_id) == str(device_id).lower())
-                        )
+                        select(HardwareSpecModel).where(HardwareSpecModel.device_id == device.id)
                     )
                     hw_model = hw_res.scalar_one_or_none()
+                    if not hw_model and device.id and device.id != device.id.upper():
+                        hw_res = await db.execute(
+                            select(HardwareSpecModel).where(HardwareSpecModel.device_id == device.id.upper())
+                        )
+                        hw_model = hw_res.scalar_one_or_none()
                     if not hw_model:
                         init_spec = copy.deepcopy(reported_hw) if isinstance(reported_hw, dict) else {}
                         if reported_ram_total is not None:
@@ -1846,8 +1883,9 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                         pass
 
             # Priority 1: Specific device override
-            if device.heartbeat_interval and device.heartbeat_interval > 0:
-                effective_interval = device.heartbeat_interval
+            hb_override = getattr(device, "heartbeat_interval", None)
+            if isinstance(hb_override, (int, float)) and hb_override > 0:
+                effective_interval = int(hb_override)
             else:
                 # Priority 2: Group override
                 raw_groups = [g.strip() for g in (device.group_name or "").split(",") if g.strip()]
@@ -1880,6 +1918,7 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                     device.health_status = HealthStatus.HEALTHY
 
             await db.commit()
+            await db.close()
 
             # Record real live telemetry point in history with top processes
             from backend.app.api.v1.devices import record_telemetry_snapshot, format_device_summary
@@ -1905,6 +1944,8 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             }
             if should_broadcast_device_update(device.id, dev_state):
                 await ws_manager.broadcast_event("device.updated", format_device_summary(device))
+    else:
+        await db.close()
 
     # Pop pending commands for this device by checking all potential keys
     pending_cmds = []
@@ -2185,7 +2226,7 @@ def invalidate_version_info_cache():
     _version_info_cache_time = 0.0
 
 @router.get("/version-info")
-async def get_agent_version_info(request: Request, db: AsyncSession = Depends(get_db)):
+async def get_agent_version_info(request: Request):
     """
     Returns latest agent version details, changelog, and fleet breakdown (up to date vs outdated).
     Cached for 10s to prevent continuous full-table scan and interface probing on multi-tab refresh.
@@ -2194,8 +2235,9 @@ async def get_agent_version_info(request: Request, db: AsyncSession = Depends(ge
     if cached:
         return cached
 
-    result = await db.execute(select(Device))
-    devices = result.scalars().all()
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(select(Device))
+        devices = result.scalars().all()
     
     total_count = len(devices)
     up_to_date_count = 0
@@ -2260,9 +2302,19 @@ async def report_agent_update_status(payload: Dict[str, Any], db: AsyncSession =
     details = payload.get("details", "")
     error_msg = payload.get("error", "")
 
-    # Find device
-    result = await db.execute(select(Device).where((Device.id == device_id) | (Device.hostname == device_id)))
-    device = result.scalar_one_or_none()
+    # Find device - Fast path using PK index
+    device = None
+    if device_id:
+        clean_dev_id = str(device_id).strip()
+        try:
+            get_res = await db.get(Device, clean_dev_id)
+            if isinstance(get_res, Device):
+                device = get_res
+        except Exception:
+            pass
+        if not device:
+            res = await db.execute(select(Device).where((Device.id == clean_dev_id) | (Device.hostname == clean_dev_id)))
+            device = res.scalar_one_or_none()
 
     dev_name = device.name if device else device_id
     keys_to_update = {device_id}
@@ -2344,6 +2396,7 @@ async def report_agent_update_status(payload: Dict[str, Any], db: AsyncSession =
     save_update_logs(agent_update_logs)
     invalidate_version_info_cache()
 
+    dev_summary = None
     if device:
         from backend.app.api.v1.devices import log_device_power_event, format_device_summary
         log_device_power_event(
@@ -2355,7 +2408,13 @@ async def report_agent_update_status(payload: Dict[str, Any], db: AsyncSession =
             source="REMOTE"
         )
         await db.commit()
-        await ws_manager.broadcast_event("device.updated", format_device_summary(device))
+        dev_summary = format_device_summary(device)
+        await db.close()
+    else:
+        await db.close()
+
+    if dev_summary:
+        await ws_manager.broadcast_event("device.updated", dev_summary)
 
     await ws_manager.broadcast_event("agent.update_status", log_entry)
     return {"status": "recorded", "deviceId": device_id}
