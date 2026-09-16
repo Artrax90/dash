@@ -993,7 +993,7 @@ function App() {
     { label: 'Telegram', name: t('nav.telegram'), icon: Send, adminOnly: true },
     { label: 'Audit Log', name: t('nav.audit'), icon: Terminal, adminOnly: true },
     { label: 'Settings', name: t('nav.settings'), icon: Settings, adminOnly: true },
-    { label: 'DockerLogs', name: t('nav.dockerLogs') || 'Логи контейнера', icon: FileText, superAdminOnly: true, adminOnly: true },
+    { label: 'DockerLogs', name: t('nav.dockerLogs') || 'Логи', icon: FileText, superAdminOnly: true, adminOnly: true },
   ];
 
   const navigation = isSuperAdmin 

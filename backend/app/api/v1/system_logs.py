@@ -13,6 +13,9 @@ from backend.app.api.v1.users import require_superadmin, is_superadmin_role, loa
 
 router = APIRouter(prefix="/system", tags=["system-logs"])
 
+# Silence httpx internal client logging so queries to docker.sock don't flood the server log
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
 # In-memory circular buffer of recent logs (fallback when Docker socket is not mounted / during local dev & tests)
 IN_MEMORY_LOGS_MAX = 3000
 in_memory_log_buffer: deque = deque(maxlen=IN_MEMORY_LOGS_MAX)
@@ -67,17 +70,45 @@ DEFAULT_CONTAINERS = [
 DOCKER_SOCKET_PATH = "/var/run/docker.sock"
 
 def detect_log_level(text: str, stream: str = "stdout") -> str:
-    """Detect log level based on content keywords."""
+    """
+    Detect log level based on content keywords.
+    Priority is given to explicit bracketed levels [INFO], [WARN], [ERROR], [DEBUG].
+    """
     upper = text.upper()
-    if any(k in upper for k in ["[ERROR]", "ERROR:", "TRACEBACK", "EXCEPTION", "FAILED", "CRITICAL"]):
+
+    # 1. Exact bracketed tags or colon patterns
+    if "[ERROR]" in upper or "[CRITICAL]" in upper or "ERROR:" in upper or "CRITICAL:" in upper:
         return "ERROR"
-    if any(k in upper for k in ["[WARNING]", "[WARN]", "WARNING:", "WARN:"]):
+    if "[WARN]" in upper or "[WARNING]" in upper or "WARNING:" in upper or "WARN:" in upper:
         return "WARN"
-    if any(k in upper for k in ["[DEBUG]", "DEBUG:"]):
+    if "[DEBUG]" in upper or "DEBUG:" in upper:
         return "DEBUG"
-    if stream == "stderr" and any(k in upper for k in ["FAIL", "ERR", "DENIED"]):
+    if "[INFO]" in upper or "INFO:" in upper:
+        return "INFO"
+
+    # 2. General keywords only if not explicitly marked [INFO]/[DEBUG]
+    if re.search(r"\b(TRACEBACK|EXCEPTION|FATAL)\b", upper):
         return "ERROR"
+
+    # 3. Stream check: only flag ERROR if stream is stderr AND contains whole-word error tokens
+    # Never match substrings like 'err' inside 'stderr' or URL query params
+    if stream == "stderr":
+        if re.search(r"\b(ERROR|FAIL|FAILED|FATAL|DENIED|CRITICAL)\b", upper):
+            return "ERROR"
+        if re.search(r"\b(WARNING|WARN)\b", upper):
+            return "WARN"
+
     return "INFO"
+
+def is_internal_logs_request(msg: str) -> bool:
+    """Detects internal log queries to prevent infinite self-logging loops."""
+    m_lower = msg.lower()
+    return (
+        "containers/workstation-manager/logs" in m_lower
+        or "containers/workstation-manager-postgres/logs" in m_lower
+        or "/api/v1/system/logs" in m_lower
+        or "http request: get http://localhost/containers/" in m_lower
+    )
 
 def parse_docker_frame_stream(data: bytes) -> List[Dict[str, Any]]:
     """
@@ -117,10 +148,13 @@ def parse_docker_frame_stream(data: bytes) -> List[Dict[str, Any]]:
                 if not line.strip():
                     continue
                 ts, msg = _split_timestamp_and_message(line)
+                lvl = detect_log_level(msg, stream_name)
+                # If explicit [INFO] or [DEBUG], don't flag stream as stderr to avoid scary red badges
+                actual_stream = "stdout" if lvl in ["INFO", "DEBUG"] else stream_name
                 entries.append({
                     "timestamp": ts,
-                    "level": detect_log_level(msg, stream_name),
-                    "stream": stream_name,
+                    "level": lvl,
+                    "stream": actual_stream,
                     "message": msg,
                     "raw": line
                 })
@@ -131,9 +165,10 @@ def parse_docker_frame_stream(data: bytes) -> List[Dict[str, Any]]:
             if not line.strip():
                 continue
             ts, msg = _split_timestamp_and_message(line)
+            lvl = detect_log_level(msg, "stdout")
             entries.append({
                 "timestamp": ts,
-                "level": detect_log_level(msg, "stdout"),
+                "level": lvl,
                 "stream": "stdout",
                 "message": msg,
                 "raw": line
@@ -174,7 +209,7 @@ async def fetch_docker_logs_via_socket(container_name: str, tail: int = 500) -> 
     return None
 
 async def fetch_docker_logs_via_cli(container_name: str, tail: int = 500) -> Optional[List[Dict[str, Any]]]:
-    """Fallback: fetches logs via docker CLI if available."""
+    """Fallback: fetches logs via docker CLI if available and daemon is running."""
     try:
         proc = await asyncio.create_subprocess_exec(
             "docker", "logs", "--tail", str(tail), "-t", container_name,
@@ -182,6 +217,9 @@ async def fetch_docker_logs_via_cli(container_name: str, tail: int = 500) -> Opt
             stderr=asyncio.subprocess.PIPE
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+        # If docker daemon is not running or command failed, return None so we fallback to in-memory logs
+        if proc.returncode != 0:
+            return None
         combined = (stdout or b"") + (stderr or b"")
         if combined:
             return parse_docker_frame_stream(combined)
@@ -235,7 +273,9 @@ async def get_system_logs(
     tail: int = Query(500, ge=1, le=5000, description="Number of tail lines"),
     level: Optional[str] = Query(None, description="Log level filter: ERROR, WARN, INFO, DEBUG"),
     search: Optional[str] = Query(None, description="Text or regex search"),
-    since: Optional[str] = Query(None, description="Filter logs since ISO datetime")
+    since: Optional[str] = Query(None, description="Filter logs since ISO datetime"),
+    until: Optional[str] = Query(None, description="Filter logs until ISO datetime"),
+    show_internal: bool = Query(False, description="Include internal log polling lines")
 ):
     """
     Fetches container logs with filtering by level, search string, and datetime.
@@ -259,7 +299,18 @@ async def get_system_logs(
     level_filter = level.strip().upper() if level and level.strip().upper() != "ALL" else None
     search_filter = search.strip().lower() if search and search.strip() else None
 
+    # Normalization helper for ISO / datetime-local strings (e.g. '2026-09-16T12:00')
+    clean_since = since.strip().replace(" ", "T") if since and since.strip() else None
+    clean_until = until.strip().replace(" ", "T") if until and until.strip() else None
+
     for entry in logs:
+        msg = entry.get("message", "")
+        raw = entry.get("raw", "")
+
+        # Omit internal log polling queries so the viewer shows real system events
+        if not show_internal and is_internal_logs_request(msg):
+            continue
+
         # Filter by level
         if level_filter:
             entry_level = entry.get("level", "INFO").upper()
@@ -272,16 +323,24 @@ async def get_system_logs(
 
         # Filter by search keyword
         if search_filter:
-            msg = entry.get("message", "").lower()
-            raw = entry.get("raw", "").lower()
-            if search_filter not in msg and search_filter not in raw:
+            msg_lower = msg.lower()
+            raw_lower = raw.lower()
+            if search_filter not in msg_lower and search_filter not in raw_lower:
                 continue
 
-        # Filter by since datetime
-        if since:
+        # Filter by datetime range (since / until)
+        entry_ts = (entry.get("timestamp") or "").replace(" ", "T")
+        if clean_since:
             try:
-                entry_ts = entry.get("timestamp", "")
-                if entry_ts < since:
+                # Compare prefixes or full ISO
+                if entry_ts[:len(clean_since)] < clean_since:
+                    continue
+            except Exception:
+                pass
+
+        if clean_until:
+            try:
+                if entry_ts[:len(clean_until)] > clean_until:
                     continue
             except Exception:
                 pass
@@ -325,13 +384,15 @@ async def stream_system_logs_websocket(websocket: WebSocket):
     if not init_logs:
         init_logs = list(in_memory_log_buffer)[-150:]
 
+    clean_init = [l for l in init_logs if not is_internal_logs_request(l.get("message", ""))]
+
     await websocket.send_json({
         "type": "init",
         "container": container,
-        "logs": init_logs
+        "logs": clean_init
     })
 
-    last_seen_raw = init_logs[-1]["raw"] if init_logs else ""
+    last_seen_raw = clean_init[-1]["raw"] if clean_init else ""
 
     # Streaming loop
     try:
@@ -342,20 +403,22 @@ async def stream_system_logs_websocket(websocket: WebSocket):
             if not latest_logs:
                 latest_logs = list(in_memory_log_buffer)[-50:]
 
-            if latest_logs:
+            clean_latest = [l for l in latest_logs if not is_internal_logs_request(l.get("message", ""))]
+
+            if clean_latest:
                 # Find new lines after last_seen_raw
                 new_lines = []
                 if last_seen_raw:
                     found = False
-                    for entry in latest_logs:
+                    for entry in clean_latest:
                         if found:
                             new_lines.append(entry)
                         elif entry["raw"] == last_seen_raw:
                             found = True
                     if not found:
-                        new_lines = latest_logs[-5:]
+                        new_lines = clean_latest[-5:]
                 else:
-                    new_lines = latest_logs[-5:]
+                    new_lines = clean_latest[-5:]
 
                 if new_lines:
                     last_seen_raw = new_lines[-1]["raw"]

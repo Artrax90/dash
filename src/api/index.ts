@@ -1580,13 +1580,14 @@ export const systemApi = {
     }
     return await res.json();
   },
-  getLogs: async (params: { container?: string; tail?: number; level?: string; search?: string; since?: string } = {}): Promise<{ container: string; total: number; source: string; logs: Array<{ timestamp: string; level: string; stream: string; message: string; raw: string }> }> => {
+  getLogs: async (params: { container?: string; tail?: number; level?: string; search?: string; since?: string; until?: string } = {}): Promise<{ container: string; total: number; source: string; logs: Array<{ timestamp: string; level: string; stream: string; message: string; raw: string }> }> => {
     const q = new URLSearchParams();
     if (params.container) q.set('container', params.container);
     if (params.tail) q.set('tail', params.tail.toString());
     if (params.level && params.level !== 'ALL') q.set('level', params.level);
     if (params.search) q.set('search', params.search);
     if (params.since) q.set('since', params.since);
+    if (params.until) q.set('until', params.until);
 
     const res = await fetch(`${API_BASE}/system/logs?${q.toString()}`, {
       headers: getAuthHeaders()

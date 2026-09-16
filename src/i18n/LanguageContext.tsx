@@ -49,7 +49,7 @@ export const translations = {
       telegram: 'Telegram-бот',
       audit: 'Журнал аудита',
       settings: 'Настройки',
-      dockerLogs: 'Логи контейнера',
+      dockerLogs: 'Логи',
       operations: 'Операции',
       administration: 'Администрирование',
     },

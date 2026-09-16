@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   Terminal, Play, Pause, RefreshCw, Download, Copy, Trash2, Search,
   Filter, Check, AlertCircle, AlertTriangle, Info, Clock, Server, ArrowDown,
-  Layers, ArrowDownToLine, Cpu
+  Layers, ArrowDownToLine, Cpu, Calendar, X
 } from 'lucide-react';
 import { systemApi } from '@/api';
 
@@ -39,7 +39,10 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
   const [levelFilter, setLevelFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [tailCount, setTailCount] = useState<number>(500);
-  const [datePreset, setDatePreset] = useState<'ALL' | '15M' | '1H' | 'TODAY'>('ALL');
+  const [datePreset, setDatePreset] = useState<'ALL' | '15M' | '1H' | 'TODAY' | 'CUSTOM'>('ALL');
+  const [customSince, setCustomSince] = useState<string>('');
+  const [customUntil, setCustomUntil] = useState<string>('');
+  const [showCustomRange, setShowCustomRange] = useState<boolean>(false);
   const [isLive, setIsLive] = useState<boolean>(true);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
@@ -69,44 +72,64 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
     } else if (datePreset === 'TODAY') {
       const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
       return today.toISOString();
+    } else if (datePreset === 'CUSTOM' && customSince) {
+      try {
+        return new Date(customSince).toISOString();
+      } catch {
+        return customSince;
+      }
     }
     return undefined;
-  }, [datePreset]);
+  }, [datePreset, customSince]);
+
+  // Compute 'until' datetime based on custom range
+  const getUntilIso = useCallback((): string | undefined => {
+    if (datePreset === 'CUSTOM' && customUntil) {
+      try {
+        return new Date(customUntil).toISOString();
+      } catch {
+        return customUntil;
+      }
+    }
+    return undefined;
+  }, [datePreset, customUntil]);
 
   // Fetch logs
   const fetchLogs = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
     try {
       const since = getSinceIso();
+      const until = getUntilIso();
       const res = await systemApi.getLogs({
         container: selectedContainer,
         tail: tailCount,
         level: levelFilter !== 'ALL' ? levelFilter : undefined,
         search: searchQuery.trim() || undefined,
-        since
+        since,
+        until
       });
       if (res && Array.isArray(res.logs)) {
         setLogs(res.logs);
       }
     } catch (err: any) {
       if (showLoading) {
-        notify(err.message || 'Ошибка загрузки логов контейнера', 'error');
+        notify(err.message || 'Ошибка загрузки логов', 'error');
       }
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [selectedContainer, tailCount, levelFilter, searchQuery, getSinceIso, notify]);
+  }, [selectedContainer, tailCount, levelFilter, searchQuery, getSinceIso, getUntilIso, notify]);
 
   // Initial fetch and reload on parameter changes
   useEffect(() => {
     fetchLogs(true);
   }, [fetchLogs]);
 
-  // Live polling (every 2.5 seconds when isLive is true)
+  // Live polling (every 2.5 seconds when isLive is true and not in historical custom range)
   useEffect(() => {
     if (pollingRef.current) clearInterval(pollingRef.current);
 
-    if (isLive) {
+    if (isLive && datePreset !== 'CUSTOM') {
       pollingRef.current = setInterval(() => {
         fetchLogs(false);
       }, 2500);
@@ -115,7 +138,7 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
     return () => {
       if (pollingRef.current) clearInterval(pollingRef.current);
     };
-  }, [isLive, fetchLogs]);
+  }, [isLive, datePreset, fetchLogs]);
 
   // Auto-scroll to bottom when logs update
   useEffect(() => {
@@ -138,6 +161,9 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
 
   // Filter logs locally for instant feedback
   const filteredLogs = useMemo(() => {
+    const since = getSinceIso();
+    const until = getUntilIso();
+
     return logs.filter(entry => {
       // Level filter
       if (levelFilter !== 'ALL') {
@@ -154,9 +180,13 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
         const matchRaw = entry.raw.toLowerCase().includes(q);
         if (!matchMsg && !matchRaw) return false;
       }
+      // Custom date range filter
+      if (since && entry.timestamp < since) return false;
+      if (until && entry.timestamp > until) return false;
+
       return true;
     });
-  }, [logs, levelFilter, searchQuery]);
+  }, [logs, levelFilter, searchQuery, getSinceIso, getUntilIso]);
 
   // KPI counters
   const counts = useMemo(() => {
@@ -231,10 +261,10 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
             DOCKER CONTAINER TELEMETRY & SYSTEM LOGS
           </span>
           <h1 style={{ fontSize: '24px', fontWeight: 800, margin: '4px 0 6px 0', display: 'flex', alignItems: 'center', gap: '10px' }}>
-            <Terminal size={24} style={{ color: 'var(--blue)' }} /> Логи контейнера
+            <Terminal size={24} style={{ color: 'var(--blue)' }} /> Логи
           </h1>
           <p className="muted" style={{ margin: 0, fontSize: '13px', color: 'var(--muted)' }}>
-            Живой журнал работы Docker-контейнеров в реальном времени с фильтрацией по уровням, поиском и инспекцией событий.
+            Живой журнал работы контейнеров и сервисов в реальном времени с выборкой за период, фильтрацией и поиском.
           </p>
         </div>
 
@@ -368,125 +398,240 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
       </div>
 
       {/* Control / Filter Bar */}
-      <div className="filter-bar" style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap', padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '10px' }}>
-        {/* Container Selector */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
-          <Server size={14} style={{ color: 'var(--blue)' }} />
-          <select
-            value={selectedContainer}
-            onChange={(e) => setSelectedContainer(e.target.value)}
-            style={{
-              padding: '6px 12px',
-              fontSize: '12px',
-              background: 'var(--bg)',
-              color: 'var(--text)',
-              border: '1px solid var(--line)',
-              borderRadius: '6px',
-              cursor: 'pointer',
-              fontWeight: 700
-            }}
-          >
-            {containers.map(c => (
-              <option key={c.id} value={c.name}>
-                {c.name} {c.isDefault ? '(Главный)' : ''}
-              </option>
-            ))}
-          </select>
-        </div>
-
-        {/* Level Badges */}
-        <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
-          {[
-            { key: 'ALL', label: `Все (${counts.total})` },
-            { key: 'ERROR', label: `ERROR (${counts.err})`, color: '#ef4444' },
-            { key: 'WARN', label: `WARN (${counts.warn})`, color: '#f59e0b' },
-            { key: 'INFO', label: `INFO (${counts.info})`, color: 'var(--blue)' },
-          ].map(lvl => (
-            <button
-              key={lvl.key}
-              onClick={() => setLevelFilter(lvl.key)}
+      <div className="filter-bar" style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '10px' }}>
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Container Selector */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <Server size={14} style={{ color: 'var(--blue)' }} />
+            <select
+              value={selectedContainer}
+              onChange={(e) => setSelectedContainer(e.target.value)}
               style={{
-                padding: '4px 10px',
-                fontSize: '11px',
-                fontWeight: 600,
-                cursor: 'pointer',
+                padding: '6px 12px',
+                fontSize: '12px',
+                background: 'var(--bg)',
+                color: 'var(--text)',
+                border: '1px solid var(--line)',
                 borderRadius: '6px',
-                border: levelFilter === lvl.key ? `1px solid ${lvl.color || 'var(--blue)'}` : '1px solid var(--line)',
-                background: levelFilter === lvl.key ? (lvl.color ? `${lvl.color}22` : 'rgba(59, 130, 246, 0.15)') : 'transparent',
-                color: levelFilter === lvl.key ? (lvl.color || 'var(--blue)') : 'var(--muted)'
+                cursor: 'pointer',
+                fontWeight: 700
               }}
             >
-              {lvl.label}
+              {containers.map(c => (
+                <option key={c.id} value={c.name}>
+                  {c.name} {c.isDefault ? '(Главный)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          {/* Level Badges */}
+          <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+            {[
+              { key: 'ALL', label: `Все (${counts.total})` },
+              { key: 'ERROR', label: `ERROR (${counts.err})`, color: '#ef4444' },
+              { key: 'WARN', label: `WARN (${counts.warn})`, color: '#f59e0b' },
+              { key: 'INFO', label: `INFO (${counts.info})`, color: 'var(--blue)' },
+            ].map(lvl => (
+              <button
+                key={lvl.key}
+                onClick={() => setLevelFilter(lvl.key)}
+                style={{
+                  padding: '4px 10px',
+                  fontSize: '11px',
+                  fontWeight: 600,
+                  cursor: 'pointer',
+                  borderRadius: '6px',
+                  border: levelFilter === lvl.key ? `1px solid ${lvl.color || 'var(--blue)'}` : '1px solid var(--line)',
+                  background: levelFilter === lvl.key ? (lvl.color ? `${lvl.color}22` : 'rgba(59, 130, 246, 0.15)') : 'transparent',
+                  color: levelFilter === lvl.key ? (lvl.color || 'var(--blue)') : 'var(--muted)'
+                }}
+              >
+                {lvl.label}
+              </button>
+            ))}
+          </div>
+
+          {/* Search input */}
+          <div style={{ flex: 1, minWidth: '180px', position: 'relative' }}>
+            <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
+            <input
+              type="text"
+              placeholder="Поиск по тексту лога (grep / фильтр)..."
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              style={{
+                width: '100%',
+                padding: '6px 12px 6px 30px',
+                fontSize: '12px',
+                background: 'var(--bg)',
+                color: 'var(--text)',
+                border: '1px solid var(--line)',
+                borderRadius: '6px'
+              }}
+            />
+          </div>
+
+          {/* Tail count selector */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
+            <span>Строк:</span>
+            <select
+              value={tailCount}
+              onChange={(e) => setTailCount(Number(e.target.value))}
+              style={{
+                padding: '5px 8px',
+                fontSize: '11px',
+                background: 'var(--bg)',
+                color: 'var(--text)',
+                border: '1px solid var(--line)',
+                borderRadius: '6px',
+                cursor: 'pointer'
+              }}
+            >
+              <option value={100}>100</option>
+              <option value={300}>300</option>
+              <option value={500}>500</option>
+              <option value={1000}>1 000</option>
+              <option value={2000}>2 000</option>
+            </select>
+          </div>
+
+          {/* Date preset selector */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
+            <Clock size={13} />
+            <select
+              value={datePreset}
+              onChange={(e) => {
+                const val = e.target.value as any;
+                setDatePreset(val);
+                if (val === 'CUSTOM') {
+                  setShowCustomRange(true);
+                  setIsLive(false);
+                } else {
+                  setShowCustomRange(false);
+                }
+              }}
+              style={{
+                padding: '5px 8px',
+                fontSize: '11px',
+                background: 'var(--bg)',
+                color: 'var(--text)',
+                border: '1px solid var(--line)',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                fontWeight: 600
+              }}
+            >
+              <option value="ALL">За всё время</option>
+              <option value="15M">Последние 15 мин</option>
+              <option value="1H">Последний 1 час</option>
+              <option value="TODAY">Сегодня</option>
+              <option value="CUSTOM">📅 Указать период (С ... По ...)</option>
+            </select>
+          </div>
+        </div>
+
+        {/* Custom Date-Time Range Row */}
+        {(showCustomRange || datePreset === 'CUSTOM') && (
+          <div
+            style={{
+              display: 'flex',
+              gap: '12px',
+              alignItems: 'center',
+              flexWrap: 'wrap',
+              padding: '10px 12px',
+              background: 'var(--bg)',
+              border: '1px solid var(--blue)',
+              borderRadius: '8px'
+            }}
+          >
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
+              <Calendar size={14} style={{ color: 'var(--blue)' }} />
+              <span style={{ fontWeight: 600, color: 'var(--text)' }}>Период выборки:</span>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
+              <span style={{ color: 'var(--muted)' }}>С (Начало):</span>
+              <input
+                type="datetime-local"
+                value={customSince}
+                onChange={(e) => setCustomSince(e.target.value)}
+                style={{
+                  padding: '5px 8px',
+                  fontSize: '12px',
+                  background: 'var(--panel)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '6px'
+                }}
+              />
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px' }}>
+              <span style={{ color: 'var(--muted)' }}>По (Конец):</span>
+              <input
+                type="datetime-local"
+                value={customUntil}
+                onChange={(e) => setCustomUntil(e.target.value)}
+                style={{
+                  padding: '5px 8px',
+                  fontSize: '12px',
+                  background: 'var(--panel)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '6px'
+                }}
+              />
+            </div>
+
+            <button
+              className="btn primary"
+              onClick={() => {
+                fetchLogs(true);
+                setIsLive(false);
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '5px 12px',
+                fontSize: '12px',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                background: 'var(--blue)',
+                color: '#fff',
+                border: 'none',
+                fontWeight: 600
+              }}
+            >
+              Применить период
             </button>
-          ))}
-        </div>
 
-        {/* Search input */}
-        <div style={{ flex: 1, minWidth: '200px', position: 'relative' }}>
-          <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
-          <input
-            type="text"
-            placeholder="Поиск по тексту лога (grep / фильтр)..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            style={{
-              width: '100%',
-              padding: '6px 12px 6px 30px',
-              fontSize: '12px',
-              background: 'var(--bg)',
-              color: 'var(--text)',
-              border: '1px solid var(--line)',
-              borderRadius: '6px'
-            }}
-          />
-        </div>
-
-        {/* Tail count selector */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
-          <span>Строк:</span>
-          <select
-            value={tailCount}
-            onChange={(e) => setTailCount(Number(e.target.value))}
-            style={{
-              padding: '5px 8px',
-              fontSize: '11px',
-              background: 'var(--bg)',
-              color: 'var(--text)',
-              border: '1px solid var(--line)',
-              borderRadius: '6px',
-              cursor: 'pointer'
-            }}
-          >
-            <option value={100}>100</option>
-            <option value={300}>300</option>
-            <option value={500}>500</option>
-            <option value={1000}>1 000</option>
-            <option value={2000}>2 000</option>
-          </select>
-        </div>
-
-        {/* Date preset selector */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
-          <Clock size={13} />
-          <select
-            value={datePreset}
-            onChange={(e) => setDatePreset(e.target.value as any)}
-            style={{
-              padding: '5px 8px',
-              fontSize: '11px',
-              background: 'var(--bg)',
-              color: 'var(--text)',
-              border: '1px solid var(--line)',
-              borderRadius: '6px',
-              cursor: 'pointer'
-            }}
-          >
-            <option value="ALL">За всё время</option>
-            <option value="15M">Последние 15 мин</option>
-            <option value="1H">Последний 1 час</option>
-            <option value="TODAY">Сегодня</option>
-          </select>
-        </div>
+            <button
+              className="btn"
+              onClick={() => {
+                setCustomSince('');
+                setCustomUntil('');
+                setDatePreset('ALL');
+                setShowCustomRange(false);
+                setIsLive(true);
+              }}
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '4px',
+                padding: '5px 10px',
+                fontSize: '12px',
+                borderRadius: '6px',
+                cursor: 'pointer',
+                background: 'var(--panel)',
+                border: '1px solid var(--line)'
+              }}
+            >
+              <X size={12} /> Сбросить
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Terminal Log Console */}
@@ -578,7 +723,7 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#64748b', gap: '8px' }}>
               <Terminal size={32} style={{ color: '#334155' }} />
               <span>Записей лога по выбранным фильтрам не найдено</span>
-              <small style={{ color: '#475569' }}>Попробуйте сбросить фильтр по уровню или очистить поисковую строку</small>
+              <small style={{ color: '#475569' }}>Попробуйте сбросить фильтр по уровню, изменить период или очистить поисковую строку</small>
             </div>
           ) : (
             filteredLogs.map((entry, index) => {
@@ -643,8 +788,8 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
                     {lvl}
                   </span>
 
-                  {/* Stream Indicator */}
-                  {entry.stream === 'stderr' && (
+                  {/* Stream Indicator: Only show if stderr AND level is ERROR/WARN */}
+                  {entry.stream === 'stderr' && (lvl === 'ERROR' || lvl === 'WARN') && (
                     <span style={{ color: '#f87171', fontSize: '10px', opacity: 0.7, userSelect: 'none' }}>
                       [stderr]
                     </span>
