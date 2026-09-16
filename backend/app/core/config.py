@@ -32,8 +32,8 @@ class Settings(BaseSettings):
     WOL_BROADCAST_IP: str = os.getenv("WOL_BROADCAST_IP", "255.255.255.255")
     WOL_PORT: int = int(os.getenv("WOL_PORT", "9"))
 
-    # Agent Management
-    LATEST_AGENT_VERSION: str = os.getenv("LATEST_AGENT_VERSION", "2.9.16")
+    # Agent fleet versioning
+    LATEST_AGENT_VERSION: str = os.getenv("LATEST_AGENT_VERSION", "2.9.17")
 
     # Timezone & Localization
     TIMEZONE: str = os.getenv("TZ", os.getenv("TIMEZONE", "Europe/Moscow"))

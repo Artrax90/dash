@@ -420,3 +420,5 @@ def test_agent_installer_has_unattended_sleep_timeout_disabled():
 
     assert "7bc4a2f9-d8fc-4469-b07b-33eb785aaca0" in content, "Missing powercfg unattended sleep timeout GUID in standalone_installer.ps1"
     assert "SetThreadExecutionState" in content, "Missing SetThreadExecutionState in standalone_installer.ps1"
+    assert "powercfg" in content and "list" in content, "Missing powercfg multi-scheme iteration across all power schemes"
+
