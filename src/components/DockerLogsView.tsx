@@ -2,7 +2,7 @@ import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import {
   Terminal, Play, Pause, RefreshCw, Download, Copy, Trash2, Search,
   Filter, Check, AlertCircle, AlertTriangle, Info, Clock, Server, ArrowDown,
-  Layers, ArrowDownToLine, Cpu, Calendar, X
+  Layers, ArrowDownToLine, Cpu, Calendar, X, EyeOff, ShieldAlert, Globe, Zap
 } from 'lucide-react';
 import { systemApi } from '@/api';
 
@@ -28,6 +28,15 @@ interface DockerLogsViewProps {
   notify: (message: string, type?: 'success' | 'error' | 'warning' | 'info') => void;
 }
 
+const ROUTINE_PATTERNS = [
+  'agents/heartbeat',
+  'agents/update-status',
+  'users/validate-session',
+  'agents/inventory',
+];
+
+const HTTP_ACCESS_RE = /"(?:GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\s+[^"]+\s+HTTP\/[0-9.]+"\s+\d{3}/i;
+
 export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, notify }) => {
   const [containers, setContainers] = useState<ContainerInfo[]>([
     { id: 'workstation-manager', name: 'workstation-manager', role: 'Основной контейнер приложения (FastAPI, Планировщик, UI)', isDefault: true },
@@ -36,13 +45,22 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
   const [selectedContainer, setSelectedContainer] = useState<string>('workstation-manager');
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+
+  // Filters
+  const [category, setCategory] = useState<'all' | 'system' | 'errors' | 'http'>('all');
   const [levelFilter, setLevelFilter] = useState<string>('ALL');
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [excludePhrases, setExcludePhrases] = useState<string>('');
+  const [excludeRoutine, setExcludeRoutine] = useState<boolean>(true);
+
+  // Pagination & Range
   const [tailCount, setTailCount] = useState<number>(500);
   const [datePreset, setDatePreset] = useState<'ALL' | '15M' | '1H' | 'TODAY' | 'CUSTOM'>('ALL');
   const [customSince, setCustomSince] = useState<string>('');
   const [customUntil, setCustomUntil] = useState<string>('');
   const [showCustomRange, setShowCustomRange] = useState<boolean>(false);
+
+  // Live state
   const [isLive, setIsLive] = useState<boolean>(true);
   const [autoScroll, setAutoScroll] = useState<boolean>(true);
   const [copiedIndex, setCopiedIndex] = useState<number | null>(null);
@@ -94,7 +112,7 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
     return undefined;
   }, [datePreset, customUntil]);
 
-  // Fetch logs
+  // Fetch logs from backend
   const fetchLogs = useCallback(async (showLoading = false) => {
     if (showLoading) setLoading(true);
     try {
@@ -105,6 +123,9 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
         tail: tailCount,
         level: levelFilter !== 'ALL' ? levelFilter : undefined,
         search: searchQuery.trim() || undefined,
+        exclude: excludePhrases.trim() || undefined,
+        exclude_routine: excludeRoutine,
+        category: category !== 'all' ? category : undefined,
         since,
         until
       });
@@ -118,7 +139,7 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
     } finally {
       if (showLoading) setLoading(false);
     }
-  }, [selectedContainer, tailCount, levelFilter, searchQuery, getSinceIso, getUntilIso, notify]);
+  }, [selectedContainer, tailCount, levelFilter, searchQuery, excludePhrases, excludeRoutine, category, getSinceIso, getUntilIso, notify]);
 
   // Initial fetch and reload on parameter changes
   useEffect(() => {
@@ -159,34 +180,88 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
     }
   };
 
-  // Filter logs locally for instant feedback
+  // Instant local filtering of received logs
   const filteredLogs = useMemo(() => {
     const since = getSinceIso();
     const until = getUntilIso();
 
+    // Parse negative search terms from search query (e.g. -heartbeat or !status)
+    const posTerms: string[] = [];
+    const negTerms: string[] = [];
+    if (searchQuery.trim()) {
+      searchQuery.trim().split(/\s+/).forEach(t => {
+        const lower = t.toLowerCase();
+        if ((lower.startsWith('-') || lower.startsWith('!')) && lower.length > 1) {
+          negTerms.push(lower.slice(1));
+        } else {
+          posTerms.push(lower);
+        }
+      });
+    }
+
+    // Parse custom exclude phrases
+    const customExcludes = excludePhrases
+      .split(',')
+      .map(p => p.trim().toLowerCase())
+      .filter(Boolean);
+
     return logs.filter(entry => {
-      // Level filter
+      const msgLower = (entry.message || '').toLowerCase();
+      const rawLower = (entry.raw || '').toLowerCase();
+      const lvl = entry.level.toUpperCase();
+
+      // 1. Exclude routine background agent requests
+      if (excludeRoutine) {
+        if (ROUTINE_PATTERNS.some(p => msgLower.includes(p) || rawLower.includes(p))) {
+          return false;
+        }
+      }
+
+      // 2. Exclude custom negative phrases
+      if (customExcludes.length > 0) {
+        if (customExcludes.some(p => msgLower.includes(p) || rawLower.includes(p))) {
+          return false;
+        }
+      }
+
+      // 3. Negative search terms (-word / !word)
+      if (negTerms.length > 0) {
+        if (negTerms.some(term => msgLower.includes(term) || rawLower.includes(term))) {
+          return false;
+        }
+      }
+
+      // 4. Category filter
+      const isHttp = HTTP_ACCESS_RE.test(entry.message) || HTTP_ACCESS_RE.test(entry.raw);
+      if (category === 'system') {
+        if (isHttp && lvl !== 'ERROR' && lvl !== 'WARN') return false;
+      } else if (category === 'http') {
+        if (!isHttp) return false;
+      } else if (category === 'errors') {
+        if (lvl !== 'ERROR' && lvl !== 'WARN') return false;
+      }
+
+      // 5. Level filter
       if (levelFilter !== 'ALL') {
-        const lvl = entry.level.toUpperCase();
         if (levelFilter === 'ERROR' && lvl !== 'ERROR') return false;
         if (levelFilter === 'WARN' && !['WARN', 'WARNING', 'ERROR'].includes(lvl)) return false;
         if (levelFilter === 'INFO' && lvl !== 'INFO') return false;
         if (levelFilter === 'DEBUG' && lvl !== 'DEBUG') return false;
       }
-      // Search filter
-      if (searchQuery.trim()) {
-        const q = searchQuery.toLowerCase();
-        const matchMsg = entry.message.toLowerCase().includes(q);
-        const matchRaw = entry.raw.toLowerCase().includes(q);
-        if (!matchMsg && !matchRaw) return false;
+
+      // 6. Positive search terms
+      if (posTerms.length > 0) {
+        const matchesAll = posTerms.every(term => msgLower.includes(term) || rawLower.includes(term));
+        if (!matchesAll) return false;
       }
-      // Custom date range filter
+
+      // 7. Custom date range filter
       if (since && entry.timestamp < since) return false;
       if (until && entry.timestamp > until) return false;
 
       return true;
     });
-  }, [logs, levelFilter, searchQuery, getSinceIso, getUntilIso]);
+  }, [logs, excludeRoutine, excludePhrases, searchQuery, category, levelFilter, getSinceIso, getUntilIso]);
 
   // KPI counters
   const counts = useMemo(() => {
@@ -264,7 +339,7 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
             <Terminal size={24} style={{ color: 'var(--blue)' }} /> Логи
           </h1>
           <p className="muted" style={{ margin: 0, fontSize: '13px', color: 'var(--muted)' }}>
-            Живой журнал работы контейнеров и сервисов в реальном времени с выборкой за период, фильтрацией и поиском.
+            Журнал работы контейнеров и сервисов в реальном времени с выборкой за период, фильтрацией и поиском.
           </p>
         </div>
 
@@ -398,8 +473,46 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
       </div>
 
       {/* Control / Filter Bar */}
-      <div className="filter-bar" style={{ display: 'flex', flexDirection: 'column', gap: '10px', padding: '12px 14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '10px' }}>
-        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+      <div className="filter-bar" style={{ display: 'flex', flexDirection: 'column', gap: '12px', padding: '14px', background: 'var(--panel)', border: '1px solid var(--line)', borderRadius: '10px' }}>
+        {/* Row 1: Source Category Presets & Container Selector */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+          {/* Category Tabs */}
+          <div style={{ display: 'flex', gap: '6px', alignItems: 'center', flexWrap: 'wrap' }}>
+            <span style={{ fontSize: '12px', color: 'var(--muted)', fontWeight: 600, marginRight: '4px' }}>Категория:</span>
+            {[
+              { key: 'all', label: 'Все события', icon: Layers },
+              { key: 'system', label: '⚡ Системные события', icon: Zap, hint: 'WoL, расписание, питание, ошибки (без HTTP-рутины)' },
+              { key: 'errors', label: '🚨 Только ошибки', icon: ShieldAlert, color: '#ef4444' },
+              { key: 'http', label: '🌐 HTTP-трафик', icon: Globe, hint: 'Сетевые access-запросы клиентов' },
+            ].map(cat => {
+              const Icon = cat.icon;
+              const isActive = category === cat.key;
+              return (
+                <button
+                  key={cat.key}
+                  onClick={() => setCategory(cat.key as any)}
+                  title={cat.hint}
+                  style={{
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                    padding: '5px 12px',
+                    fontSize: '12px',
+                    fontWeight: 600,
+                    cursor: 'pointer',
+                    borderRadius: '6px',
+                    border: isActive ? `1px solid ${cat.color || 'var(--blue)'}` : '1px solid var(--line)',
+                    background: isActive ? (cat.color ? `${cat.color}22` : 'rgba(59, 130, 246, 0.15)') : 'var(--bg)',
+                    color: isActive ? (cat.color || 'var(--blue)') : 'var(--text)'
+                  }}
+                >
+                  <Icon size={13} />
+                  {cat.label}
+                </button>
+              );
+            })}
+          </div>
+
           {/* Container Selector */}
           <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
             <Server size={14} style={{ color: 'var(--blue)' }} />
@@ -424,9 +537,13 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
               ))}
             </select>
           </div>
+        </div>
 
+        {/* Row 2: Level Badges, Noise Filter Toggle, and Depth */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
           {/* Level Badges */}
           <div style={{ display: 'flex', gap: '4px', alignItems: 'center' }}>
+            <span style={{ fontSize: '12px', color: 'var(--muted)', fontWeight: 600, marginRight: '4px' }}>Уровень:</span>
             {[
               { key: 'ALL', label: `Все (${counts.total})` },
               { key: 'ERROR', label: `ERROR (${counts.err})`, color: '#ef4444' },
@@ -452,17 +569,101 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
             ))}
           </div>
 
-          {/* Search input */}
-          <div style={{ flex: 1, minWidth: '180px', position: 'relative' }}>
+          {/* Routine Noise Filter Toggle Button */}
+          <button
+            onClick={() => setExcludeRoutine(!excludeRoutine)}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: '6px',
+              padding: '5px 12px',
+              fontSize: '12px',
+              fontWeight: 600,
+              cursor: 'pointer',
+              borderRadius: '6px',
+              border: excludeRoutine ? '1px solid rgba(34, 197, 94, 0.5)' : '1px solid var(--line)',
+              background: excludeRoutine ? 'rgba(34, 197, 94, 0.12)' : 'var(--bg)',
+              color: excludeRoutine ? '#22c55e' : 'var(--muted)'
+            }}
+            title="Отсекает рутинные регулярные HTTP-запросы Heartbeat, Update-status и Session validate (95% шума)"
+          >
+            <EyeOff size={14} />
+            {excludeRoutine ? '✓ Шум агентов скрыт (чистый лог)' : 'Шум агентов показан (сырой лог)'}
+          </button>
+
+          {/* Tail & Date selectors */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
+              <span>Строк:</span>
+              <select
+                value={tailCount}
+                onChange={(e) => setTailCount(Number(e.target.value))}
+                style={{
+                  padding: '5px 8px',
+                  fontSize: '11px',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '6px',
+                  cursor: 'pointer'
+                }}
+              >
+                <option value={100}>100</option>
+                <option value={300}>300</option>
+                <option value={500}>500</option>
+                <option value={1000}>1 000</option>
+                <option value={2000}>2 000</option>
+              </select>
+            </div>
+
+            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
+              <Clock size={13} />
+              <select
+                value={datePreset}
+                onChange={(e) => {
+                  const val = e.target.value as any;
+                  setDatePreset(val);
+                  if (val === 'CUSTOM') {
+                    setShowCustomRange(true);
+                    setIsLive(false);
+                  } else {
+                    setShowCustomRange(false);
+                  }
+                }}
+                style={{
+                  padding: '5px 8px',
+                  fontSize: '11px',
+                  background: 'var(--bg)',
+                  color: 'var(--text)',
+                  border: '1px solid var(--line)',
+                  borderRadius: '6px',
+                  cursor: 'pointer',
+                  fontWeight: 600
+                }}
+              >
+                <option value="ALL">За всё время</option>
+                <option value="15M">Последние 15 мин</option>
+                <option value="1H">Последний 1 час</option>
+                <option value="TODAY">Сегодня</option>
+                <option value="CUSTOM">📅 Указать период (С ... По ...)</option>
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {/* Row 3: Positive Search + Negative Exclude Inputs */}
+        <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+          {/* Positive Search */}
+          <div style={{ flex: 1, minWidth: '220px', position: 'relative' }}>
             <Search size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)' }} />
             <input
               type="text"
-              placeholder="Поиск по тексту лога (grep / фильтр)..."
+              placeholder="Поиск по тексту (поддерживается -фраза для исключения)..."
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               style={{
                 width: '100%',
-                padding: '6px 12px 6px 30px',
+                padding: '7px 12px 7px 30px',
                 fontSize: '12px',
                 background: 'var(--bg)',
                 color: 'var(--text)',
@@ -472,62 +673,43 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
             />
           </div>
 
-          {/* Tail count selector */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
-            <span>Строк:</span>
-            <select
-              value={tailCount}
-              onChange={(e) => setTailCount(Number(e.target.value))}
+          {/* Exclude phrases (grep -v) */}
+          <div style={{ flex: 1, minWidth: '220px', position: 'relative' }}>
+            <Filter size={14} style={{ position: 'absolute', left: '10px', top: '50%', transform: 'translateY(-50%)', color: '#ef4444' }} />
+            <input
+              type="text"
+              placeholder="Исключить фразы (через запятую: напр. update-status, 172.16)..."
+              value={excludePhrases}
+              onChange={(e) => setExcludePhrases(e.target.value)}
               style={{
-                padding: '5px 8px',
-                fontSize: '11px',
+                width: '100%',
+                padding: '7px 12px 7px 30px',
+                fontSize: '12px',
                 background: 'var(--bg)',
                 color: 'var(--text)',
-                border: '1px solid var(--line)',
-                borderRadius: '6px',
-                cursor: 'pointer'
+                border: excludePhrases.trim() ? '1px solid rgba(239, 68, 68, 0.4)' : '1px solid var(--line)',
+                borderRadius: '6px'
               }}
-            >
-              <option value={100}>100</option>
-              <option value={300}>300</option>
-              <option value={500}>500</option>
-              <option value={1000}>1 000</option>
-              <option value={2000}>2 000</option>
-            </select>
-          </div>
-
-          {/* Date preset selector */}
-          <div style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--muted)' }}>
-            <Clock size={13} />
-            <select
-              value={datePreset}
-              onChange={(e) => {
-                const val = e.target.value as any;
-                setDatePreset(val);
-                if (val === 'CUSTOM') {
-                  setShowCustomRange(true);
-                  setIsLive(false);
-                } else {
-                  setShowCustomRange(false);
-                }
-              }}
-              style={{
-                padding: '5px 8px',
-                fontSize: '11px',
-                background: 'var(--bg)',
-                color: 'var(--text)',
-                border: '1px solid var(--line)',
-                borderRadius: '6px',
-                cursor: 'pointer',
-                fontWeight: 600
-              }}
-            >
-              <option value="ALL">За всё время</option>
-              <option value="15M">Последние 15 мин</option>
-              <option value="1H">Последний 1 час</option>
-              <option value="TODAY">Сегодня</option>
-              <option value="CUSTOM">📅 Указать период (С ... По ...)</option>
-            </select>
+            />
+            {excludePhrases.trim() && (
+              <button
+                onClick={() => setExcludePhrases('')}
+                style={{
+                  position: 'absolute',
+                  right: '8px',
+                  top: '50%',
+                  transform: 'translateY(-50%)',
+                  background: 'none',
+                  border: 'none',
+                  color: 'var(--muted)',
+                  cursor: 'pointer',
+                  padding: '2px'
+                }}
+                title="Очистить исключения"
+              >
+                <X size={13} />
+              </button>
+            )}
           </div>
         </div>
 
@@ -723,7 +905,7 @@ export const DockerLogsView: React.FC<DockerLogsViewProps> = ({ currentUser, not
             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100%', color: '#64748b', gap: '8px' }}>
               <Terminal size={32} style={{ color: '#334155' }} />
               <span>Записей лога по выбранным фильтрам не найдено</span>
-              <small style={{ color: '#475569' }}>Попробуйте сбросить фильтр по уровню, изменить период или очистить поисковую строку</small>
+              <small style={{ color: '#475569' }}>Попробуйте отключить «Скрыть шум агентов», очистить строку исключений или изменить период</small>
             </div>
           ) : (
             filteredLogs.map((entry, index) => {

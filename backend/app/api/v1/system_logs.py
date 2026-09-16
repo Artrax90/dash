@@ -266,6 +266,15 @@ async def list_system_containers(request: Request):
 
     return {"containers": containers}
 
+ROUTINE_PATTERNS = [
+    "agents/heartbeat",
+    "agents/update-status",
+    "users/validate-session",
+    "agents/inventory",
+]
+
+HTTP_ACCESS_RE = re.compile(r'\"(?:GET|POST|PUT|DELETE|PATCH|OPTIONS|HEAD)\s+[^\"]+\s+HTTP/[0-9.]+\"\s+\d{3}', re.IGNORECASE)
+
 @router.get("/logs")
 async def get_system_logs(
     request: Request,
@@ -273,13 +282,16 @@ async def get_system_logs(
     tail: int = Query(500, ge=1, le=5000, description="Number of tail lines"),
     level: Optional[str] = Query(None, description="Log level filter: ERROR, WARN, INFO, DEBUG"),
     search: Optional[str] = Query(None, description="Text or regex search"),
+    exclude: Optional[str] = Query(None, description="Comma-separated phrases to exclude (grep -v)"),
+    exclude_routine: bool = Query(False, description="Filter out routine agent heartbeats and session polls"),
+    category: Optional[str] = Query("all", description="Category preset: all, system, http, errors"),
     since: Optional[str] = Query(None, description="Filter logs since ISO datetime"),
     until: Optional[str] = Query(None, description="Filter logs until ISO datetime"),
     show_internal: bool = Query(False, description="Include internal log polling lines")
 ):
     """
-    Fetches container logs with filtering by level, search string, and datetime.
-    Restricted strictly to Superadministrator role.
+    Fetches container logs with filtering by level, search string, negative exclusions,
+    category presets, and datetime ranges. Restricted strictly to Superadministrator role.
     """
     require_superadmin(request)
 
@@ -294,10 +306,30 @@ async def get_system_logs(
     if logs is None or len(logs) == 0:
         logs = list(in_memory_log_buffer)[-tail:]
 
+    # Parse search query (support positive keywords and negative -keyword / !keyword)
+    positive_search_terms = []
+    negative_search_terms = []
+    if search and search.strip():
+        raw_terms = search.strip().split()
+        for t in raw_terms:
+            t_lower = t.lower()
+            if t_lower.startswith(("-", "!")) and len(t_lower) > 1:
+                negative_search_terms.append(t_lower[1:])
+            else:
+                positive_search_terms.append(t_lower)
+
+    # Parse comma-separated exclude phrases
+    exclude_phrases = []
+    if exclude and exclude.strip():
+        for phrase in exclude.split(","):
+            p_clean = phrase.strip().lower()
+            if p_clean:
+                exclude_phrases.append(p_clean)
+
     # Apply filters
     filtered = []
     level_filter = level.strip().upper() if level and level.strip().upper() != "ALL" else None
-    search_filter = search.strip().lower() if search and search.strip() else None
+    cat_filter = category.strip().lower() if category and category.strip() else "all"
 
     # Normalization helper for ISO / datetime-local strings (e.g. '2026-09-16T12:00')
     clean_since = since.strip().replace(" ", "T") if since and since.strip() else None
@@ -306,14 +338,46 @@ async def get_system_logs(
     for entry in logs:
         msg = entry.get("message", "")
         raw = entry.get("raw", "")
+        msg_lower = msg.lower()
+        raw_lower = raw.lower()
+        entry_level = entry.get("level", "INFO").upper()
 
-        # Omit internal log polling queries so the viewer shows real system events
+        # 1. Omit internal log polling queries so the viewer doesn't pollute itself
         if not show_internal and is_internal_logs_request(msg):
             continue
 
-        # Filter by level
+        # 2. Exclude routine background agent requests if requested
+        if exclude_routine:
+            if any(p in msg_lower or p in raw_lower for p in ROUTINE_PATTERNS):
+                continue
+
+        # 3. Exclude custom negative phrases (grep -v)
+        if exclude_phrases:
+            if any(phrase in msg_lower or phrase in raw_lower for phrase in exclude_phrases):
+                continue
+
+        # 4. Negative search terms from search input (-word / !word)
+        if negative_search_terms:
+            if any(neg in msg_lower or neg in raw_lower for neg in negative_search_terms):
+                continue
+
+        # 5. Category filter: system vs http vs errors vs all
+        is_http_req = bool(HTTP_ACCESS_RE.search(msg) or HTTP_ACCESS_RE.search(raw))
+        if cat_filter == "system":
+            # In system category, exclude successful HTTP access logs unless they are errors
+            if is_http_req and entry_level not in ["ERROR", "WARN"]:
+                continue
+        elif cat_filter == "http":
+            # In http category, only include HTTP access logs
+            if not is_http_req:
+                continue
+        elif cat_filter == "errors":
+            # In errors category, only keep ERROR or WARN
+            if entry_level not in ["ERROR", "WARN"]:
+                continue
+
+        # 6. Filter by level
         if level_filter:
-            entry_level = entry.get("level", "INFO").upper()
             if level_filter == "ERROR" and entry_level != "ERROR":
                 continue
             elif level_filter == "WARN" and entry_level not in ["WARN", "ERROR"]:
@@ -321,18 +385,15 @@ async def get_system_logs(
             elif level_filter not in ["ERROR", "WARN"] and entry_level != level_filter:
                 continue
 
-        # Filter by search keyword
-        if search_filter:
-            msg_lower = msg.lower()
-            raw_lower = raw.lower()
-            if search_filter not in msg_lower and search_filter not in raw_lower:
+        # 7. Positive search terms (all must match)
+        if positive_search_terms:
+            if not all(pos in msg_lower or pos in raw_lower for pos in positive_search_terms):
                 continue
 
-        # Filter by datetime range (since / until)
+        # 8. Filter by datetime range (since / until)
         entry_ts = (entry.get("timestamp") or "").replace(" ", "T")
         if clean_since:
             try:
-                # Compare prefixes or full ISO
                 if entry_ts[:len(clean_since)] < clean_since:
                     continue
             except Exception:

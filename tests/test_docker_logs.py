@@ -122,3 +122,98 @@ def test_system_logs_filters_internal_polling_spam():
     messages = [l["message"] for l in resp.json()["logs"]]
     for m in messages:
         assert "containers/workstation-manager/logs" not in m
+
+def test_system_logs_exclude_routine():
+    in_memory_log_buffer.append({
+        "timestamp": "2026-09-16T14:10:00Z",
+        "level": "INFO",
+        "stream": "stdout",
+        "message": '172.16.42.0:51780 - "POST /api/v1/agents/heartbeat HTTP/1.1" 200 OK',
+        "raw": '2026-09-16T14:10:00Z INFO: 172.16.42.0:51780 - "POST /api/v1/agents/heartbeat HTTP/1.1" 200 OK'
+    })
+    in_memory_log_buffer.append({
+        "timestamp": "2026-09-16T14:10:01Z",
+        "level": "INFO",
+        "stream": "stdout",
+        "message": '172.16.42.0:51780 - "POST /api/v1/agents/update-status HTTP/1.1" 200 OK',
+        "raw": '2026-09-16T14:10:01Z INFO: 172.16.42.0:51780 - "POST /api/v1/agents/update-status HTTP/1.1" 200 OK'
+    })
+    in_memory_log_buffer.append({
+        "timestamp": "2026-09-16T14:10:02Z",
+        "level": "INFO",
+        "stream": "stdout",
+        "message": '[WoL Success] Dispatched 32 Magic Packets for 00:58:3F:15:1D:D1',
+        "raw": '2026-09-16T14:10:02Z [INFO] [WoL Success] Dispatched 32 Magic Packets for 00:58:3F:15:1D:D1'
+    })
+
+    resp = client.get(
+        "/api/v1/system/logs?container=workstation-manager&exclude_routine=true",
+        headers={"X-User-Role": "SuperAdmin", "X-Username": "admin"}
+    )
+    assert resp.status_code == 200
+    messages = [l["message"] for l in resp.json()["logs"]]
+    assert any("[WoL Success]" in m for m in messages)
+    assert not any("heartbeat" in m for m in messages)
+    assert not any("update-status" in m for m in messages)
+
+def test_system_logs_exclude_custom_phrase():
+    in_memory_log_buffer.append({
+        "timestamp": "2026-09-16T14:15:00Z",
+        "level": "INFO",
+        "stream": "stdout",
+        "message": 'Special task starting for device PC-99',
+        "raw": '2026-09-16T14:15:00Z [INFO] Special task starting for device PC-99'
+    })
+    in_memory_log_buffer.append({
+        "timestamp": "2026-09-16T14:15:01Z",
+        "level": "INFO",
+        "stream": "stdout",
+        "message": 'Routine noise that we want to omit: NOISE_XYZ',
+        "raw": '2026-09-16T14:15:01Z [INFO] Routine noise that we want to omit: NOISE_XYZ'
+    })
+
+    resp = client.get(
+        "/api/v1/system/logs?container=workstation-manager&exclude=NOISE_XYZ,other_word",
+        headers={"X-User-Role": "SuperAdmin", "X-Username": "admin"}
+    )
+    assert resp.status_code == 200
+    messages = [l["message"] for l in resp.json()["logs"]]
+    assert any("Special task starting" in m for m in messages)
+    assert not any("NOISE_XYZ" in m for m in messages)
+
+def test_system_logs_category_filter():
+    in_memory_log_buffer.append({
+        "timestamp": "2026-09-16T14:20:00Z",
+        "level": "INFO",
+        "stream": "stdout",
+        "message": '172.16.44.188:64626 - "GET /install.ps1 HTTP/1.1" 200 OK',
+        "raw": '2026-09-16T14:20:00Z INFO: 172.16.44.188:64626 - "GET /install.ps1 HTTP/1.1" 200 OK'
+    })
+    in_memory_log_buffer.append({
+        "timestamp": "2026-09-16T14:20:01Z",
+        "level": "INFO",
+        "stream": "stdout",
+        "message": '[Scheduler] Rule Недельный цикл triggered WAKE',
+        "raw": '2026-09-16T14:20:01Z [INFO] [Scheduler] Rule Недельный цикл triggered WAKE'
+    })
+
+    # category=system should exclude HTTP access logs
+    resp_sys = client.get(
+        "/api/v1/system/logs?container=workstation-manager&category=system",
+        headers={"X-User-Role": "SuperAdmin", "X-Username": "admin"}
+    )
+    assert resp_sys.status_code == 200
+    sys_messages = [l["message"] for l in resp_sys.json()["logs"]]
+    assert any("[Scheduler]" in m for m in sys_messages)
+    assert not any("GET /install.ps1" in m for m in sys_messages)
+
+    # category=http should include HTTP access logs
+    resp_http = client.get(
+        "/api/v1/system/logs?container=workstation-manager&category=http",
+        headers={"X-User-Role": "SuperAdmin", "X-Username": "admin"}
+    )
+    assert resp_http.status_code == 200
+    http_messages = [l["message"] for l in resp_http.json()["logs"]]
+    assert any("GET /install.ps1" in m for m in http_messages)
+    assert not any("[Scheduler]" in m for m in http_messages)
+
