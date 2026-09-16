@@ -6,7 +6,7 @@ import {
   Settings, ShieldCheck, Sun, Tag, Terminal, UserRound, Users as UsersIcon, Wifi, X, Zap, Plus, Trash2, Play,
   Edit3, Lock, Download, Upload, Copy, Laptop, FolderPlus, ArrowRight, PanelLeftClose, RotateCw, RotateCcw, Calendar,
   Eye, EyeOff, Sparkles, Pencil, BellOff, CheckCircle2, Usb, Building, Layers, MapPin, FileSpreadsheet, Clock, BarChart2,
-  Archive
+  Archive, FileText
 } from 'lucide-react';
 import { alertsApi, auditApi, dashboardApi, devicesApi, schedulesApi, sessionsApi, usersApi, hardwareApi, agentsApi, rolesApi, telegramApi, bulkApi, groupsApi, authApi, systemApi, getActiveUserName, wsClient, notificationService } from '@/api';
 import type { Alert, AuditEntry, DashboardStats, Device, ManagedUser, RdpSession, Schedule, HardwareSpec, HardwareBaseline, HardwareChange, AgentEnrollmentToken, AgentBuild, CustomRole, AgentVersionInfo, AgentUpdateLog } from '@/types';
@@ -21,6 +21,7 @@ import {
   isRoomVisibleInScope
 } from '@/utils/scope';
 import { FaqModal } from './components/FaqModal';
+import { DockerLogsView } from './components/DockerLogsView';
 
 export const DECOMMISSION_REASONS = [
   'Неисправность / Выход из строя',
@@ -306,7 +307,7 @@ function fallbackCopyText(text: string): boolean {
   }
 }
 
-type Page = 'Dashboard' | 'Devices' | 'Device detail' | 'Groups' | 'Schedules' | 'Monitoring' | 'Alerts' | 'Hardware' | 'Users' | 'Roles' | 'Agents' | 'Telegram' | 'Audit Log' | 'Settings';
+type Page = 'Dashboard' | 'Devices' | 'Device detail' | 'Groups' | 'Schedules' | 'Monitoring' | 'Alerts' | 'Hardware' | 'Users' | 'Roles' | 'Agents' | 'Telegram' | 'Audit Log' | 'Settings' | 'DockerLogs';
 
 interface RouteState {
   page: Page;
@@ -992,13 +993,14 @@ function App() {
     { label: 'Telegram', name: t('nav.telegram'), icon: Send, adminOnly: true },
     { label: 'Audit Log', name: t('nav.audit'), icon: Terminal, adminOnly: true },
     { label: 'Settings', name: t('nav.settings'), icon: Settings, adminOnly: true },
+    { label: 'DockerLogs', name: t('nav.dockerLogs') || 'Логи контейнера', icon: FileText, superAdminOnly: true, adminOnly: true },
   ];
 
   const navigation = isSuperAdmin 
     ? rawNavigation 
     : isFleetAdmin 
-    ? rawNavigation.filter(item => !item.adminOnly || (item as any).fleetAdminAllowed)
-    : rawNavigation.filter(item => !item.adminOnly);
+    ? rawNavigation.filter(item => (!item.adminOnly || (item as any).fleetAdminAllowed) && !(item as any).superAdminOnly)
+    : rawNavigation.filter(item => !item.adminOnly && !(item as any).superAdminOnly);
 
   const notify = (message: string, type?: 'success' | 'error' | 'warning' | 'info') => {
     let resolvedType = type || 'success';
@@ -1016,7 +1018,7 @@ function App() {
 
   useEffect(() => {
     if (!currentUser) return;
-    const adminPages: Page[] = ['Users', 'Roles', 'Telegram', 'Audit Log', 'Settings'];
+    const adminPages: Page[] = ['Users', 'Roles', 'Telegram', 'Audit Log', 'Settings', 'DockerLogs'];
     if (!isSuperAdmin && adminPages.includes(route.page)) {
       navigateTo({ page: 'Dashboard' });
       notify('Доступ ограничен: данный раздел доступен только Суперадминистратору.');
@@ -1208,6 +1210,12 @@ function App() {
                 notify={notify}
                 dark={dark}
                 onToggleTheme={toggleDark}
+              />
+            ) : null)}
+            {page === 'DockerLogs' && (isSuperAdmin ? (
+              <DockerLogsView
+                currentUser={currentUser}
+                notify={notify}
               />
             ) : null)}
           </ErrorBoundary>

@@ -145,18 +145,23 @@ def get_request_user_scope(request: Request) -> Tuple[str, List[str]]:
     return role, u.get("allowedGroups", []) or []
 
 def require_superadmin(request: Request) -> Dict[str, Any]:
+    raw_role = request.headers.get("X-User-Role")
+    if raw_role:
+        import urllib.parse
+        role_dec = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
+        if is_superadmin_role(role_dec):
+            return {"role": "Суперадминистратор", "username": request.headers.get("X-Username") or "admin"}
+        raise HTTPException(
+            status_code=403,
+            detail="Отказ в доступе: просмотр системных логов и администрирование разрешены только Суперадминистратору."
+        )
+
     users = load_users()
     if not users:
         return {"role": "Суперадминистратор", "username": "system"}
     user = get_current_user_from_request(request)
     if user and is_superadmin_role(user.get("role")):
         return user
-    raw_role = request.headers.get("X-User-Role")
-    if raw_role:
-        import urllib.parse
-        role_dec = urllib.parse.unquote(raw_role).strip() if "%" in raw_role else raw_role.strip()
-        if is_superadmin_role(role_dec):
-            return {"role": "Суперадминистратор", "username": "admin"}
     raise HTTPException(
         status_code=403,
         detail="Отказ в доступе: управление учетными записями и ролями разрешено только администраторам системы."

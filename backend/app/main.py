@@ -39,6 +39,7 @@ from backend.app.api.v1.audit import router as audit_router
 from backend.app.api.v1.telegram import router as telegram_router
 from backend.app.api.v1.groups import router as groups_router
 from backend.app.api.v1.sessions import router as sessions_router
+from backend.app.api.v1.system_logs import router as system_logs_router
 
 app = FastAPI(
     title=settings.PROJECT_NAME,
@@ -192,6 +193,7 @@ app.include_router(audit_router, prefix=api_prefix)
 app.include_router(telegram_router, prefix=api_prefix)
 app.include_router(groups_router, prefix=api_prefix)
 app.include_router(sessions_router, prefix=api_prefix)
+app.include_router(system_logs_router, prefix=api_prefix)
 
 from starlette.staticfiles import StaticFiles
 

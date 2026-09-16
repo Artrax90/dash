@@ -1569,6 +1569,33 @@ export const systemApi = {
       throw new Error(err.detail || 'Ошибка обнуления базы данных');
     }
     return await res.json();
+  },
+  getContainers: async (): Promise<{ containers: { id: string; name: string; role: string; isDefault: boolean; status?: string }[] }> => {
+    const res = await fetch(`${API_BASE}/system/containers`, {
+      headers: getAuthHeaders()
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Ошибка загрузки списка контейнеров' }));
+      throw new Error(err.detail || 'Ошибка загрузки списка контейнеров');
+    }
+    return await res.json();
+  },
+  getLogs: async (params: { container?: string; tail?: number; level?: string; search?: string; since?: string } = {}): Promise<{ container: string; total: number; source: string; logs: Array<{ timestamp: string; level: string; stream: string; message: string; raw: string }> }> => {
+    const q = new URLSearchParams();
+    if (params.container) q.set('container', params.container);
+    if (params.tail) q.set('tail', params.tail.toString());
+    if (params.level && params.level !== 'ALL') q.set('level', params.level);
+    if (params.search) q.set('search', params.search);
+    if (params.since) q.set('since', params.since);
+
+    const res = await fetch(`${API_BASE}/system/logs?${q.toString()}`, {
+      headers: getAuthHeaders()
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: 'Ошибка получения логов контейнера' }));
+      throw new Error(err.detail || 'Ошибка получения логов контейнера');
+    }
+    return await res.json();
   }
 };
 
