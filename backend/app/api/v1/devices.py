@@ -2653,10 +2653,11 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
     dev_mac = device.mac_address if device else (dev_dict.get("mac") or dev_dict.get("mac_address"))
     dev_broadcast = device.broadcast_ip if device else dev_dict.get("broadcast_ip")
 
-    from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+    from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal, clear_pending_power_commands
+    from backend.app.services.scheduler_service import scheduler_service
 
-    # 1. Send direct LAN UDP signal for instant 0-latency execution strictly to this device
-    if dev_ip:
+    # 1. Send direct LAN UDP signal for instant 0-latency execution strictly to this device (WAKE uses physical WoL)
+    if dev_ip and action != "WAKE":
         send_direct_lan_power_signal(
             ip_address=dev_ip,
             action=action,
@@ -2669,12 +2670,18 @@ async def execute_device_power_action(device_id: str, payload: Dict[str, Any], r
     target_keys = {k for k in [dev_id, dev_host, dev_name, device_id] if k}
 
     if action == "WAKE":
+        for tk in target_keys:
+            dev_k = str(tk).upper()
+            scheduler_service._consecutive_ping_failures[dev_k] = 0
+            scheduler_service.set_power_grace(tk, 180.0)
+            clear_pending_power_commands(tk)
+
         await wol_service.send_magic_packet(
             mac_address=dev_mac,
             broadcast_ip=dev_broadcast,
             ip_address=dev_ip
         )
-        if device:
+        if device and device.power_status != PowerStatus.ON:
             device.power_status = PowerStatus.BOOTING
     elif action in ["SHUTDOWN", "FORCE_SHUTDOWN"]:
         for tk in target_keys:
@@ -2768,7 +2775,7 @@ async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: R
     devices = result.scalars().all()
 
     for dev in devices:
-        if dev.ip_address:
+        if dev.ip_address and action != "WAKE":
             send_direct_lan_power_signal(
                 ip_address=dev.ip_address,
                 action=action,
@@ -2778,12 +2785,24 @@ async def execute_bulk_operation(payload: BulkOperationRequestSchema, request: R
             )
 
         if action == "WAKE":
+            from backend.app.services.scheduler_service import scheduler_service
+            from backend.app.api.v1.agents import clear_pending_power_commands
+
+            dev_k = str(dev.id).upper()
+            scheduler_service._consecutive_ping_failures[dev_k] = 0
+            scheduler_service.set_power_grace(dev.id, 180.0)
+            clear_pending_power_commands(dev.id)
+            if dev.hostname and dev.hostname != dev.id:
+                clear_pending_power_commands(dev.hostname)
+
             await wol_service.send_magic_packet(
                 mac_address=dev.mac_address,
                 broadcast_ip=dev.broadcast_ip,
                 ip_address=dev.ip_address
             )
-            dev.power_status = PowerStatus.ON
+            if dev.power_status != PowerStatus.ON:
+                dev.power_status = PowerStatus.BOOTING
+
             log_device_power_event(
                 device_id=dev.id,
                 action="WAKE",

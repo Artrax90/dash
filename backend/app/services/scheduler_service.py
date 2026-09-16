@@ -442,6 +442,7 @@ class SchedulerService:
                             if not is_agentless and sec_since_heartbeat <= timeout_threshold:
                                 pass
                             elif (dev.power_status == PowerStatus.ON or is_booting) and fail_count >= max_fails:
+                                was_booting = is_booting
                                 dev.power_status = PowerStatus.OFF
                                 dev_ch["power_status"] = PowerStatus.OFF
                                 dev.agent_status = AgentStatus.DISCONNECTED
@@ -450,31 +451,45 @@ class SchedulerService:
                                 curr_user = dev.current_user or "Пользователь"
                                 dev_name_clean = dev.name or dev.hostname or dev.id
 
-                                # Check if a shutdown was already logged recently (< 120s)
-                                recent_logs = device_power_logs.get(dev.id.upper(), [])
-                                has_recent = False
-                                for entry in recent_logs[:5]:
-                                    if entry.get("action") in ["SHUTDOWN", "FORCE_SHUTDOWN", "POWEROFF"]:
-                                        try:
-                                            t_entry = datetime.fromisoformat(entry.get("timestamp", "").replace("Z", "+00:00"))
-                                            if (datetime.now(timezone.utc) - t_entry).total_seconds() < 120:
-                                                has_recent = True
-                                                break
-                                        except Exception:
-                                            pass
+                                if not was_booting:
+                                    # Check if a shutdown was already logged recently (< 120s)
+                                    recent_logs = device_power_logs.get(dev.id.upper(), [])
+                                    has_recent = False
+                                    for entry in recent_logs[:5]:
+                                        if entry.get("action") in ["SHUTDOWN", "FORCE_SHUTDOWN", "POWEROFF"]:
+                                            try:
+                                                t_entry = datetime.fromisoformat(entry.get("timestamp", "").replace("Z", "+00:00"))
+                                                if (datetime.now(timezone.utc) - t_entry).total_seconds() < 120:
+                                                    has_recent = True
+                                                    break
+                                            except Exception:
+                                                pass
 
-                                if not has_recent:
+                                    if not has_recent:
+                                        log_device_power_event(
+                                            device_id=dev.id,
+                                            action="SHUTDOWN",
+                                            details=f"Связь прервана (нет отклика более 30 сек, пользователь: {curr_user})",
+                                            status="Success",
+                                            initiator="Локальный пользователь (Выключение питания)",
+                                            source="LOCAL",
+                                            device_name=dev.name
+                                        )
+
+                                    offline_reason = f"Связь со станцией {dev_name_clean} прервана (нет отклика более 30 сек, пользователь: {curr_user})"
+                                else:
+                                    # Device was in BOOTING / WAKING state from WoL, but never came online.
+                                    # Do not log fake user shutdown and do NOT dispatch false "connection lost" Telegram alerts!
                                     log_device_power_event(
                                         device_id=dev.id,
-                                        action="SHUTDOWN",
-                                        details=f"Связь прервана (нет отклика более 30 сек, пользователь: {curr_user})",
-                                        status="Success",
-                                        initiator="Локальный пользователь (Выключение питания)",
-                                        source="LOCAL",
+                                        action="WAKE_TIMEOUT",
+                                        details="Станция не ответила на сигнал включения (Wake-on-LAN)",
+                                        status="Warning",
+                                        initiator="Планировщик / WoL",
+                                        source="SYSTEM",
                                         device_name=dev.name
                                     )
-
-                                offline_reason = f"Связь со станцией {dev_name_clean} прервана (нет отклика более 30 сек, пользователь: {curr_user})"
+                                    offline_reason = None
 
                     if dev_ch or online_reason or offline_reason:
                         device_updates.append({
