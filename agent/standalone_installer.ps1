@@ -493,7 +493,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.17"
+    agentVersion = "2.9.16"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -511,7 +511,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.17"
+    agentVersion = "2.9.16"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -545,18 +545,10 @@ try {
         }
     } catch {}
 
-    # Configure Windows Power Scheme: disable unattended sleep timeout after Wake-on-LAN across all power schemes (0 = never)
+    # Configure Windows Power Scheme: disable unattended sleep timeout after Wake-on-LAN (default is 120-180s)
     try {
         & powercfg.exe /SETACVALUEINDEX SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>&1 | Out-Null
         & powercfg.exe /SETDCVALUEINDEX SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>&1 | Out-Null
-        & powercfg.exe -attributes SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 -ATTRIB_HIDE 2>&1 | Out-Null
-        (powercfg.exe /list) | ForEach-Object {
-            if ($_ -match 'GUID:\s+([a-f0-9\-]+)') {
-                $schGuid = $matches[1]
-                & powercfg.exe /SETACVALUEINDEX $schGuid SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>&1 | Out-Null
-                & powercfg.exe /SETDCVALUEINDEX $schGuid SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>&1 | Out-Null
-            }
-        }
         & powercfg.exe /SETACTIVE SCHEME_CURRENT 2>&1 | Out-Null
     } catch {}
 
@@ -588,7 +580,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.17'
+`$AgentVersion = '2.9.16'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 5
@@ -658,18 +650,10 @@ if (-not `$createdNew) {
 Write-AgentLog "Service started. Server: `$ServerUrl, DeviceId: `$DeviceId, Version: `$AgentVersion"
 
 # Native Windows administration mode - dynamic compilation disabled
-# Prevent Windows from going to unattended sleep (default 120-180s) after WoL across all power schemes
+# Prevent Windows from going to unattended sleep (default 120-180s) after WoL
 try {
     & powercfg.exe /SETACVALUEINDEX SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>`$null | Out-Null
     & powercfg.exe /SETDCVALUEINDEX SCHEME_CURRENT SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>`$null | Out-Null
-    & powercfg.exe -attributes SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 -ATTRIB_HIDE 2>`$null | Out-Null
-    (powercfg.exe /list) | ForEach-Object {
-        if (`$_ -match 'GUID:\s+([a-f0-9\-]+)') {
-            `$schGuid = `$matches[1]
-            & powercfg.exe /SETACVALUEINDEX `$schGuid SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>`$null | Out-Null
-            & powercfg.exe /SETDCVALUEINDEX `$schGuid SUB_SLEEP 7bc4a2f9-d8fc-4469-b07b-33eb785aaca0 0 2>`$null | Out-Null
-        }
-    }
     & powercfg.exe /SETACTIVE SCHEME_CURRENT 2>`$null | Out-Null
 } catch {}
 
@@ -678,9 +662,9 @@ try {
     [Win32PowerGuard]::SetThreadExecutionState(0x80000000 -bor 0x00000001 -bor 0x00000040)
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.17") {
+function Update-AgentService([string]`$targetVer = "2.9.16") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.17"
+        `$targetVer = "2.9.16"
     }
     try {
         # 1. Report update in progress
@@ -2815,7 +2799,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.17"
+    agentVersion = "2.9.16"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
