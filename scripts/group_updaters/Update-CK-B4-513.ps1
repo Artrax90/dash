@@ -4,6 +4,7 @@
 .DESCRIPTION
     Токен: wm_tok_a78863fc5308e95e
     Компьютеров в группе: 12
+    Учетные данные: admin / bmstu023
 #>
 
 param(
@@ -12,6 +13,15 @@ param(
     [switch]$LocalInstall,
     [switch]$PingOnly
 )
+
+# Вшитые учетные данные администратора для группы ЦК B4 / 5 этаж / 513
+$EmbeddedUser = "admin"
+$EmbeddedPass = "bmstu023"
+
+if (-not $Credential) {
+    $secPass = ConvertTo-SecureString $EmbeddedPass -AsPlainText -Force
+    $Credential = New-Object System.Management.Automation.PSCredential($EmbeddedUser, $secPass)
+}
 
 # Загрузка общего движка обновления
 $scriptDir = $PSScriptRoot

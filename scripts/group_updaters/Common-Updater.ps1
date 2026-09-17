@@ -8,23 +8,38 @@ param(
     [pscredential]$Credential = $null
 )
 
+function Test-TcpPortQuick([string]$hostOrIp, [int]$port, [int]$timeoutMs = 400) {
+    try {
+        $tcp = New-Object System.Net.Sockets.TcpClient
+        $ar = $tcp.BeginConnect($hostOrIp, $port, $null, $null)
+        $wait = $ar.AsyncWaitHandle.WaitOne($timeoutMs, $false)
+        if (-not $wait) {
+            $tcp.Close()
+            return $false
+        }
+        $tcp.EndConnect($ar)
+        $tcp.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Resolve-EffectiveServerUrl([string]$srv) {
     if (-not $srv) { $srv = "http://172.19.33.68:2301" }
     $srv = $srv.TrimEnd('/')
+    
     $candidates = @($srv, "http://172.19.33.68:2301", "http://192.168.1.109:2301")
     $gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty NextHop -First 1)
     if ($gw) { $candidates += "http://${gw}:2301" }
 
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     foreach ($c in $candidates) {
         if (-not $c) { continue }
         try {
-            $req = [System.Net.WebRequest]::Create("$c/api/v1/agents/version-info")
-            $req.Timeout = 1500
-            $req.Proxy = $null
-            $res = $req.GetResponse()
-            $res.Close()
-            return $c
+            $u = [System.Uri]$c
+            if (Test-TcpPortQuick $u.Host $u.Port 350) {
+                return $c
+            }
         } catch {}
     }
     return $srv
@@ -48,19 +63,26 @@ function Invoke-RemoteAgentUpdate {
         Details = ""
     }
 
-    # 1. Быстрая проверка ICMP пинга
+    # 1. Быстрая проверка доступности (ICMP пинг 500 мс)
     $pingOk = $false
     try {
         $p = New-Object System.Net.NetworkInformation.Ping
-        $reply = $p.Send($IP, 1200)
+        $reply = $p.Send($IP, 500)
         if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) {
             $pingOk = $true
         }
     } catch {}
 
     if (-not $pingOk) {
+        # Если ICMP закрыт файрволом, проверим порт 135 (RPC) или 5985 (WinRM)
+        if (Test-TcpPortQuick $IP 135 400 -or Test-TcpPortQuick $IP 5985 400) {
+            $pingOk = $true
+        }
+    }
+
+    if (-not $pingOk) {
         $result.Status = "OFFLINE"
-        $result.Details = "Хост недоступен по сети (ICMP timeout)"
+        $result.Details = "Хост недоступен по сети (нет ответа на пинг)"
         return $result
     }
     $result.Ping = $true
@@ -68,34 +90,80 @@ function Invoke-RemoteAgentUpdate {
     # Формируем команду тихого обновления агента
     $psCmd = 'powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command "[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12; $u = \"' + $ServerUrl + '/install.ps1?token=' + $Token + '\"; $s = (New-Object Net.WebClient).DownloadString($u); Invoke-Expression $s"'
 
-    # 2. Попытка через WMI (Win32_Process.Create) - самый универсальный корпоративный способ
-    try {
-        if ($Credential) {
-            $opt = New-Object System.Management.ConnectionOptions
-            $opt.Username = $Credential.UserName
-            $opt.Password = $Credential.Password
-            $scope = New-Object System.Management.ManagementScope("\\$IP\root\cimv2", $opt)
-            $scope.Connect()
-            $wmi = [wmiclass]"\\$IP\root\cimv2:Win32_Process"
-            $wmi.Scope = $scope
-        } else {
-            $wmi = [wmiclass]"\\$IP\root\cimv2:Win32_Process"
+    $plainUser = if ($Credential) { $Credential.UserName } else { "" }
+    $plainPass = if ($Credential) { [System.Net.NetworkCredential]::new("", $Credential.Password).Password } else { "" }
+
+    # 2. Попытка через WMI (ManagementClass с явным Scope и ConnectionOptions)
+    if ($Credential) {
+        $userCandidates = @($plainUser)
+        if ($plainUser -notlike "*\*") {
+            $userCandidates = @("$IP\$plainUser", ".\$plainUser", $plainUser)
         }
 
-        $res = $wmi.Create($psCmd)
-        if ($res -and $res.ReturnValue -eq 0) {
-            $result.Status = "SUCCESS_WMI"
-            $result.Details = "Успешно запущен процесс обновления (PID: $($res.ProcessId))"
-            return $result
-        } elseif ($res) {
-            $wmiErr = "WMI ReturnValue=$($res.ReturnValue)"
+        foreach ($uCandidate in $userCandidates) {
+            try {
+                $opt = New-Object System.Management.ConnectionOptions
+                $opt.Username = $uCandidate
+                $opt.SecurePassword = $Credential.Password
+                $opt.EnablePrivileges = $true
+                $opt.Impersonation = [System.Management.ImpersonationLevel]::Impersonate
+                $opt.Authentication = [System.Management.AuthenticationLevel]::PacketPrivacy
+                $opt.Timeout = [TimeSpan]::FromSeconds(3)
+
+                $scope = New-Object System.Management.ManagementScope("\\$IP\root\cimv2", $opt)
+                $scope.Connect()
+
+                $processClass = New-Object System.Management.ManagementClass($scope, (New-Object System.Management.ManagementPath("Win32_Process")), $null)
+                $inParams = $processClass.GetMethodParameters("Create")
+                $inParams["CommandLine"] = $psCmd
+                $outParams = $processClass.InvokeMethod("Create", $inParams, $null)
+
+                $retVal = [int]$outParams["ReturnValue"]
+                if ($retVal -eq 0) {
+                    $pidVal = $outParams["ProcessId"]
+                    $result.Status = "SUCCESS_WMI"
+                    $result.Details = "Успешно запущен процесс обновления (PID: $pidVal, пользователь: $uCandidate)"
+                    return $result
+                }
+            } catch {
+                $lastWmiErr = $_.Exception.Message
+            }
         }
-    } catch {
-        $wmiErr = $_.Exception.Message
+    } else {
+        # Без явных учетных данных - текущий контекст
+        try {
+            $scope = New-Object System.Management.ManagementScope("\\$IP\root\cimv2")
+            $scope.Connect()
+            $processClass = New-Object System.Management.ManagementClass($scope, (New-Object System.Management.ManagementPath("Win32_Process")), $null)
+            $inParams = $processClass.GetMethodParameters("Create")
+            $inParams["CommandLine"] = $psCmd
+            $outParams = $processClass.InvokeMethod("Create", $inParams, $null)
+            if ([int]$outParams["ReturnValue"] -eq 0) {
+                $result.Status = "SUCCESS_WMI"
+                $result.Details = "Успешно запущен процесс обновления (PID: $($outParams['ProcessId']))"
+                return $result
+            }
+        } catch {
+            $lastWmiErr = $_.Exception.Message
+        }
     }
 
-    # 3. Попытка через WinRM (Invoke-Command)
+    # 3. Попытка через утилиту wmic.exe (нативная утилита Windows)
+    if ($plainUser -and $plainPass) {
+        try {
+            $wmicOut = & wmic.exe /node:"$IP" /user:"$plainUser" /password:"$plainPass" process call create "$psCmd" 2>&1
+            $wmicStr = ($wmicOut | Out-String)
+            if ($wmicStr -match "ReturnValue\s*=\s*0" -or $wmicStr -match "ProcessId\s*=\s*(\d+)") {
+                $result.Status = "SUCCESS_WMIC"
+                $result.Details = "Успешно запущен через wmic.exe ($($Matches[0]))"
+                return $result
+            }
+        } catch {}
+    }
+
+    # 4. Попытка через WinRM (Invoke-Command с коротким таймаутом)
     try {
+        $so = New-PSSessionOption -OpenTimeout 2500 -OperationTimeout 3500
         $icParams = @{
             ComputerName = $IP
             ScriptBlock = {
@@ -106,6 +174,7 @@ function Invoke-RemoteAgentUpdate {
                 Invoke-Expression $code
             }
             ArgumentList = @($ServerUrl, $Token)
+            SessionOption = $so
             ErrorAction = 'Stop'
         }
         if ($Credential) { $icParams.Credential = $Credential }
@@ -114,12 +183,13 @@ function Invoke-RemoteAgentUpdate {
         $result.Details = "Успешно выполнено через WinRM"
         return $result
     } catch {
-        $winrmErr = $_.Exception.Message
+        $lastWinrmErr = $_.Exception.Message
     }
 
-    # 4. Если прямой удаленный вызов заблокирован правами / политиками
+    # 5. Если удаленный доступ заблокирован сетевым файрволом или политикой Remote UAC
     $result.Status = "AUTH_OR_RPC_BLOCKED"
-    $result.Details = "В сети, но требуется запуск от доменного админа (WMI: $wmiErr; WinRM: $winrmErr)"
+    $errSummary = if ($lastWmiErr) { $lastWmiErr } else { $lastWinrmErr }
+    $result.Details = "В сети, но RPC/WinRM отклонен ($errSummary)"
     return $result
 }
 
@@ -134,15 +204,19 @@ function Execute-GroupUpdate {
         [switch]$PingOnly
     )
 
-    Clear-Host
+    Write-Host ""
     Write-Host "================================================================================" -ForegroundColor Cyan
     Write-Host "   WORKSTATION MANAGER - ОБНОВЛЕНИЕ АГЕНТОВ ДЛЯ ГРУППЫ" -ForegroundColor Cyan
     Write-Host "   Группа: $GroupName" -ForegroundColor Yellow
     Write-Host "   Токен:  $Token" -ForegroundColor DarkGray
+    if ($Credential) {
+        Write-Host "   Учетная запись: $($Credential.UserName) (пароль передан)" -ForegroundColor Green
+    }
     Write-Host "================================================================================" -ForegroundColor Cyan
 
+    Write-Host "[*] Поиск активного сервера... " -NoNewline -ForegroundColor White
     $effServer = Resolve-EffectiveServerUrl $ServerUrl
-    Write-Host "[*] Целевой сервер: $effServer" -ForegroundColor Green
+    Write-Host "[OK: $effServer]" -ForegroundColor Green
     Write-Host "[*] Компьютеров в группе: $($Devices.Count)" -ForegroundColor Green
     Write-Host ""
 
@@ -163,9 +237,9 @@ function Execute-GroupUpdate {
     }
 
     if ($PingOnly) {
-        Write-Host "[*] Режим проверки связи (Ping Only):" -ForegroundColor Yellow
+        Write-Host "[*] Режим проверки связи (Ping Only):`n" -ForegroundColor Yellow
     } else {
-        Write-Host "[*] Запуск удаленного обновления станций..." -ForegroundColor Yellow
+        Write-Host "[*] Запуск удаленного обновления станций:`n" -ForegroundColor Yellow
     }
 
     $results = @()
@@ -173,13 +247,13 @@ function Execute-GroupUpdate {
     foreach ($dev in $Devices) {
         $ip = $dev.IP
         $name = $dev.Name
-        Write-Host " [$idx/$($Devices.Count)] Опрос $name ($ip)... " -NoNewline -ForegroundColor White
+        Write-Host (" [{0,2}/{1,2}] {2,-16} ({3,-15}) ... " -f $idx, $Devices.Count, $name, $ip) -NoNewline -ForegroundColor White
 
         if ($PingOnly) {
             $pOk = $false
             try {
                 $p = New-Object System.Net.NetworkInformation.Ping
-                $reply = $p.Send($ip, 1200)
+                $reply = $p.Send($ip, 500)
                 if ($reply.Status -eq [System.Net.NetworkInformation.IPStatus]::Success) { $pOk = $true }
             } catch {}
             if ($pOk) {
@@ -218,11 +292,6 @@ function Execute-GroupUpdate {
     $offCount = ($results | Where-Object { $_.Status -eq "OFFLINE" }).Count
     $otherCount = $results.Count - $succCount - $offCount
 
-    Write-Host "Итог: Обработано $($results.Count) станций. Успешно/В сети: $succCount, Оффлайн: $offCount, Требуют доступа: $otherCount" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "Подсказка: Для станций, где заблокирован удаленный RPC/WMI, можно:" -ForegroundColor DarkYellow
-    Write-Host "  1. Запустить этот же скрипт с флагом -Credential (Get-Credential) от имени доменного админа;" -ForegroundColor DarkYellow
-    Write-Host "  2. Или запустить скрипт прямо на целевом ПК с параметром -LocalInstall;" -ForegroundColor DarkYellow
-    Write-Host "  3. Или в 1 клик нажать «Обновить агент» в веб-панели Northstar Ops, когда ПК выйдет в сеть." -ForegroundColor DarkYellow
+    Write-Host ("Итог: Всего: {0}, Успешно запущено: {1}, Выключено/Оффлайн: {2}, Требуют доступа/RPC: {3}" -f $results.Count, $succCount, $offCount, $otherCount) -ForegroundColor Cyan
     Write-Host ""
 }
