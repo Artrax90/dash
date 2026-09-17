@@ -493,7 +493,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.18"
+    agentVersion = "2.9.19"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -511,7 +511,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.18"
+    agentVersion = "2.9.19"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -580,9 +580,10 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.18'
+`$AgentVersion = '2.9.19'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
+`$InstallDir = if (`$PSScriptRoot -and (Test-Path `$PSScriptRoot)) { `$PSScriptRoot } elseif (Test-Path "C:\Program Files\WorkstationManagerAgent") { "C:\Program Files\WorkstationManagerAgent" } else { (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent") }
 `$script:currentInterval = 5
 
 # Dynamic config loader: read local config.json if present
@@ -662,10 +663,11 @@ try {
     [Win32PowerGuard]::SetThreadExecutionState(0x80000000 -bor 0x00000001 -bor 0x00000040)
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.18") {
+function Update-AgentService([string]`$targetVer = "2.9.19") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.18"
+        `$targetVer = "2.9.19"
     }
+    Write-AgentLog "Update-AgentService initiated: current=`$AgentVersion, target=`$targetVer"
     try {
         # 1. Report update in progress
         `$updPayload = @{
@@ -692,11 +694,15 @@ function Update-AgentService([string]`$targetVer = "2.9.18") {
     try {
         [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12 -bor [System.Net.SecurityProtocolType]::Tls11 -bor [System.Net.SecurityProtocolType]::Tls
         
+        if (-not `$InstallDir -or -not (Test-Path `$InstallDir)) {
+            `$InstallDir = if (`$PSScriptRoot -and (Test-Path `$PSScriptRoot)) { `$PSScriptRoot } elseif (Test-Path "C:\Program Files\WorkstationManagerAgent") { "C:\Program Files\WorkstationManagerAgent" } else { (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent") }
+        }
         `$baseHost = `$ServerUrl -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
         `$serviceUrl = "`$baseHost/api/v1/agents/service-script?deviceId=`$DeviceId&mac=`$DeviceMac"
-        `$servicePath = Join-Path '$InstallDir' "run_service.ps1"
-        `$tempPath = Join-Path '$InstallDir' "run_service_update.ps1"
+        `$servicePath = Join-Path `$InstallDir "run_service.ps1"
+        `$tempPath = Join-Path `$InstallDir "run_service_update.ps1"
 
+        Write-AgentLog "Update-AgentService downloading from `$serviceUrl to `$tempPath..."
         Invoke-WebRequest -Uri `$serviceUrl -Headers @{ "X-Agent-Version" = "`$AgentVersion" } -OutFile `$tempPath -UseBasicParsing -TimeoutSec 15
 
         if ((Test-Path `$tempPath) -and (Get-Item `$tempPath).Length -gt 1000) {
@@ -705,6 +711,7 @@ function Update-AgentService([string]`$targetVer = "2.9.18") {
             `$astErrs = `$null
             [System.Management.Automation.Language.Parser]::ParseFile(`$tempPath, [ref]`$tokens, [ref]`$astErrs) | Out-Null
             if (-not `$astErrs -or `$astErrs.Count -eq 0) {
+                Write-AgentLog "Update-AgentService AST check passed. Replacing `$servicePath..."
                 Move-Item -Path `$tempPath -Destination `$servicePath -Force -ErrorAction SilentlyContinue
 
                 # Release mutex before starting new instance
@@ -714,18 +721,24 @@ function Update-AgentService([string]`$targetVer = "2.9.18") {
                 }
 
                 # Start updated service
-                try { Get-ChildItem -Path '$InstallDir' -Filter "*.vbs" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
+                try { Get-ChildItem -Path `$InstallDir -Filter "*.vbs" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue } catch {}
 
                 # Start updated service cleanly via powershell.exe
                 `$psExe = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
                 if (-not (Test-Path `$psExe)) { `$psExe = "powershell.exe" }
+                Write-AgentLog "Update-AgentService launching new process: `$psExe -File `$servicePath"
                 Start-Process -FilePath `$psExe -ArgumentList @('-NoProfile', '-NonInteractive', '-WindowStyle', 'Hidden', '-ExecutionPolicy', 'Bypass', '-File', "`$servicePath") -WindowStyle Hidden
                 exit 0
             } else {
+                Write-AgentLog "Update-AgentService AST check FAILED with $($astErrs.Count) errors"
                 Remove-Item -Path `$tempPath -Force -ErrorAction SilentlyContinue
             }
+        } else {
+            Write-AgentLog "Update-AgentService download failed or file empty: `$tempPath"
         }
-    } catch {}
+    } catch {
+        Write-AgentLog "Update-AgentService exception: $($_.Exception.Message)"
+    }
 }
 
 function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false, `$cmdObj = `$null) {
@@ -2799,7 +2812,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.18"
+    agentVersion = "2.9.19"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
