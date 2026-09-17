@@ -2083,7 +2083,7 @@ function Dashboard({
             </Button>
           </div>
         </div>
-        <DeviceTable devices={filtered} onDevice={onDevice} onAction={notify} />
+        <DeviceTable devices={filtered} onDevice={onDevice} onAction={notify} showSelect={false} />
       </section>
 
       {/* Quick Actions Modal */}
@@ -2187,7 +2187,8 @@ function DeviceTable({
   onDeleteDevice,
   onRestoreDevice,
   onEditMetadata,
-  pageSize = 8
+  pageSize = 8,
+  showSelect
 }: {
   devices: Device[];
   onDevice: (id: string) => void;
@@ -2200,7 +2201,9 @@ function DeviceTable({
   onRestoreDevice?: (id: string) => void;
   onEditMetadata?: (device: Device) => void;
   pageSize?: number;
+  showSelect?: boolean;
 }) {
+  const isSelectable = showSelect !== undefined ? showSelect : Boolean(onSelectToggle);
   const { t } = useLanguage();
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [currentPage, setCurrentPage] = useState(1);
@@ -2288,7 +2291,7 @@ function DeviceTable({
   const endIndex = Math.min(startIndex + effectivePageSize, sortedDevices.length);
   const pagedDevices = compact ? sortedDevices : sortedDevices.slice(startIndex, endIndex);
 
-  const allSelected = pagedDevices.length > 0 && pagedDevices.every(d => selectedIds.includes(d.id));
+  const allSelected = isSelectable && pagedDevices.length > 0 && pagedDevices.every(d => selectedIds.includes(d.id));
 
   // Close context menu on outside click
   useEffect(() => {
@@ -2352,7 +2355,11 @@ function DeviceTable({
       <table>
         <thead>
           <tr>
-            <th><input type="checkbox" checked={allSelected} onChange={onSelectAll} /></th>
+            {isSelectable && (
+              <th style={{ width: '38px', textAlign: 'center' }}>
+                <input type="checkbox" checked={allSelected} onChange={onSelectAll} />
+              </th>
+            )}
             {renderSortHeader(t('common.status'), 'status')}
             {renderSortHeader(t('common.device'), 'name')}
             {renderSortHeader(t('common.group'), 'group')}
@@ -2369,7 +2376,7 @@ function DeviceTable({
         <tbody>
           {devices.length === 0 ? (
             <tr>
-              <td colSpan={12} style={{ textAlign: 'center', padding: '32px' }}>
+              <td colSpan={isSelectable ? 12 : 11} style={{ textAlign: 'center', padding: '32px' }}>
                 <div className="empty-state">
                   <Monitor size={24} />
                   <span>Нет устройств, соответствующих фильтрам</span>
@@ -2382,13 +2389,15 @@ function DeviceTable({
               const devGroups = getDeviceGroups(device);
               return (
                 <tr key={device.id}>
-                  <td>
-                    <input
-                      type="checkbox"
-                      checked={selectedIds.includes(device.id)}
-                      onChange={() => onSelectToggle && onSelectToggle(device.id)}
-                    />
-                  </td>
+                  {isSelectable && (
+                    <td style={{ width: '38px', textAlign: 'center' }}>
+                      <input
+                        type="checkbox"
+                        checked={selectedIds.includes(device.id)}
+                        onChange={() => onSelectToggle && onSelectToggle(device.id)}
+                      />
+                    </td>
+                  )}
                   <td><DeviceStatusBadge powerStatus={device.powerStatus} healthStatus={device.healthStatus} /></td>
                   <td>
                     <button className="device-name" onClick={() => onDevice(device.id)}>
