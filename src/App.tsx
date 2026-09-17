@@ -16080,6 +16080,7 @@ function Groups({
   const canManageGroup = (groupName: string) => canManageGroups && (!hasRestrictedScope || (allowedGroups ? isPathInScope(groupName, allowedGroups) : false));
 
   const [devices, setDevices] = useState<Device[]>([]);
+  const [schedules, setSchedules] = useState<Schedule[]>([]);
   const [groups, setGroups] = useState<GroupData[]>([
     { name: 'Office', count: 1, desc: 'Компьютеры главного офиса компании', color: 'blue', schedule: 'Office Working Day' },
     { name: 'Warehouse', count: 0, desc: 'Терминалы логистического склада', color: 'orange', schedule: 'Warehouse Night Mode' },
@@ -16180,7 +16181,101 @@ function Groups({
     };
   }, []);
 
+  const formatScheduleDisplay = useCallback((sch: Schedule | null | undefined): string => {
+    if (!sch) return 'Без расписания';
+    const name = sch.name || 'Правило расписания';
+    const statusSuffix = sch.enabled === false ? ' (отключено)' : '';
+
+    if (sch.steps && sch.steps.length > 0) {
+      const activeSteps = sch.steps.filter(s => s.enabled);
+      const wake = activeSteps.find(s => s.action === 'WAKE');
+      const shutdown = activeSteps.find(s => s.action === 'SHUTDOWN');
+      if (wake && shutdown) {
+        return `${name} (${wake.time} – ${shutdown.time})${statusSuffix}`;
+      }
+      if (wake) {
+        return `${name} (WoL ${wake.time})${statusSuffix}`;
+      }
+      if (shutdown) {
+        return `${name} (Выкл ${shutdown.time})${statusSuffix}`;
+      }
+      const times = activeSteps.map(s => s.time).filter(Boolean);
+      if (times.length > 0) {
+        return `${name} (${times.join(', ')})${statusSuffix}`;
+      }
+    }
+
+    if (sch.time) {
+      const act = sch.action === 'WAKE' ? 'WoL ' : sch.action === 'SHUTDOWN' ? 'Выкл ' : '';
+      return `${name} (${act}${sch.time})${statusSuffix}`;
+    }
+
+    return `${name}${statusSuffix}`;
+  }, []);
+
+  const findScheduleForGroup = useCallback((groupName: string, explicitScheduleName?: string): Schedule | null => {
+    if (!schedules || schedules.length === 0 || !groupName) return null;
+
+    const clean = (s: string) => (s || '').trim().replace(/\s*\/\s*/g, ' / ').toLowerCase();
+    const cGroupName = clean(groupName);
+    const { building, floor, room } = parseGroupHierarchy(groupName);
+    const cBuilding = clean(building);
+    const cFloor = clean(`${building} / ${floor}`);
+    const cRoom = clean(room);
+    const cRoomAlt = clean(`Кабинет ${room}`);
+
+    // Tier 1: Exact target match with group name (prefer active rule)
+    const exactTarget = schedules.find(s => clean(s.target) === cGroupName && s.enabled);
+    if (exactTarget) return exactTarget;
+    const exactTargetDisabled = schedules.find(s => clean(s.target) === cGroupName);
+    if (exactTargetDisabled) return exactTargetDisabled;
+
+    // Tier 2: Explicit schedule name assigned to group (if valid and not 'Без расписания')
+    if (explicitScheduleName && explicitScheduleName !== 'Без расписания') {
+      const cExp = clean(explicitScheduleName);
+      const byName = schedules.find(s => clean(s.name) === cExp && s.enabled) || schedules.find(s => clean(s.name) === cExp);
+      if (byName) return byName;
+    }
+
+    // Tier 3: Room name match (e.g. target is "518Т" or "Кабинет 518Т")
+    if (cRoom && cRoom !== cGroupName) {
+      const roomMatch = schedules.find(s => (clean(s.target) === cRoom || clean(s.target) === cRoomAlt) && s.enabled) ||
+                        schedules.find(s => clean(s.target) === cRoom || clean(s.target) === cRoomAlt);
+      if (roomMatch) return roomMatch;
+    }
+
+    // Tier 4: Floor match (e.g. target is "МНОК / 5 этаж")
+    if (floor && floor !== 'Группы' && floor !== '1 этаж') {
+      const floorMatch = schedules.find(s => clean(s.target) === cFloor && s.enabled) ||
+                         schedules.find(s => clean(s.target) === cFloor);
+      if (floorMatch) return floorMatch;
+    }
+
+    // Tier 5: Building match (e.g. target is "МНОК")
+    if (building && building !== 'Общие группы') {
+      const bldMatch = schedules.find(s => clean(s.target) === cBuilding && s.enabled) ||
+                       schedules.find(s => clean(s.target) === cBuilding);
+      if (bldMatch) return bldMatch;
+    }
+
+    // Tier 6: Global all-computers schedule (target is "All" or "Все" or "Все компьютеры")
+    const allMatch = schedules.find(s => ['all', 'все', 'все компьютеры', 'все устройства'].includes(clean(s.target)) && s.enabled);
+    if (allMatch) return allMatch;
+
+    return null;
+  }, [schedules, parseGroupHierarchy]);
+
+  const getEffectiveGroupSchedule = useCallback((groupName: string, explicitScheduleName?: string): string => {
+    const sch = findScheduleForGroup(groupName, explicitScheduleName);
+    if (sch) return formatScheduleDisplay(sch);
+    if (explicitScheduleName && explicitScheduleName !== 'Без расписания') return explicitScheduleName;
+    return 'Без расписания';
+  }, [findScheduleForGroup, formatScheduleDisplay]);
+
   const loadData = () => {
+    schedulesApi.list().then((schs) => {
+      if (schs && schs.length >= 0) setSchedules(schs);
+    }).catch(() => {});
     groupsApi.list().then((serverGroups) => {
       if (serverGroups && serverGroups.length > 0) {
         setGroups(serverGroups.map(g => ({
@@ -16271,13 +16366,14 @@ function Groups({
       if (!buildingsMap[building].floors[floor].rooms.some(r => r.name.toLowerCase() === g.name.toLowerCase())) {
         buildingsMap[building].floors[floor].rooms.push({
           ...g,
-          roomName: room
+          roomName: room,
+          schedule: getEffectiveGroupSchedule(g.name, g.schedule)
         });
       }
     });
 
     return buildingsMap;
-  }, [buildingConfigs, visibleGroups, parseGroupHierarchy, hasRestrictedScope, allowedGroups]);
+  }, [buildingConfigs, visibleGroups, parseGroupHierarchy, hasRestrictedScope, allowedGroups, getEffectiveGroupSchedule]);
 
   const modalFloors = useMemo(() => {
     if (!scopePolicyModalTarget) return [];
@@ -16410,13 +16506,32 @@ function Groups({
     }
   }, [hasRestrictedScope, selectedGroupName, visibleGroups]);
 
-  const selectedGroup = selectedGroupName ? groups.find(g => g.name.toLowerCase() === selectedGroupName.toLowerCase()) || {
-    name: selectedGroupName,
-    count: 0,
-    desc: 'Рабочая группа',
-    color: 'blue' as const,
-    schedule: 'Без расписания'
-  } : null;
+  const matchedSelectedSchedule = useMemo(() => {
+    if (!selectedGroupName) return null;
+    const baseGroup = groups.find(g => g.name.toLowerCase() === selectedGroupName.toLowerCase());
+    return findScheduleForGroup(selectedGroupName, baseGroup?.schedule);
+  }, [selectedGroupName, groups, findScheduleForGroup]);
+
+  const selectedGroup = useMemo(() => {
+    if (!selectedGroupName) return null;
+    const base = groups.find(g => g.name.toLowerCase() === selectedGroupName.toLowerCase()) || (() => {
+      const { building, floor, room } = parseGroupHierarchy(selectedGroupName);
+      return {
+        name: selectedGroupName,
+        count: 0,
+        desc: (building && building !== 'Общие группы') ? `Кабинет ${room} (${building}, ${floor})` : 'Рабочая группа',
+        color: 'blue' as const,
+        schedule: 'Без расписания'
+      };
+    })();
+    const effSchedule = matchedSelectedSchedule
+      ? formatScheduleDisplay(matchedSelectedSchedule)
+      : (base.schedule && base.schedule !== 'Без расписания' ? base.schedule : 'Без расписания');
+    return {
+      ...base,
+      schedule: effSchedule
+    };
+  }, [selectedGroupName, groups, parseGroupHierarchy, matchedSelectedSchedule, formatScheduleDisplay]);
 
   const handleCreateGroup = async () => {
     if (!canManageGroups) {
@@ -16514,7 +16629,8 @@ function Groups({
     setEditGroupTarget(g);
     setEditGroupName(g.name);
     setEditGroupDesc(g.desc);
-    setEditGroupSchedule(g.schedule);
+    const matched = findScheduleForGroup(g.name, g.schedule);
+    setEditGroupSchedule(matched ? matched.name : (g.schedule || 'Без расписания'));
     setEditGroupColor(g.color);
     setEditGroupInterval(groupIntervals[g.name] || 60);
   };
@@ -17046,7 +17162,46 @@ function Groups({
                       ГРУППА СТАНЦИЙ · <span className="badge" style={{ textTransform: 'uppercase' }}>{selectedGroup.color}</span>
                     </div>
                     <h1 style={{ fontSize: '26px' }}>{selectedGroup.name}</h1>
-                    <p>{selectedGroup.desc} · <Clock3 size={13} style={{ verticalAlign: '-2px', marginLeft: '4px' }} /> {selectedGroup.schedule}</p>
+                    <p style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap', marginTop: '4px' }}>
+                      <span>{selectedGroup.desc}</span>
+                      <span style={{ opacity: 0.5 }}>·</span>
+                      <span
+                        onClick={() => onNavigate?.('Schedules')}
+                        style={{
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          color: matchedSelectedSchedule ? (matchedSelectedSchedule.enabled ? 'var(--blue, #38bdf8)' : 'var(--muted)') : 'var(--muted)',
+                          fontWeight: matchedSelectedSchedule ? 600 : 400,
+                          borderRadius: '6px',
+                          padding: '2px 6px',
+                          background: matchedSelectedSchedule ? 'rgba(56, 189, 248, 0.08)' : 'rgba(255,255,255,0.03)',
+                          border: matchedSelectedSchedule ? '1px solid rgba(56, 189, 248, 0.25)' : '1px solid var(--border)',
+                          transition: 'all 0.2s'
+                        }}
+                        title={matchedSelectedSchedule ? `Перейти к правилу «${matchedSelectedSchedule.name}» в планировщике` : 'Перейти в планировщик расписаний'}
+                      >
+                        <Clock3 size={13} style={{ verticalAlign: '-1px' }} />
+                        <span>{selectedGroup.schedule}</span>
+                        {matchedSelectedSchedule && (
+                          <span
+                            className="badge"
+                            style={{
+                              fontSize: '10px',
+                              padding: '1px 6px',
+                              borderRadius: '4px',
+                              background: matchedSelectedSchedule.enabled ? 'rgba(34, 197, 94, 0.15)' : 'rgba(255,255,255,0.08)',
+                              color: matchedSelectedSchedule.enabled ? '#4ade80' : 'var(--muted)',
+                              border: matchedSelectedSchedule.enabled ? '1px solid rgba(34, 197, 94, 0.3)' : '1px solid var(--border)',
+                              lineHeight: '14px'
+                            }}
+                          >
+                            {matchedSelectedSchedule.enabled ? 'Активно' : 'Отключено'}
+                          </span>
+                        )}
+                      </span>
+                    </p>
                   </div>
                 </div>
 
@@ -17144,8 +17299,27 @@ function Groups({
                     </div>
                     <div className="bento-value">{rdpInGroup} <small style={{ fontSize: '13px', color: 'var(--muted)', fontWeight: 500 }}>Подключений</small></div>
                   </div>
-                  <div className="bento-footer">
-                    <span>{selectedGroup.schedule}</span>
+                  <div
+                    className="bento-footer"
+                    style={{ cursor: 'pointer', transition: 'background 0.2s' }}
+                    onClick={() => onNavigate?.('Schedules')}
+                    title="Перейти к управлению расписаниями"
+                  >
+                    <span style={{ display: 'inline-flex', alignItems: 'center', gap: '6px' }}>
+                      {matchedSelectedSchedule && (
+                        <span
+                          style={{
+                            width: '7px',
+                            height: '7px',
+                            borderRadius: '50%',
+                            background: matchedSelectedSchedule.enabled ? 'var(--green, #22c55e)' : 'var(--muted, #888)',
+                            display: 'inline-block',
+                            flexShrink: 0
+                          }}
+                        />
+                      )}
+                      <span>{selectedGroup.schedule}</span>
+                    </span>
                     <Clock3 size={14} style={{ color: 'var(--muted)' }} />
                   </div>
                 </div>
@@ -17580,7 +17754,7 @@ function Groups({
                           </div>
                           <div className="group-info">
                             <span><Monitor size={14} /> {group.count} {t('common.devices')}</span>
-                            <span><Clock3 size={14} /> {group.schedule}</span>
+                            <span><Clock3 size={14} /> {getEffectiveGroupSchedule(group.name, group.schedule)}</span>
                           </div>
                           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
                             <Button onClick={(e) => { e.stopPropagation(); onSelectGroup(group.name); }}>
@@ -18253,11 +18427,12 @@ function Groups({
               <div>
                 <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Расписание питания</label>
                 <select className="text-input" style={{ width: '100%' }} value={newGroupSchedule} onChange={(e) => setNewGroupSchedule(e.target.value)}>
-                  <option value="Без расписания">Без расписания</option>
-                  <option value="Office Working Day">Office Working Day (07:50 - 22:00)</option>
-                  <option value="Warehouse Night Mode">Warehouse Night Mode (21:00 - 08:00)</option>
-                  <option value="Testing Lab">Testing Lab (Ежедневный ребут)</option>
-                  <option value="Dev Working Day">Dev Working Day (08:30 - 20:00)</option>
+                  <option value="Без расписания">Без расписания (или по правилам кабинета/этажа)</option>
+                  {schedules.map(sch => (
+                    <option key={sch.id || sch.name} value={sch.name}>
+                      {formatScheduleDisplay(sch)} {sch.target && sch.target !== 'All' ? `[Цель: ${sch.target}]` : ''}
+                    </option>
+                  ))}
                 </select>
               </div>
             </div>
@@ -18324,11 +18499,12 @@ function Groups({
               <div>
                 <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '5px' }}>Расписание питания</label>
                 <select className="text-input" style={{ width: '100%' }} value={editGroupSchedule} onChange={(e) => setEditGroupSchedule(e.target.value)}>
-                  <option value="Без расписания">Без расписания</option>
-                  <option value="Office Working Day">Office Working Day</option>
-                  <option value="Warehouse Night Mode">Warehouse Night Mode</option>
-                  <option value="Testing Lab">Testing Lab</option>
-                  <option value="Dev Working Day">Dev Working Day</option>
+                  <option value="Без расписания">Без расписания (или авто-наследование по цели)</option>
+                  {schedules.map(sch => (
+                    <option key={sch.id || sch.name} value={sch.name}>
+                      {formatScheduleDisplay(sch)} {sch.target && sch.target !== 'All' ? `[Цель: ${sch.target}]` : ''}
+                    </option>
+                  ))}
                 </select>
               </div>
 
