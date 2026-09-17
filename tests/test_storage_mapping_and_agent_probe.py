@@ -3,16 +3,16 @@ import subprocess
 from pathlib import Path
 from backend.app.core.config import settings
 
-def test_version_bumped_to_2_9_16():
-    assert settings.LATEST_AGENT_VERSION == "2.9.16"
+def test_version_bumped_to_2_9_18():
+    assert settings.LATEST_AGENT_VERSION == "2.9.18"
 
 def test_installer_has_nvme_and_smart_support():
     installer_path = Path("agent/standalone_installer.ps1")
     assert installer_path.exists()
     content = installer_path.read_text(encoding="utf-8")
 
-    # 1. Must have version 2.9.16
-    assert "$AgentVersion = '2.9.16'" in content
+    # 1. Must have version 2.9.18
+    assert "$AgentVersion = '2.9.18'" in content
 
     # 2. Live disks must include healthPercent and temperatureC
     assert "healthPercent" in content

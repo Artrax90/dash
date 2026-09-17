@@ -215,7 +215,7 @@ async def test_version_info_cache_bypasses_db():
     from backend.app.api.v1.agents import get_agent_version_info, _set_cached_version_info, invalidate_version_info_cache
     
     test_cache = {
-        "currentVersion": "2.9.16",
+        "currentVersion": "2.9.18",
         "releaseDate": "2026-08-23",
         "totalAgents": 42,
         "upToDateCount": 42,
@@ -228,7 +228,7 @@ async def test_version_info_cache_bypasses_db():
     # If cache is valid, get_agent_version_info must return immediately without calling AsyncSessionLocal
     with patch("backend.app.api.v1.agents.AsyncSessionLocal") as mock_session_local:
         res = await get_agent_version_info(mock_request)
-        assert res["currentVersion"] == "2.9.16"
+        assert res["currentVersion"] == "2.9.18"
         assert res["totalAgents"] == 42
         mock_session_local.assert_not_called()
     

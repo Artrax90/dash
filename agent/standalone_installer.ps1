@@ -493,7 +493,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.16"
+    agentVersion = "2.9.18"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -511,7 +511,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.16"
+    agentVersion = "2.9.18"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -580,7 +580,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.16'
+`$AgentVersion = '2.9.18'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$script:currentInterval = 5
@@ -662,9 +662,9 @@ try {
     [Win32PowerGuard]::SetThreadExecutionState(0x80000000 -bor 0x00000001 -bor 0x00000040)
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.16") {
+function Update-AgentService([string]`$targetVer = "2.9.18") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.16"
+        `$targetVer = "2.9.18"
     }
     try {
         # 1. Report update in progress
@@ -2799,7 +2799,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.16"
+    agentVersion = "2.9.18"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp
