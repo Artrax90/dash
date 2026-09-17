@@ -5,14 +5,13 @@ services:
       dockerfile: Dockerfile
     container_name: workstation-manager
     restart: unless-stopped
-    ports:
-      - "${PORT:-2301}:${PORT:-2301}"
+    network_mode: host
     environment:
       - TZ=${TZ:-Europe/Moscow}
       - HOST=0.0.0.0
       - PORT=${PORT:-2301}
       - SERVER_URL=${SERVER_URL:-}
-      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://postgres:postgres_pass@postgres:5432/workstation_manager}
+      - DATABASE_URL=${DATABASE_URL:-postgresql+asyncpg://postgres:postgres_pass@127.0.0.1:5432/workstation_manager}
       - WOL_BROADCAST_IP=${WOL_BROADCAST_IP:-255.255.255.255}
       - WOL_PORT=${WOL_PORT:-9}
     volumes:

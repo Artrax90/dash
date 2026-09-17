@@ -420,3 +420,18 @@ def test_agent_installer_has_unattended_sleep_timeout_disabled():
 
     assert "7bc4a2f9-d8fc-4469-b07b-33eb785aaca0" in content, "Missing powercfg unattended sleep timeout GUID in standalone_installer.ps1"
     assert "SetThreadExecutionState" in content, "Missing SetThreadExecutionState in standalone_installer.ps1"
+
+
+def test_wol_broadcast_targets_and_cross_subnet_support():
+    from backend.app.services.wol_service import wol_service
+    targets = wol_service.get_broadcast_targets(ip_address="172.16.42.73")
+    assert "255.255.255.255" in targets
+    assert "172.16.42.255" in targets
+    assert "172.16.255.255" in targets, "Expected supernet Class B broadcast for 172.16.x.x to ensure delivery after ARP cache expiration"
+
+
+def test_docker_compose_has_network_mode_host():
+    with open("docker-compose.yml", "r", encoding="utf-8") as f:
+        compose_content = f.read()
+    assert "network_mode: host" in compose_content, "workstation-manager must have network_mode: host for physical L2 broadcast WoL delivery"
+

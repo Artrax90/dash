@@ -54,7 +54,9 @@ class WolService:
     @staticmethod
     def get_broadcast_targets(ip_address: Optional[str] = None, custom_broadcast: Optional[str] = None) -> Set[str]:
         """
-        Generate set of broadcast destinations to ensure maximum delivery.
+        Generate set of broadcast destinations to ensure maximum delivery,
+        including subnet broadcasts and supernet broadcasts to punch through
+        overnight ARP cache expiration on routers and switches.
         """
         targets = set()
         targets.add("255.255.255.255")
@@ -63,13 +65,32 @@ class WolService:
             targets.add(custom_broadcast.strip())
             
         if ip_address and ip_address.strip() and not ip_address.startswith("127.") and not ip_address.startswith("169.254."):
-            targets.add(ip_address.strip())
-            try:
-                ip_obj = ipaddress.IPv4Interface(f"{ip_address.strip()}/24")
-                targets.add(str(ip_obj.network.broadcast_address))
-            except Exception:
-                parts = ip_address.strip().split(".")
-                if len(parts) == 4:
+            clean_ip = ip_address.strip()
+            targets.add(clean_ip)
+            parts = clean_ip.split(".")
+            if len(parts) == 4:
+                try:
+                    p0, p1, p2 = int(parts[0]), int(parts[1]), int(parts[2])
+                    # Standard /24 Class C broadcast
+                    targets.add(f"{p0}.{p1}.{p2}.255")
+
+                    # Enterprise multi-VLAN & supernet broadcasts
+                    if p0 == 172 and 16 <= p1 <= 31:
+                        # Class B /16 broadcast (covers entire 172.16.x.x campus network)
+                        targets.add(f"{p0}.{p1}.255.255")
+                        # Common enterprise /21 (e.g. 172.16.40.0/21 -> 172.16.47.255)
+                        targets.add(f"{p0}.{p1}.47.255")
+                        # Common enterprise /22 (e.g. 172.16.40.0/22 -> 172.16.43.255)
+                        targets.add(f"{p0}.{p1}.43.255")
+                        # Common enterprise /20 (172.16.32.0/20 -> 172.16.47.255)
+                        targets.add(f"{p0}.{p1}.31.255")
+                    elif p0 == 10:
+                        targets.add(f"10.{p1}.255.255")
+                        targets.add("10.255.255.255")
+                    elif p0 == 192 and p1 == 168:
+                        targets.add(f"192.168.{p2}.255")
+                        targets.add("192.168.255.255")
+                except Exception:
                     targets.add(f"{parts[0]}.{parts[1]}.{parts[2]}.255")
         
         return targets
@@ -84,7 +105,8 @@ class WolService:
         bursts: int = 4
     ) -> bool:
         """
-        Broadcast Wake-on-LAN Magic Packet asynchronously via UDP sockets bound to every local physical NIC.
+        Broadcast Wake-on-LAN Magic Packet asynchronously via UDP sockets bound to every local physical NIC
+        as well as an unbound socket to leverage the kernel default gateway and cross-subnet routing.
         """
         if not mac_address:
             return False
@@ -100,11 +122,13 @@ class WolService:
             
             def _send_all():
                 dispatched_count = 0
-                for nic_name, local_ip, _, nic_bcast in local_nics:
-                    all_targets = set(extra_targets)
+                all_targets = set(extra_targets)
+                all_targets.add("255.255.255.255")
+                for _, _, _, nic_bcast in local_nics:
                     all_targets.add(nic_bcast)
-                    all_targets.add("255.255.255.255")
 
+                # 1. Send via sockets bound specifically to each local NIC
+                for nic_name, local_ip, _, _ in local_nics:
                     try:
                         with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
                             sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
@@ -113,7 +137,6 @@ class WolService:
                             except Exception:
                                 pass
                             
-                            # Bind socket specifically to local interface IP if not 0.0.0.0
                             if local_ip != "0.0.0.0":
                                 try:
                                     sock.bind((local_ip, 0))
@@ -133,7 +156,24 @@ class WolService:
                     except Exception as e:
                         print(f"[WoL Error] Socket creation on {local_ip} failed: {e}")
 
-                print(f"[WoL Success] Dispatched {dispatched_count} Magic Packets for {mac_address} across {len(local_nics)} NICs to {extra_targets}")
+                # 2. ALSO send via an unbound socket (0.0.0.0) so the OS kernel routes to gateway
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as unbound_sock:
+                        unbound_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        for burst in range(bursts):
+                            for dest in all_targets:
+                                for port in ports:
+                                    try:
+                                        unbound_sock.sendto(packet, (dest, port))
+                                        dispatched_count += 1
+                                    except Exception as err:
+                                        pass
+                            if burst < bursts - 1:
+                                time.sleep(0.02)
+                except Exception as e:
+                    print(f"[WoL Error] Unbound socket dispatch failed: {e}")
+
+                print(f"[WoL Success] Dispatched {dispatched_count} Magic Packets for {mac_address} across {len(local_nics)} NICs + Gateway to {all_targets}")
 
             await loop.run_in_executor(None, _send_all)
             return True
