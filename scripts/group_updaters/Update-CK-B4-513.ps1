@@ -14,16 +14,7 @@ param(
     [switch]$PingOnly
 )
 
-# Вшитые учетные данные администратора для группы ЦК B4 / 5 этаж / 513
-$EmbeddedUser = "admin"
-$EmbeddedPass = "bmstu023"
-
-if (-not $Credential) {
-    $secPass = ConvertTo-SecureString $EmbeddedPass -AsPlainText -Force
-    $Credential = New-Object System.Management.Automation.PSCredential($EmbeddedUser, $secPass)
-}
-
-# Загрузка общего движка обновления
+# 1. Загрузка общего движка обновления
 $scriptDir = $PSScriptRoot
 if (-not $scriptDir) { $scriptDir = "." }
 $commonPath = Join-Path $scriptDir "Common-Updater.ps1"
@@ -32,6 +23,15 @@ if (Test-Path $commonPath) {
 } else {
     Write-Error "Не найден файл Common-Updater.ps1 рядом со скриптом!"
     exit 1
+}
+
+# 2. Вшитые учетные данные администратора для группы ЦК B4 / 5 этаж / 513
+$EmbeddedUser = "admin"
+$EmbeddedPass = "bmstu023"
+
+if (-not $Credential) {
+    $secPass = ConvertTo-SecureString $EmbeddedPass -AsPlainText -Force
+    $Credential = New-Object System.Management.Automation.PSCredential($EmbeddedUser, $secPass)
 }
 
 $GroupName = "ЦК B4 / 5 этаж / 513"

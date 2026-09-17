@@ -13,11 +13,6 @@
     Перебор локальных и доменных учеток: admin, .\admin, IP\admin, Administrator, Администратор.
 #>
 
-param(
-    [string]$ServerUrl = "http://172.19.33.68:2301",
-    [pscredential]$Credential = $null
-)
-
 function Test-TcpPortQuick([string]$hostOrIp, [int]$port, [int]$timeoutMs = 400) {
     try {
         $tcp = New-Object System.Net.Sockets.TcpClient

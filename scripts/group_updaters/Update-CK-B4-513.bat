@@ -14,5 +14,5 @@ set SCRIPT_DIR=%~dp0
 powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%SCRIPT_DIR%Update-CK-B4-513.ps1" %*
 
 echo.
-echo Нажмите любую клавишу для выхода...
+
 pause >nul
