@@ -87,55 +87,91 @@ function Invoke-RemoteAgentUpdate {
     }
     $result.Ping = $true
 
-    # Формируем чистую команду тихого обновления агента без лишних кавычек
+    # Формируем чистую команду тихого обновления агента
     $psCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"[Net.ServicePointManager]::SecurityProtocol = 3072; `$u = '$ServerUrl/install.ps1?token=$Token'; (New-Object Net.WebClient).DownloadString(`$u) | Invoke-Expression`""
 
     $plainUser = if ($Credential) { $Credential.UserName } else { "" }
     $plainPass = if ($Credential) { [System.Net.NetworkCredential]::new("", $Credential.Password).Password } else { "" }
 
+    # Список кандидатов логинов: admin, .\admin, IP\admin, а также Administrator / Администратор
+    $userCandidates = @()
+    if ($plainUser) {
+        $userCandidates += @($plainUser, "$IP\$plainUser", ".\$plainUser")
+        if ($plainUser -like "*admin*") {
+            $userCandidates += @("Administrator", "$IP\Administrator", ".\Administrator", "Администратор", "$IP\Администратор")
+        }
+    }
+    $userCandidates = $userCandidates | Select-Object -Unique
+
     $errs = @()
 
     # 2. МЕТОД: Планировщик заданий (schtasks.exe) с запуском от имени NT AUTHORITY\SYSTEM
-    # Это главный метод в Windows для обхода фильтрации токенов Remote UAC
+    # Обходит фильтрацию токенов Remote UAC для локальных администраторов
     if ($plainUser -and $plainPass) {
-        try {
-            $taskName = "WM_OTA_Update"
-            $trArg = "powershell.exe -NoProfile -ExecutionPolicy Bypass -Command `"[Net.ServicePointManager]::SecurityProtocol = 3072; `$u = '$ServerUrl/install.ps1?token=$Token'; (New-Object Net.WebClient).DownloadString(`$u) | Invoke-Expression`""
-            
-            # Создаем задачу
-            $createOut = & schtasks.exe /Create /S $IP /U $plainUser /P $plainPass /SC ONCE /ST "23:59" /TN $taskName /TR $trArg /RU "SYSTEM" /RL HIGHEST /F 2>&1
-            $createStr = ($createOut | Out-String).Trim()
-            
-            if ($createStr -match "SUCCESS" -or $createStr -match "УСПЕШНО" -or $LASTEXITCODE -eq 0) {
-                # Запускаем задачу
-                & schtasks.exe /Run /S $IP /U $plainUser /P $plainPass /TN $taskName 2>&1 | Out-Null
-                Start-Sleep -Milliseconds 600
-                # Удаляем задачу
-                & schtasks.exe /Delete /S $IP /U $plainUser /P $plainPass /TN $taskName /F 2>&1 | Out-Null
+        foreach ($uCandidate in $userCandidates) {
+            try {
+                $taskName = "WM_OTA_Update"
+                $trArg = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -Command `"[Net.ServicePointManager]::SecurityProtocol = 3072; `$u = '$ServerUrl/install.ps1?token=$Token'; (New-Object Net.WebClient).DownloadString(`$u) | Invoke-Expression`""
                 
-                $result.Status = "SUCCESS_SCHTASKS"
-                $result.Details = "Успешно запущен процесс обновления через Планировщик (SYSTEM)"
-                return $result
-            } else {
-                $errs += "SchTasks: $createStr"
+                $createOut = & schtasks.exe /Create /S $IP /U $uCandidate /P $plainPass /SC ONCE /ST "23:59" /TN $taskName /TR $trArg /RU "SYSTEM" /RL HIGHEST /F 2>&1
+                $createStr = ($createOut | Out-String).Trim()
+                
+                if ($createStr -match "SUCCESS" -or $createStr -match "УСПЕШНО" -or $LASTEXITCODE -eq 0) {
+                    & schtasks.exe /Run /S $IP /U $uCandidate /P $plainPass /TN $taskName 2>&1 | Out-Null
+                    Start-Sleep -Milliseconds 600
+                    & schtasks.exe /Delete /S $IP /U $uCandidate /P $plainPass /TN $taskName /F 2>&1 | Out-Null
+                    
+                    $result.Status = "SUCCESS_SCHTASKS"
+                    $result.Details = "Успешно запущено через Планировщик (SYSTEM, пользователь $uCandidate)"
+                    return $result
+                } else {
+                    $errs += "SchTasks ($uCandidate): $createStr"
+                }
+            } catch {
+                $errs += "SchTasks ($uCandidate): $($_.Exception.Message)"
             }
-        } catch {
-            $errs += "SchTasks: $($_.Exception.Message)"
         }
     }
 
-    # 3. МЕТОД: WMI (ManagementClass с явным Scope и ConnectionOptions)
-    if ($Credential) {
-        $userCandidates = @($plainUser)
-        if ($plainUser -notlike "*\*") {
-            $userCandidates = @("$IP\$plainUser", ".\$plainUser", $plainUser)
-        }
-
+    # 3. МЕТОД: WinRM (Invoke-Command)
+    if ($plainUser -and $plainPass) {
         foreach ($uCandidate in $userCandidates) {
             try {
+                $sec = ConvertTo-SecureString $plainPass -AsPlainText -Force
+                $cObj = New-Object System.Management.Automation.PSCredential($uCandidate, $sec)
+                $so = New-PSSessionOption -OpenTimeout 2500 -OperationTimeout 3500
+                $icParams = @{
+                    ComputerName = $IP
+                    ScriptBlock = {
+                        param($srv, $tok)
+                        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                        $u = "$srv/install.ps1?token=$tok"
+                        $code = (New-Object Net.WebClient).DownloadString($u)
+                        Invoke-Expression $code
+                    }
+                    ArgumentList = @($ServerUrl, $Token)
+                    Credential = $cObj
+                    SessionOption = $so
+                    ErrorAction = 'Stop'
+                }
+                Invoke-Command @icParams | Out-Null
+                $result.Status = "SUCCESS_WINRM"
+                $result.Details = "Успешно выполнено через WinRM ($uCandidate)"
+                return $result
+            } catch {
+                $errs += "WinRM ($uCandidate): $($_.Exception.Message)"
+            }
+        }
+    }
+
+    # 4. МЕТОД: WMI (ManagementClass с явным Scope и ConnectionOptions)
+    if ($plainUser -and $plainPass) {
+        foreach ($uCandidate in $userCandidates) {
+            try {
+                $sec = ConvertTo-SecureString $plainPass -AsPlainText -Force
                 $opt = New-Object System.Management.ConnectionOptions
                 $opt.Username = $uCandidate
-                $opt.SecurePassword = $Credential.Password
+                $opt.SecurePassword = $sec
                 $opt.EnablePrivileges = $true
                 $opt.Impersonation = [System.Management.ImpersonationLevel]::Impersonate
                 $opt.Authentication = [System.Management.AuthenticationLevel]::PacketPrivacy
@@ -156,74 +192,32 @@ function Invoke-RemoteAgentUpdate {
                     $result.Details = "Успешно запущен процесс обновления (PID: $pidVal, пользователь: $uCandidate)"
                     return $result
                 } else {
-                    $errs += "WMI ReturnCode=$retVal"
+                    $errs += "WMI ($uCandidate): ReturnCode=$retVal"
                 }
             } catch {
                 $errs += "WMI ($uCandidate): $($_.Exception.Message)"
             }
         }
-    } else {
-        # Без явных учетных данных - текущий контекст
-        try {
-            $scope = New-Object System.Management.ManagementScope("\\$IP\root\cimv2")
-            $scope.Connect()
-            $processClass = New-Object System.Management.ManagementClass($scope, (New-Object System.Management.ManagementPath("Win32_Process")), $null)
-            $inParams = $processClass.GetMethodParameters("Create")
-            $inParams["CommandLine"] = $psCmd
-            $outParams = $processClass.InvokeMethod("Create", $inParams, $null)
-            if ([int]$outParams["ReturnValue"] -eq 0) {
-                $result.Status = "SUCCESS_WMI"
-                $result.Details = "Успешно запущен процесс обновления (PID: $($outParams['ProcessId']))"
-                return $result
-            }
-        } catch {
-            $errs += "WMI: $($_.Exception.Message)"
-        }
     }
 
-    # 4. МЕТОД: Нативная утилита wmic.exe
+    # 5. МЕТОД: Нативная утилита wmic.exe
     if ($plainUser -and $plainPass) {
-        try {
-            $wmicOut = & wmic.exe /node:"$IP" /user:"$plainUser" /password:"$plainPass" process call create "$psCmd" 2>&1
-            $wmicStr = ($wmicOut | Out-String)
-            if ($wmicStr -match "ReturnValue\s*=\s*0" -or $wmicStr -match "ProcessId\s*=\s*(\d+)") {
-                $result.Status = "SUCCESS_WMIC"
-                $result.Details = "Успешно запущен через wmic.exe"
-                return $result
-            } else {
-                $errs += "WMIC: $($wmicStr.Trim())"
-            }
-        } catch {
-            $errs += "WMIC: $($_.Exception.Message)"
+        foreach ($uCandidate in $userCandidates) {
+            try {
+                $wmicOut = & wmic.exe /node:"$IP" /user:"$uCandidate" /password:"$plainPass" process call create "$psCmd" 2>&1
+                $wmicStr = ($wmicOut | Out-String)
+                if ($wmicStr -match "ReturnValue\s*=\s*0" -or $wmicStr -match "ProcessId\s*=\s*(\d+)") {
+                    $result.Status = "SUCCESS_WMIC"
+                    $result.Details = "Успешно запущен через wmic.exe ($uCandidate)"
+                    return $result
+                } else {
+                    $errs += "WMIC ($uCandidate): $($wmicStr.Trim())"
+                }
+            } catch {}
         }
     }
 
-    # 5. МЕТОД: WinRM (Invoke-Command)
-    try {
-        $so = New-PSSessionOption -OpenTimeout 2500 -OperationTimeout 3500
-        $icParams = @{
-            ComputerName = $IP
-            ScriptBlock = {
-                param($srv, $tok)
-                [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                $u = "$srv/install.ps1?token=$tok"
-                $code = (New-Object Net.WebClient).DownloadString($u)
-                Invoke-Expression $code
-            }
-            ArgumentList = @($ServerUrl, $Token)
-            SessionOption = $so
-            ErrorAction = 'Stop'
-        }
-        if ($Credential) { $icParams.Credential = $Credential }
-        Invoke-Command @icParams | Out-Null
-        $result.Status = "SUCCESS_WINRM"
-        $result.Details = "Успешно выполнено через WinRM"
-        return $result
-    } catch {
-        $errs += "WinRM: $($_.Exception.Message)"
-    }
-
-    # 6. Если все удаленные методы заблокированы
+    # 6. Если все удаленные методы отклонены
     $result.Status = "AUTH_OR_RPC_BLOCKED"
     $cleanErr = ($errs | Select-Object -First 2) -join " | "
     $result.Details = if ($cleanErr) { $cleanErr } else { "Отказ в доступе (Remote UAC / Firewall)" }
@@ -253,10 +247,10 @@ function Execute-GroupUpdate {
 
     # Настройка WinRM TrustedHosts для исключения блокировки подключений по IP
     try {
-        Set-Item WSMan:\localhost\Client\TrustedHosts -Value * -Force -ErrorAction SilentlyContinue
         if ((Get-Service WinRM -ErrorAction SilentlyContinue).Status -ne "Running") {
             Start-Service WinRM -ErrorAction SilentlyContinue
         }
+        Set-Item -Path WSMan:\localhost\Client\TrustedHosts -Value '*' -Force -ErrorAction SilentlyContinue
     } catch {}
 
     Write-Host "[*] Поиск активного сервера... " -NoNewline -ForegroundColor White
@@ -341,10 +335,9 @@ function Execute-GroupUpdate {
     Write-Host ("Итог: Всего: {0}, Успешно запущено: {1}, Выключено/Оффлайн: {2}, Требуют доступа/RPC: {3}" -f $results.Count, $succCount, $offCount, $otherCount) -ForegroundColor Cyan
     Write-Host ""
     if ($otherCount -gt 0) {
-        Write-Host "Если на удаленных машинах выключен RPC/WMI или включен Remote UAC (фильтрация админа):" -ForegroundColor Yellow
-        Write-Host "  1. Нажмите «Обновить агент» в веб-панели Northstar Ops (через активное соединение агента)" -ForegroundColor DarkYellow
-        Write-Host "  2. Или выполните команду на машине локально (через RDP / AnyDesk / скрипт логона):" -ForegroundColor DarkYellow
-        Write-Host "     powershell -ep bypass -c `"irm $effServer/install.ps1?token=$Token | iex`"" -ForegroundColor Cyan
+        Write-Host "Политика Remote UAC или Windows Firewall на машинах блокирует удаленный запуск." -ForegroundColor Yellow
+        Write-Host "Команда для обновления прямо на ПК (вставить в PowerShell):" -ForegroundColor White
+        Write-Host "  powershell -ep bypass -c `"irm $effServer/install.ps1?token=$Token | iex`"" -ForegroundColor Green
     }
     Write-Host ""
 }
