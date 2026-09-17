@@ -16793,10 +16793,46 @@ function Groups({
   };
 
   const [selectedGroupPcIds, setSelectedGroupPcIds] = useState<string[]>([]);
+  const [groupSortField, setGroupSortField] = useState<DeviceSortField | null>(null);
+  const [groupSortOrder, setGroupSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [groupStatusFilter, setGroupStatusFilter] = useState<'all' | 'on' | 'off'>('all');
+  const [groupSearch, setGroupSearch] = useState<string>('');
 
   useEffect(() => {
     setSelectedGroupPcIds([]);
+    setGroupSearch('');
+    setGroupStatusFilter('all');
   }, [selectedGroupName]);
+
+  const getDeviceStatusScore = (d: Device): number => {
+    const p = (d.powerStatus || '').toLowerCase();
+    const h = (d.healthStatus || '').toLowerCase();
+    if (p === 'on' || p === 'online') {
+      if (h === 'critical') return 3;
+      if (h === 'warning') return 4;
+      return 5;
+    }
+    if (p === 'booting' || p === 'waking' || p === 'rebooting' || p === 'shutting down') return 2;
+    return 1; // Off / offline
+  };
+
+  const handleGroupSort = (field: DeviceSortField) => {
+    if (groupSortField === field) {
+      if (groupSortOrder === 'desc') {
+        setGroupSortOrder('asc');
+      } else {
+        setGroupSortField(null);
+        setGroupSortOrder('desc');
+      }
+    } else {
+      setGroupSortField(field);
+      if (field === 'status' || field === 'cpu' || field === 'ram' || field === 'uptime' || field === 'lastSeen') {
+        setGroupSortOrder('desc');
+      } else {
+        setGroupSortOrder('asc');
+      }
+    }
+  };
 
   const handleBulkGroupPower = async (action: 'WAKE' | 'SHUTDOWN' | 'REBOOT') => {
     if (selectedGroupPcIds.length === 0) return;
@@ -16870,6 +16906,129 @@ function Groups({
           const groupDevices = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === selectedGroup.name.toLowerCase()));
           const onlineInGroup = groupDevices.filter(d => d.powerStatus === 'On').length;
           const rdpInGroup = groupDevices.filter(d => d.rdpStatus === 'Running' || d.rdpStatus === 'Active').length;
+
+          const filteredGroupDevices = groupDevices.filter(d => {
+            if (groupStatusFilter === 'on') {
+              const p = (d.powerStatus || '').toLowerCase();
+              if (p !== 'on' && p !== 'online') return false;
+            } else if (groupStatusFilter === 'off') {
+              const p = (d.powerStatus || '').toLowerCase();
+              if (p === 'on' || p === 'online') return false;
+            }
+
+            if (groupSearch.trim()) {
+              const q = groupSearch.toLowerCase().trim();
+              const matchName = (d.name || '').toLowerCase().includes(q);
+              const matchHost = (d.hostname || '').toLowerCase().includes(q);
+              const matchIp = (d.ip || '').toLowerCase().includes(q);
+              const matchMac = (d.mac || '').toLowerCase().includes(q);
+              const matchUser = (d.currentUser || '').toLowerCase().includes(q);
+              if (!matchName && !matchHost && !matchIp && !matchMac && !matchUser) return false;
+            }
+
+            return true;
+          });
+
+          const sortedGroupDevices = [...filteredGroupDevices].sort((a, b) => {
+            if (!groupSortField) return 0;
+            let cmp = 0;
+            if (groupSortField === 'status') {
+              cmp = getDeviceStatusScore(a) - getDeviceStatusScore(b);
+            } else if (groupSortField === 'name') {
+              cmp = (a.name || '').localeCompare(b.name || '', 'ru');
+            } else if (groupSortField === 'ip') {
+              const aOct = (a.ip || '').split('.').map(n => parseInt(n, 10) || 0);
+              const bOct = (b.ip || '').split('.').map(n => parseInt(n, 10) || 0);
+              for (let i = 0; i < 4; i++) {
+                if ((aOct[i] || 0) !== (bOct[i] || 0)) {
+                  cmp = (aOct[i] || 0) - (bOct[i] || 0);
+                  break;
+                }
+              }
+              if (cmp === 0) cmp = (a.ip || '').localeCompare(b.ip || '');
+            } else if (groupSortField === 'user') {
+              const uA = (a.currentUser || '').trim() || (a.rdpSessions?.[0]?.username || '');
+              const uB = (b.currentUser || '').trim() || (b.rdpSessions?.[0]?.username || '');
+              cmp = uA.localeCompare(uB, 'ru');
+            } else if (groupSortField === 'rdp') {
+              cmp = (a.rdpStatus || '').localeCompare(b.rdpStatus || '', 'ru');
+            } else if (groupSortField === 'cpu') {
+              cmp = (a.cpu || 0) - (b.cpu || 0);
+            } else if (groupSortField === 'ram') {
+              cmp = (a.ram || 0) - (b.ram || 0);
+            } else if (groupSortField === 'lastSeen') {
+              const tA = a.lastSeenIso ? new Date(a.lastSeenIso).getTime() : (a.lastSeen ? new Date(a.lastSeen).getTime() : 0);
+              const tB = b.lastSeenIso ? new Date(b.lastSeenIso).getTime() : (b.lastSeen ? new Date(b.lastSeen).getTime() : 0);
+              cmp = tA - tB;
+            }
+            if (cmp === 0) {
+              cmp = (a.name || '').localeCompare(b.name || '', 'ru');
+            }
+            return groupSortOrder === 'asc' ? cmp : -cmp;
+          });
+
+          const renderGroupSortHeader = (title: string, field: DeviceSortField, customStyle?: React.CSSProperties) => {
+            const isActive = groupSortField === field;
+            let tooltip = `Нажмите для сортировки по столбцу «${title}»`;
+            if (isActive) {
+              if (field === 'status') {
+                tooltip = groupSortOrder === 'desc'
+                  ? 'Сортировка по статусу: сначала Онлайн (по убыванию ▼). Нажмите для «сначала Оффлайн»'
+                  : 'Сортировка по статусу: сначала Оффлайн (по возрастанию ▲). Нажмите для сброса сортировки';
+              } else {
+                tooltip = groupSortOrder === 'asc'
+                  ? `Сортировка по «${title}»: по возрастанию ▲. Нажмите для убывания`
+                  : `Сортировка по «${title}»: по убыванию ▼. Нажмите для сброса сортировки`;
+              }
+            }
+
+            return (
+              <th
+                key={field}
+                style={{ cursor: 'pointer', userSelect: 'none', ...customStyle }}
+                onClick={() => handleGroupSort(field)}
+                className={`sortable-th ${isActive ? 'active-sort' : ''}`}
+                title={tooltip}
+              >
+                <div style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', width: '100%', justifyContent: 'space-between' }}>
+                  <span>{title}</span>
+                  <span
+                    className={`sort-arrows-btn ${isActive ? 'active' : ''}`}
+                    style={{
+                      display: 'inline-flex',
+                      flexDirection: 'column',
+                      gap: '1px',
+                      padding: '1px 3px',
+                      borderRadius: '3px',
+                      background: isActive ? 'var(--blue-soft)' : 'transparent',
+                      transition: 'all 0.15s ease'
+                    }}
+                  >
+                    <ArrowUp
+                      size={9}
+                      strokeWidth={isActive && groupSortOrder === 'asc' ? 3 : 2}
+                      style={{
+                        color: isActive && groupSortOrder === 'asc' ? 'var(--blue)' : 'var(--muted)',
+                        opacity: isActive && groupSortOrder === 'asc' ? 1 : 0.35,
+                        transform: isActive && groupSortOrder === 'asc' ? 'scale(1.2)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                    />
+                    <ArrowDown
+                      size={9}
+                      strokeWidth={isActive && groupSortOrder === 'desc' ? 3 : 2}
+                      style={{
+                        color: isActive && groupSortOrder === 'desc' ? 'var(--blue)' : 'var(--muted)',
+                        opacity: isActive && groupSortOrder === 'desc' ? 1 : 0.35,
+                        transform: isActive && groupSortOrder === 'desc' ? 'scale(1.2)' : 'none',
+                        transition: 'all 0.15s ease'
+                      }}
+                    />
+                  </span>
+                </div>
+              </th>
+            );
+          };
 
           return (
             <>
@@ -16994,10 +17153,147 @@ function Groups({
 
               {/* Group PCs table */}
               <section className="panel table-panel">
-                <div className="panel-heading table-heading">
+                <div className="panel-heading table-heading" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: '14px', flexWrap: 'wrap' }}>
                   <div>
                     <h2>Компьютеры группы "{selectedGroup.name}"</h2>
-                    <p>{groupDevices.length} рабочих станций привязано к этой группе</p>
+                    <p>
+                      {groupDevices.length} рабочих станций привязано к этой группе
+                      {filteredGroupDevices.length !== groupDevices.length && (
+                        <span style={{ color: 'var(--blue)', marginLeft: '6px' }}>
+                          (отфильтровано: {filteredGroupDevices.length})
+                        </span>
+                      )}
+                    </p>
+                  </div>
+
+                  {/* Filter & Sort Controls */}
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                    {/* Status filter pills */}
+                    <div style={{ display: 'inline-flex', background: 'var(--surface-2, rgba(255,255,255,0.04))', borderRadius: '8px', padding: '2px', border: '1px solid var(--border)' }}>
+                      <button
+                        type="button"
+                        onClick={() => setGroupStatusFilter('all')}
+                        style={{
+                          border: 'none',
+                          padding: '5px 10px',
+                          fontSize: '11.5px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          background: groupStatusFilter === 'all' ? 'var(--surface, #1e293b)' : 'transparent',
+                          color: groupStatusFilter === 'all' ? 'var(--ink, #fff)' : 'var(--muted)',
+                          boxShadow: groupStatusFilter === 'all' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none',
+                          fontWeight: groupStatusFilter === 'all' ? 600 : 400,
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        Все ({groupDevices.length})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGroupStatusFilter('on')}
+                        style={{
+                          border: 'none',
+                          padding: '5px 10px',
+                          fontSize: '11.5px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          background: groupStatusFilter === 'on' ? 'var(--surface, #1e293b)' : 'transparent',
+                          color: groupStatusFilter === 'on' ? 'var(--green, #22c55e)' : 'var(--muted)',
+                          boxShadow: groupStatusFilter === 'on' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none',
+                          fontWeight: groupStatusFilter === 'on' ? 600 : 400,
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--green, #22c55e)' }} />
+                        В сети ({onlineInGroup})
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setGroupStatusFilter('off')}
+                        style={{
+                          border: 'none',
+                          padding: '5px 10px',
+                          fontSize: '11.5px',
+                          borderRadius: '6px',
+                          cursor: 'pointer',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          background: groupStatusFilter === 'off' ? 'var(--surface, #1e293b)' : 'transparent',
+                          color: groupStatusFilter === 'off' ? 'var(--ink, #fff)' : 'var(--muted)',
+                          boxShadow: groupStatusFilter === 'off' ? '0 1px 3px rgba(0,0,0,0.2)' : 'none',
+                          fontWeight: groupStatusFilter === 'off' ? 600 : 400,
+                          transition: 'all 0.15s ease'
+                        }}
+                      >
+                        <span style={{ width: '6px', height: '6px', borderRadius: '50%', background: 'var(--muted, #64748b)' }} />
+                        Выключено ({groupDevices.length - onlineInGroup})
+                      </button>
+                    </div>
+
+                    {/* Quick Status Sort Button */}
+                    <button
+                      type="button"
+                      className="button"
+                      onClick={() => handleGroupSort('status')}
+                      style={{
+                        padding: '4px 10px',
+                        fontSize: '11.5px',
+                        display: 'inline-flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        height: '30px',
+                        borderColor: groupSortField === 'status' ? 'var(--blue)' : undefined,
+                        background: groupSortField === 'status' ? 'var(--blue-soft)' : undefined,
+                        color: groupSortField === 'status' ? 'var(--blue)' : undefined
+                      }}
+                      title="Кликните для переключения: сначала в сети / сначала выключены / сброс"
+                    >
+                      {groupSortField === 'status' ? (
+                        groupSortOrder === 'desc' ? (
+                          <>
+                            <ArrowDown size={13} style={{ color: 'var(--blue)' }} />
+                            <span>Статус: Сначала в сети</span>
+                          </>
+                        ) : (
+                          <>
+                            <ArrowUp size={13} style={{ color: 'var(--blue)' }} />
+                            <span>Статус: Сначала выключены</span>
+                          </>
+                        )
+                      ) : (
+                        <>
+                          <ArrowUpDown size={13} />
+                          <span>Сортировать по статусу</span>
+                        </>
+                      )}
+                    </button>
+
+                    {/* Search in group */}
+                    <div style={{ position: 'relative', width: '180px' }}>
+                      <Search size={13} style={{ position: 'absolute', left: '9px', top: '50%', transform: 'translateY(-50%)', color: 'var(--muted)', pointerEvents: 'none' }} />
+                      <input
+                        type="text"
+                        value={groupSearch}
+                        onChange={(e) => setGroupSearch(e.target.value)}
+                        placeholder="Поиск ПК..."
+                        className="input"
+                        style={{ paddingLeft: '28px', paddingRight: groupSearch ? '26px' : '8px', height: '30px', fontSize: '11.5px', width: '100%' }}
+                      />
+                      {groupSearch && (
+                        <button
+                          type="button"
+                          onClick={() => setGroupSearch('')}
+                          style={{ position: 'absolute', right: '7px', top: '50%', transform: 'translateY(-50%)', background: 'none', border: 'none', color: 'var(--muted)', cursor: 'pointer', padding: 0 }}
+                          title="Очистить поиск"
+                        >
+                          <X size={12} />
+                        </button>
+                      )}
+                    </div>
                   </div>
                 </div>
 
@@ -17033,6 +17329,25 @@ function Groups({
                     <span>В группе "{selectedGroup.name}" пока нет компьютеров</span>
                     <small style={{ color: 'var(--muted)' }}>Нажмите кнопку «+ Добавить ПК» вверху для добавления существующих компьютеров</small>
                   </div>
+                ) : sortedGroupDevices.length === 0 ? (
+                  <div className="empty-state" style={{ minHeight: '180px' }}>
+                    <Filter size={26} />
+                    <span>Нет компьютеров, соответствующих фильтрам</span>
+                    <small style={{ color: 'var(--muted)', marginTop: '4px' }}>
+                      Попробуйте сбросить фильтр статуса или строку поиска
+                    </small>
+                    <button
+                      type="button"
+                      className="button"
+                      style={{ marginTop: '12px', fontSize: '12px' }}
+                      onClick={() => {
+                        setGroupStatusFilter('all');
+                        setGroupSearch('');
+                      }}
+                    >
+                      Сбросить фильтры
+                    </button>
+                  </div>
                 ) : (
                   <div className="table-wrap">
                     <table>
@@ -17041,31 +17356,32 @@ function Groups({
                           <th style={{ width: '40px', paddingLeft: '16px' }}>
                             <input
                               type="checkbox"
-                              checked={groupDevices.length > 0 && selectedGroupPcIds.length === groupDevices.length}
+                              checked={sortedGroupDevices.length > 0 && sortedGroupDevices.every(d => selectedGroupPcIds.includes(d.id))}
                               onChange={(e) => {
                                 if (e.target.checked) {
-                                  setSelectedGroupPcIds(groupDevices.map(d => d.id));
+                                  setSelectedGroupPcIds(Array.from(new Set([...selectedGroupPcIds, ...sortedGroupDevices.map(d => d.id)])));
                                 } else {
-                                  setSelectedGroupPcIds([]);
+                                  const sortedIds = new Set(sortedGroupDevices.map(d => d.id));
+                                  setSelectedGroupPcIds(selectedGroupPcIds.filter(id => !sortedIds.has(id)));
                                 }
                               }}
                             />
                           </th>
-                          <th>Статус</th>
-                          <th>Имя ПК</th>
+                          {renderGroupSortHeader('Статус', 'status')}
+                          {renderGroupSortHeader('Имя ПК', 'name')}
                           <th>Все группы ПК</th>
-                          <th>IP-адрес</th>
+                          {renderGroupSortHeader('IP-адрес', 'ip')}
                           <th>MAC-адрес</th>
-                          <th>Пользователь</th>
-                          <th>RDP</th>
-                          <th>ЦП</th>
-                          <th>ОЗУ</th>
-                          <th>Активность</th>
+                          {renderGroupSortHeader('Пользователь', 'user')}
+                          {renderGroupSortHeader('RDP', 'rdp')}
+                          {renderGroupSortHeader('ЦП', 'cpu')}
+                          {renderGroupSortHeader('ОЗУ', 'ram')}
+                          {renderGroupSortHeader('Активность', 'lastSeen')}
                           <th>Действия</th>
                         </tr>
                       </thead>
                       <tbody>
-                        {groupDevices.map(device => {
+                        {sortedGroupDevices.map(device => {
                           const devGroups = getDeviceGroups(device);
                           const isSelected = selectedGroupPcIds.includes(device.id);
                           return (
