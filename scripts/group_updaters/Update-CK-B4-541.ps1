@@ -4,6 +4,7 @@
 .DESCRIPTION
     Токен: wm_tok_4470ec159a499f5f
     Компьютеров в группе: 2
+    Учетные данные: admin / bmstu023
 #>
 
 param(
@@ -22,6 +23,15 @@ if (Test-Path $commonPath) {
 } else {
     Write-Error "Не найден файл Common-Updater.ps1 рядом со скриптом!"
     exit 1
+}
+
+# 2. Вшитые учетные данные администратора для группы ЦК B4 / 5 этаж / 541
+$EmbeddedUser = "admin"
+$EmbeddedPass = "bmstu023"
+
+if (-not $Credential) {
+    $secPass = ConvertTo-SecureString $EmbeddedPass -AsPlainText -Force
+    $Credential = New-Object System.Management.Automation.PSCredential($EmbeddedUser, $secPass)
 }
 
 $GroupName = "ЦК B4 / 5 этаж / 541"

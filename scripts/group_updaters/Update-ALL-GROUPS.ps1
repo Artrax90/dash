@@ -187,16 +187,25 @@ $AllGroups = @(
     }
 )
 
+function Get-GroupCredential([string]$groupName) {
+    if ($Credential) { return $Credential }
+    $user = "admin"
+    $pass = if ($groupName -like "*МНОК*") { "oitp507" } else { "bmstu023" }
+    $secPass = ConvertTo-SecureString $pass -AsPlainText -Force
+    return New-Object System.Management.Automation.PSCredential($user, $secPass)
+}
+
 function Run-AllGroups([bool]$isPingOnly) {
     Write-Host "`n>>> ЗАПУСК ПО ВСЕМ ГРУППАМ ПАРКА <<<`n" -ForegroundColor Yellow
     foreach ($grp in $AllGroups) {
         if ($grp.Devices.Count -eq 0) { continue }
+        $effectiveCred = Get-GroupCredential $grp.Name
         Execute-GroupUpdate `
             -GroupName $grp.Name `
             -Token $grp.Token `
             -Devices $grp.Devices `
             -ServerUrl $ServerUrl `
-            -Credential $Credential `
+            -Credential $effectiveCred `
             -PingOnly:$isPingOnly
         Write-Host "`n------------------------------------------------------------`n"
     }
@@ -226,7 +235,7 @@ while ($true) {
     }
 
     Write-Host "`n [ A ] " -NoNewline -ForegroundColor Yellow
-    Write-Host "Обновить ВСЕ группы подряд (все 61 ПК)" -ForegroundColor Yellow
+    Write-Host "Обновить ВСЕ группы подряд (все 61 ПК, пароли вшиты)" -ForegroundColor Yellow
 
     Write-Host " [ P ] " -NoNewline -ForegroundColor Cyan
     Write-Host "Проверить связь (Ping) по всем группам" -ForegroundColor Cyan
@@ -250,12 +259,13 @@ while ($true) {
         $selNum = 0
         if ([int]::TryParse($choice, [ref]$selNum) -and $selNum -ge 1 -and $selNum -le $AllGroups.Count) {
             $selGroup = $AllGroups[$selNum - 1]
+            $effectiveCred = Get-GroupCredential $selGroup.Name
             Execute-GroupUpdate `
                 -GroupName $selGroup.Name `
                 -Token $selGroup.Token `
                 -Devices $selGroup.Devices `
                 -ServerUrl $ServerUrl `
-                -Credential $Credential `
+                -Credential $effectiveCred `
                 -PingOnly:$PingOnly
             Read-Host "`nНажмите Enter для возврата в меню..."
         } else {

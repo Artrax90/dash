@@ -110,6 +110,12 @@ function Invoke-RemoteAgentUpdate {
     }
     $userCandidates = $userCandidates | Select-Object -Unique
 
+    # Основной и альтернативный пароли (bmstu023 / oitp507)
+    $passCandidates = @($plainPass)
+    if ($plainPass -eq "bmstu023") { $passCandidates += "oitp507" }
+    elseif ($plainPass -eq "oitp507") { $passCandidates += "bmstu023" }
+    $passCandidates = $passCandidates | Select-Object -Unique
+
     $installUrl = "$ServerUrl/install.ps1?token=$Token"
     # Валидное экранирование для /TR в schtasks.exe (без '=' снаружи кавычек, длина < 260 символов)
     $schTrArg = "\`"powershell.exe\`" -ExecutionPolicy Bypass -Command \`"irm '$installUrl' | iex\`""
@@ -117,125 +123,127 @@ function Invoke-RemoteAgentUpdate {
 
     $errs = @()
 
-    foreach ($uCandidate in $userCandidates) {
-        # --- ВЕКТОР 1: SCHTASKS.EXE (Планировщик заданий) ---
-        # Выполняем только если порт 135 (RPC) или 445 (SMB) открыт
-        if ($port135 -or $port445) {
-            try {
-                $taskName = "WM_OTA_Task"
-                # Попытка 1: Запуск от имени SYSTEM (наивысшие привилегии)
-                $schCreate = & schtasks.exe /Create /S $IP /U $uCandidate /P $plainPass /SC ONCE /ST "23:59" /TN $taskName /TR $schTrArg /RU "SYSTEM" /RL HIGHEST /F 2>&1
-                $schStr = ($schCreate | Out-String).Trim()
-
-                # Попытка 2: Если SYSTEM отклонен политикой UAC, создаем задачу от имени самого пользователя
-                if ($schStr -notmatch "SUCCESS|УСПЕШНО" -and $LASTEXITCODE -ne 0) {
-                    $schCreate = & schtasks.exe /Create /S $IP /U $uCandidate /P $plainPass /SC ONCE /ST "23:59" /TN $taskName /TR $schTrArg /F 2>&1
+    foreach ($currPass in $passCandidates) {
+        foreach ($uCandidate in $userCandidates) {
+            # --- ВЕКТОР 1: SCHTASKS.EXE (Планировщик заданий) ---
+            # Выполняем только если порт 135 (RPC) или 445 (SMB) открыт
+            if ($port135 -or $port445) {
+                try {
+                    $taskName = "WM_OTA_Task"
+                    # Попытка 1: Запуск от имени SYSTEM (наивысшие привилегии)
+                    $schCreate = & schtasks.exe /Create /S $IP /U $uCandidate /P $currPass /SC ONCE /ST "23:59" /TN $taskName /TR $schTrArg /RU "SYSTEM" /RL HIGHEST /F 2>&1
                     $schStr = ($schCreate | Out-String).Trim()
-                }
 
-                if ($schStr -match "SUCCESS|УСПЕШНО" -or $LASTEXITCODE -eq 0) {
-                    & schtasks.exe /Run /S $IP /U $uCandidate /P $plainPass /TN $taskName 2>&1 | Out-Null
-                    Start-Sleep -Milliseconds 500
-                    & schtasks.exe /Delete /S $IP /U $uCandidate /P $plainPass /TN $taskName /F 2>&1 | Out-Null
-
-                    $result.Status = "SUCCESS_SCHTASKS"
-                    $result.Details = "Запущен процесс обновления через Планировщик ($uCandidate)"
-                    return $result
-                } else {
-                    $cleanSch = ($schStr -replace "[\r\n]+", " ")
-                    $errs += "SchTasks ($uCandidate): $cleanSch"
-                }
-            } catch {
-                $errs += "SchTasks ($uCandidate): $($_.Exception.Message)"
-            }
-        }
-
-        # --- ВЕКТОР 2: WMI (ManagementScope / Win32_Process) ---
-        # Выполняем только если порт 135 открыт
-        if ($port135) {
-            try {
-                $sec = ConvertTo-SecureString $plainPass -AsPlainText -Force
-                $opt = New-Object System.Management.ConnectionOptions
-                $opt.Username = $uCandidate
-                $opt.SecurePassword = $sec
-                $opt.EnablePrivileges = $true
-                $opt.Impersonation = [System.Management.ImpersonationLevel]::Impersonate
-                $opt.Authentication = [System.Management.AuthenticationLevel]::PacketPrivacy
-                $opt.Timeout = [TimeSpan]::FromSeconds(2.5)
-
-                $scope = New-Object System.Management.ManagementScope("\\$IP\root\cimv2", $opt)
-                $scope.Connect()
-
-                $processClass = New-Object System.Management.ManagementClass($scope, (New-Object System.Management.ManagementPath("Win32_Process")), $null)
-                $inParams = $processClass.GetMethodParameters("Create")
-                $inParams["CommandLine"] = $wmiCmd
-                $outParams = $processClass.InvokeMethod("Create", $inParams, $null)
-
-                $retVal = [int]$outParams["ReturnValue"]
-                if ($retVal -eq 0) {
-                    $pidVal = $outParams["ProcessId"]
-                    $result.Status = "SUCCESS_WMI"
-                    $result.Details = "Успешно запущен процесс WMI (PID: $pidVal, $uCandidate)"
-                    return $result
-                } else {
-                    $errs += "WMI ($uCandidate): ReturnCode=$retVal"
-                }
-            } catch {
-                $errs += "WMI ($uCandidate): $($_.Exception.Message)"
-            }
-        }
-
-        # --- ВЕКТОР 3: WinRM (Invoke-Command) ---
-        if ($port5985) {
-            try {
-                $sec = ConvertTo-SecureString $plainPass -AsPlainText -Force
-                $cObj = New-Object System.Management.Automation.PSCredential($uCandidate, $sec)
-                $so = New-PSSessionOption -OpenTimeout 2000 -OperationTimeout 3000
-                $icParams = @{
-                    ComputerName = $IP
-                    ScriptBlock = {
-                        param($url)
-                        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-                        (New-Object Net.WebClient).DownloadString($url) | Invoke-Expression
+                    # Попытка 2: Если SYSTEM отклонен политикой UAC, создаем задачу от имени самого пользователя
+                    if ($schStr -notmatch "SUCCESS|УСПЕШНО" -and $LASTEXITCODE -ne 0) {
+                        $schCreate = & schtasks.exe /Create /S $IP /U $uCandidate /P $currPass /SC ONCE /ST "23:59" /TN $taskName /TR $schTrArg /F 2>&1
+                        $schStr = ($schCreate | Out-String).Trim()
                     }
-                    ArgumentList = @($installUrl)
-                    Credential = $cObj
-                    SessionOption = $so
-                    ErrorAction = 'Stop'
+
+                    if ($schStr -match "SUCCESS|УСПЕШНО" -or $LASTEXITCODE -eq 0) {
+                        & schtasks.exe /Run /S $IP /U $uCandidate /P $currPass /TN $taskName 2>&1 | Out-Null
+                        Start-Sleep -Milliseconds 500
+                        & schtasks.exe /Delete /S $IP /U $uCandidate /P $currPass /TN $taskName /F 2>&1 | Out-Null
+
+                        $result.Status = "SUCCESS_SCHTASKS"
+                        $result.Details = "Запущен процесс обновления через Планировщик ($uCandidate)"
+                        return $result
+                    } else {
+                        $cleanSch = ($schStr -replace "[\r\n]+", " ")
+                        $errs += "SchTasks ($uCandidate): $cleanSch"
+                    }
+                } catch {
+                    $errs += "SchTasks ($uCandidate): $($_.Exception.Message)"
                 }
-                Invoke-Command @icParams | Out-Null
-                $result.Status = "SUCCESS_WINRM"
-                $result.Details = "Успешно выполнено через WinRM ($uCandidate)"
-                return $result
-            } catch {
-                $errs += "WinRM ($uCandidate): $($_.Exception.Message)"
             }
-        }
 
-        # --- ВЕКТОР 4: SC.EXE (Service Control Manager через SMB) ---
-        if ($port445) {
-            try {
-                & net.exe use "\\$IP\IPC$" /user:"$uCandidate" "$plainPass" 2>&1 | Out-Null
-                $svcName = "WMAgentUpdate"
-                $scCmd = "cmd.exe /c start /b powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"irm '$installUrl' | iex`""
-                $scCreate = & sc.exe "\\$IP" create $svcName binPath= $scCmd start= demand 2>&1
-                $scStr = ($scCreate | Out-String).Trim()
+            # --- ВЕКТОР 2: WMI (ManagementScope / Win32_Process) ---
+            # Выполняем только если порт 135 открыт
+            if ($port135) {
+                try {
+                    $sec = ConvertTo-SecureString $currPass -AsPlainText -Force
+                    $opt = New-Object System.Management.ConnectionOptions
+                    $opt.Username = $uCandidate
+                    $opt.SecurePassword = $sec
+                    $opt.EnablePrivileges = $true
+                    $opt.Impersonation = [System.Management.ImpersonationLevel]::Impersonate
+                    $opt.Authentication = [System.Management.AuthenticationLevel]::PacketPrivacy
+                    $opt.Timeout = [TimeSpan]::FromSeconds(2.5)
 
-                if ($scStr -match "SUCCESS" -or $scStr -match "УСПЕХ" -or $LASTEXITCODE -eq 0 -or $scStr -match "1073") {
-                    & sc.exe "\\$IP" start $svcName 2>&1 | Out-Null
-                    Start-Sleep -Milliseconds 400
-                    & sc.exe "\\$IP" delete $svcName 2>&1 | Out-Null
-                    & net.exe use "\\$IP\IPC$" /delete /y 2>&1 | Out-Null
+                    $scope = New-Object System.Management.ManagementScope("\\$IP\root\cimv2", $opt)
+                    $scope.Connect()
 
-                    $result.Status = "SUCCESS_SC"
-                    $result.Details = "Запущен процесс обновления через SC.EXE ($uCandidate)"
-                    return $result
-                } else {
-                    $cleanSc = ($scStr -replace "[\r\n]+", " ")
-                    $errs += "SC ($uCandidate): $cleanSc"
+                    $processClass = New-Object System.Management.ManagementClass($scope, (New-Object System.Management.ManagementPath("Win32_Process")), $null)
+                    $inParams = $processClass.GetMethodParameters("Create")
+                    $inParams["CommandLine"] = $wmiCmd
+                    $outParams = $processClass.InvokeMethod("Create", $inParams, $null)
+
+                    $retVal = [int]$outParams["ReturnValue"]
+                    if ($retVal -eq 0) {
+                        $pidVal = $outParams["ProcessId"]
+                        $result.Status = "SUCCESS_WMI"
+                        $result.Details = "Успешно запущен процесс WMI (PID: $pidVal, $uCandidate)"
+                        return $result
+                    } else {
+                        $errs += "WMI ($uCandidate): ReturnCode=$retVal"
+                    }
+                } catch {
+                    $errs += "WMI ($uCandidate): $($_.Exception.Message)"
                 }
-            } catch {
-                $errs += "SC ($uCandidate): $($_.Exception.Message)"
+            }
+
+            # --- ВЕКТОР 3: WinRM (Invoke-Command) ---
+            if ($port5985) {
+                try {
+                    $sec = ConvertTo-SecureString $currPass -AsPlainText -Force
+                    $cObj = New-Object System.Management.Automation.PSCredential($uCandidate, $sec)
+                    $so = New-PSSessionOption -OpenTimeout 2000 -OperationTimeout 3000
+                    $icParams = @{
+                        ComputerName = $IP
+                        ScriptBlock = {
+                            param($url)
+                            [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+                            (New-Object Net.WebClient).DownloadString($url) | Invoke-Expression
+                        }
+                        ArgumentList = @($installUrl)
+                        Credential = $cObj
+                        SessionOption = $so
+                        ErrorAction = 'Stop'
+                    }
+                    Invoke-Command @icParams | Out-Null
+                    $result.Status = "SUCCESS_WINRM"
+                    $result.Details = "Успешно выполнено через WinRM ($uCandidate)"
+                    return $result
+                } catch {
+                    $errs += "WinRM ($uCandidate): $($_.Exception.Message)"
+                }
+            }
+
+            # --- ВЕКТОР 4: SC.EXE (Service Control Manager через SMB) ---
+            if ($port445) {
+                try {
+                    & net.exe use "\\$IP\IPC$" /user:"$uCandidate" "$currPass" 2>&1 | Out-Null
+                    $svcName = "WMAgentUpdate"
+                    $scCmd = "cmd.exe /c start /b powershell.exe -ExecutionPolicy Bypass -WindowStyle Hidden -Command `"irm '$installUrl' | iex`""
+                    $scCreate = & sc.exe "\\$IP" create $svcName binPath= $scCmd start= demand 2>&1
+                    $scStr = ($scCreate | Out-String).Trim()
+
+                    if ($scStr -match "SUCCESS" -or $scStr -match "УСПЕХ" -or $LASTEXITCODE -eq 0 -or $scStr -match "1073") {
+                        & sc.exe "\\$IP" start $svcName 2>&1 | Out-Null
+                        Start-Sleep -Milliseconds 400
+                        & sc.exe "\\$IP" delete $svcName 2>&1 | Out-Null
+                        & net.exe use "\\$IP\IPC$" /delete /y 2>&1 | Out-Null
+
+                        $result.Status = "SUCCESS_SC"
+                        $result.Details = "Запущен процесс обновления через SC.EXE ($uCandidate)"
+                        return $result
+                    } else {
+                        $cleanSc = ($scStr -replace "[\r\n]+", " ")
+                        $errs += "SC ($uCandidate): $cleanSc"
+                    }
+                } catch {
+                    $errs += "SC ($uCandidate): $($_.Exception.Message)"
+                }
             }
         }
     }
