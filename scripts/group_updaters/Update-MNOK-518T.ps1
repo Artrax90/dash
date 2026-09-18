@@ -4,6 +4,7 @@
 .DESCRIPTION
     Токен: wm_tok_071feaacce3b7ef1
     Компьютеров в группе: 14
+    Учетные данные: admin / bmstu023
 #>
 
 param(
@@ -13,7 +14,7 @@ param(
     [switch]$PingOnly
 )
 
-# Загрузка общего движка обновления
+# 1. Загрузка общего движка обновления
 $scriptDir = $PSScriptRoot
 if (-not $scriptDir) { $scriptDir = "." }
 $commonPath = Join-Path $scriptDir "Common-Updater.ps1"
@@ -22,6 +23,15 @@ if (Test-Path $commonPath) {
 } else {
     Write-Error "Не найден файл Common-Updater.ps1 рядом со скриптом!"
     exit 1
+}
+
+# 2. Вшитые учетные данные администратора для группы МНОК / 5 этаж / 518Т
+$EmbeddedUser = "admin"
+$EmbeddedPass = "bmstu023"
+
+if (-not $Credential) {
+    $secPass = ConvertTo-SecureString $EmbeddedPass -AsPlainText -Force
+    $Credential = New-Object System.Management.Automation.PSCredential($EmbeddedUser, $secPass)
 }
 
 $GroupName = "МНОК / 5 этаж / 518Т"
