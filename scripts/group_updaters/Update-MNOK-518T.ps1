@@ -4,7 +4,7 @@
 .DESCRIPTION
     Токен: wm_tok_071feaacce3b7ef1
     Компьютеров в группе: 14
-    Учетные данные: admin / bmstu023
+    Учетные данные: admin / oitp507
 #>
 
 param(
@@ -27,7 +27,7 @@ if (Test-Path $commonPath) {
 
 # 2. Вшитые учетные данные администратора для группы МНОК / 5 этаж / 518Т
 $EmbeddedUser = "admin"
-$EmbeddedPass = "bmstu023"
+$EmbeddedPass = "oitp507"
 
 if (-not $Credential) {
     $secPass = ConvertTo-SecureString $EmbeddedPass -AsPlainText -Force
