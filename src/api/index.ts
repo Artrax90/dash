@@ -346,8 +346,13 @@ export const devicesApi = {
         body: JSON.stringify(payload),
       });
       if (res.ok) return await res.json();
-    } catch {
-      // fallback
+      const err = await res.json().catch(() => ({ detail: 'Ошибка обновления устройства' }));
+      throw new Error(err.detail || 'Ошибка обновления устройства');
+    } catch (e: any) {
+      if (e?.message && !e.message.includes('Failed to fetch')) {
+        throw e;
+      }
+      // fallback to in-memory only on network connection failure
     }
     const dev = devices.find((d) => d.id === id);
     if (dev) {

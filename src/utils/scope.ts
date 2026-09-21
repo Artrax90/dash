@@ -5,10 +5,53 @@
  * the 3-level organization hierarchy (e.g. 'МНОК' -> 'МНОК / 1 этаж' -> 'МНОК / 1 этаж / 111').
  */
 
+function getPathSegments(path: string): Set<string> {
+  const clean = (path || '').trim().toLowerCase();
+  if (!clean) return new Set();
+  const segs = new Set<string>([clean]);
+  const parts = clean.split('/').map(p => p.trim()).filter(Boolean);
+  const norm = parts.join(' / ');
+  segs.add(norm);
+  if (parts.length >= 3) {
+    const [bld, flr, rm] = [parts[0], parts[1], parts[2]];
+    segs.add(bld);
+    segs.add(flr);
+    segs.add(rm);
+    segs.add(`${bld} / ${flr}`);
+    segs.add(`${bld} / ${flr} / ${rm}`);
+    segs.add(`${bld} / ${rm}`);
+    if (!rm.startsWith('кабинет')) {
+      segs.add(`кабинет ${rm}`);
+    } else {
+      segs.add(rm.replace('кабинет', '').trim());
+    }
+  } else if (parts.length === 2) {
+    const [bld, rm] = [parts[0], parts[1]];
+    segs.add(bld);
+    segs.add(rm);
+    segs.add(`${bld} / ${rm}`);
+    if (!rm.startsWith('кабинет')) {
+      segs.add(`кабинет ${rm}`);
+    } else {
+      segs.add(rm.replace('кабинет', '').trim());
+    }
+  } else if (parts.length === 1) {
+    const single = parts[0];
+    if (single.startsWith('кабинет')) {
+      segs.add(single.replace('кабинет', '').trim());
+    } else {
+      segs.add(`кабинет ${single}`);
+    }
+  }
+  return segs;
+}
+
 export function isPathInScope(targetPath: string, allowedGroups?: string[] | null): boolean {
   if (!allowedGroups || allowedGroups.length === 0) return true;
   const cleanTarget = (targetPath || '').trim().toLowerCase();
   if (!cleanTarget) return false;
+
+  const targetSegments = getPathSegments(cleanTarget);
 
   return allowedGroups.some(allowed => {
     const a = (allowed || '').trim().toLowerCase();
@@ -16,6 +59,10 @@ export function isPathInScope(targetPath: string, allowedGroups?: string[] | nul
     if (cleanTarget === a) return true;
     if (cleanTarget.startsWith(a + ' /') || cleanTarget.startsWith(a + '/')) return true;
     if (a.startsWith(cleanTarget + ' /') || a.startsWith(cleanTarget + '/')) return true;
+    const allowedSegments = getPathSegments(a);
+    for (const seg of allowedSegments) {
+      if (targetSegments.has(seg)) return true;
+    }
     return false;
   });
 }

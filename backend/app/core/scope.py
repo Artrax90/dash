@@ -6,12 +6,50 @@ the 3-level organization hierarchy (e.g. 'МНОК' -> 'МНОК / 1 этаж' -
 """
 from typing import List, Dict, Any, Optional, Set
 
+def _get_path_segments(path: str) -> Set[str]:
+    clean = str(path or "").strip().lower()
+    if not clean:
+        return set()
+    segs = {clean}
+    norm = " / ".join(p.strip() for p in clean.split("/") if p.strip())
+    segs.add(norm)
+    parts = [p.strip() for p in clean.split("/") if p.strip()]
+    if len(parts) >= 3:
+        bld, flr, rm = parts[0], parts[1], parts[2]
+        segs.add(bld)
+        segs.add(flr)
+        segs.add(rm)
+        segs.add(f"{bld} / {flr}")
+        segs.add(f"{bld} / {flr} / {rm}")
+        segs.add(f"{bld} / {rm}")
+        if not rm.startswith("кабинет"):
+            segs.add(f"кабинет {rm}")
+        else:
+            segs.add(rm.replace("кабинет", "").strip())
+    elif len(parts) == 2:
+        bld, rm = parts[0], parts[1]
+        segs.add(bld)
+        segs.add(rm)
+        segs.add(f"{bld} / {rm}")
+        if not rm.startswith("кабинет"):
+            segs.add(f"кабинет {rm}")
+        else:
+            segs.add(rm.replace("кабинет", "").strip())
+    elif len(parts) == 1:
+        single = parts[0]
+        if single.startswith("кабинет"):
+            segs.add(single.replace("кабинет", "").strip())
+        else:
+            segs.add(f"кабинет {single}")
+    return segs
+
 def is_path_in_scope(target_path: str, allowed_groups: Optional[List[str]]) -> bool:
     if not allowed_groups:
         return True
     clean_target = str(target_path or "").strip().lower()
     if not clean_target:
         return False
+    target_segments = _get_path_segments(clean_target)
     for allowed in allowed_groups:
         a = str(allowed or "").strip().lower()
         if not a:
@@ -21,6 +59,9 @@ def is_path_in_scope(target_path: str, allowed_groups: Optional[List[str]]) -> b
         if clean_target.startswith(a + " /") or clean_target.startswith(a + "/"):
             return True
         if a.startswith(clean_target + " /") or a.startswith(clean_target + "/"):
+            return True
+        allowed_segments = _get_path_segments(a)
+        if target_segments & allowed_segments:
             return True
     return False
 

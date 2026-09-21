@@ -1183,7 +1183,7 @@ function App() {
           <ErrorBoundary>
             {page === 'Dashboard' && <Dashboard onDevice={openDevice} onNavigate={handleNavigate} notify={notify} workspaceName={workspaceName} />}
             {page === 'Devices' && <Devices onDevice={openDevice} initialFilter={deviceFilter} notify={notify} currentUser={currentUser} />}
-            {page === 'Device detail' && <DeviceDetail deviceId={selectedDevice} onBack={() => navigateTo({ page: 'Devices' })} notify={notify} />}
+            {page === 'Device detail' && <DeviceDetail deviceId={selectedDevice} onBack={() => navigateTo({ page: 'Devices' })} notify={notify} currentUser={currentUser} />}
             {page === 'Monitoring' && <Monitoring onDevice={openDevice} notify={notify} />}
             {page === 'Alerts' && <Alerts onDevice={openDevice} notify={notify} />}
             {page === 'Hardware' && <HardwarePage onDevice={openDevice} onNavigate={handleNavigate} notify={notify} />}
@@ -3830,8 +3830,25 @@ function Devices({
 // ----------------------------------------------------
 // 4. DEVICE DETAIL
 // ----------------------------------------------------
-function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: () => void; notify: (message: string) => void }) {
+function DeviceDetail({
+  deviceId,
+  onBack,
+  notify,
+  currentUser
+}: {
+  deviceId: string;
+  onBack: () => void;
+  notify: (message: string) => void;
+  currentUser?: ManagedUser | null;
+}) {
   const { t } = useLanguage();
+  const isSuperAdmin = isSuperAdminRole(currentUser?.role);
+  const isFleetAdmin = isFleetAdminRole(currentUser?.role);
+  const isObserver = currentUser?.role === 'Наблюдатель' || currentUser?.role === 'Observer';
+  const hasRestrictedScope = !isSuperAdmin && currentUser?.scope !== 'Все устройства' && Array.isArray(currentUser?.allowedGroups) && currentUser.allowedGroups.length > 0;
+  const allowedGroupsList = hasRestrictedScope ? currentUser.allowedGroups : [];
+  const canManageGroups = !isObserver;
+
   const [device, setDevice] = useState<Device>();
   const [sessions, setSessions] = useState<RdpSession[]>([]);
   const [spec, setSpec] = useState<HardwareSpec>();
@@ -3901,17 +3918,58 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
       }
     });
 
-    groupsApi.list().then(serverGroups => {
-      const sGroups = (serverGroups || []).map(g => g.name).filter(Boolean);
-      devicesApi.list().then(devList => {
-        const dGroups = (devList || []).flatMap(dev => getDeviceGroups(dev));
-        const merged = Array.from(new Set([...sGroups, ...dGroups, 'Office', 'Warehouse', 'Management', 'Testing', 'Dev', 'Servers']))
-          .filter(g => g && g !== 'Default')
-          .sort((a, b) => a.localeCompare(b, 'ru'));
-        setAllSystemGroups(merged);
-      }).catch(() => {
-        if (sGroups.length > 0) setAllSystemGroups(sGroups);
+    Promise.all([
+      groupsApi.list().catch(() => []),
+      groupsApi.getBuildings().catch(() => []),
+      groupsApi.getHierarchy().catch(() => []),
+      devicesApi.list().catch(() => []),
+    ]).then(([serverGroups, buildings, hierarchy, devList]) => {
+      const gSet = new Set<string>();
+      (serverGroups || []).forEach((g: any) => {
+        if (g?.name) gSet.add(g.name.trim());
       });
+      (buildings || []).forEach((b: any) => {
+        const bName = (b?.name || '').trim();
+        if (bName && bName !== 'Общие группы') {
+          gSet.add(bName);
+          if (Array.isArray(b.floors)) {
+            b.floors.forEach((f: string) => {
+              if (f) gSet.add(`${bName} / ${f.trim()}`);
+            });
+          }
+        }
+      });
+      (hierarchy || []).forEach((b: any) => {
+        const bName = (b.building || b.name || '').trim();
+        if (bName && bName !== 'Общие группы') {
+          gSet.add(bName);
+          (b.floors || []).forEach((f: any) => {
+            const fName = (f.floor || f.name || '').trim();
+            if (fName) {
+              gSet.add(`${bName} / ${fName}`);
+              (f.rooms || []).forEach((r: any) => {
+                const rName = (typeof r === 'string' ? r : (r.room || r.name || '')).trim();
+                if (rName) {
+                  gSet.add(`${bName} / ${fName} / ${rName}`);
+                }
+              });
+            }
+          });
+        }
+      });
+      (devList || []).forEach((dev: any) => {
+        getDeviceGroups(dev).forEach(g => { if (g && g.trim()) gSet.add(g.trim()); });
+      });
+      ['Office', 'Warehouse', 'Management', 'Testing', 'Dev', 'Servers', 'Тонкие клиенты'].forEach(g => gSet.add(g));
+
+      const rawList = Array.from(gSet).filter(g => g && g !== 'Default');
+      if (hasRestrictedScope) {
+        const filtered = rawList.filter(g => isPathInScope(g, allowedGroupsList));
+        const merged = Array.from(new Set([...allowedGroupsList, ...filtered])).sort((a, b) => a.localeCompare(b, 'ru'));
+        setAllSystemGroups(merged);
+      } else {
+        setAllSystemGroups(rawList.sort((a, b) => a.localeCompare(b, 'ru')));
+      }
     }).catch(() => {});
   };
 
@@ -4018,20 +4076,32 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
   };
 
   const handleSaveMetadata = async () => {
-    const updated = await devicesApi.update(deviceId, {
-      name: editName,
-      groups: editGroups,
-      tags: editTags,
-      assetTag: editAssetTag,
-      notes: editNotes,
-      maintenance: editMaintenance,
-      heartbeatInterval: editHeartbeatInterval,
-    });
-    if (updated) {
-      setDevice(prev => prev ? { ...prev, ...updated, groups: editGroups } : updated);
+    if (hasRestrictedScope) {
+      const forbidden = editGroups.find(g => !isPathInScope(g, allowedGroupsList));
+      if (forbidden) {
+        notify(`Ошибка: группа «${forbidden}» находится вне вашей зоны ответственности (${allowedGroupsList.join(', ')})`);
+        return;
+      }
     }
-    notify(`Параметры и группы станции ${editName} успешно сохранены!`);
-    setShowEditModal(false);
+    try {
+      const updated = await devicesApi.update(deviceId, {
+        name: editName,
+        groups: editGroups,
+        tags: editTags,
+        assetTag: editAssetTag,
+        notes: editNotes,
+        maintenance: editMaintenance,
+        heartbeatInterval: editHeartbeatInterval,
+      });
+      if (updated) {
+        setDevice(prev => prev ? { ...prev, ...updated, groups: editGroups } : updated);
+      }
+      notify(`Параметры и группы станции ${editName} успешно сохранены!`);
+      setShowEditModal(false);
+      loadDeviceData();
+    } catch (e: any) {
+      notify('Ошибка при сохранении параметров: ' + (e?.message || 'Сбой запроса'));
+    }
   };
 
   const toggleGroupInDetail = (grp: string) => {
@@ -4046,13 +4116,17 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
 
   const handleQuickRemoveGroup = async (groupToRemove: string) => {
     if (!device) return;
+    if (isObserver) {
+      notify('Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения');
+      return;
+    }
     const current = getDeviceGroups(device);
     const updated = current.filter(g => g.toLowerCase() !== groupToRemove.toLowerCase());
     const finalGroups = updated.length > 0 ? updated : ['Default'];
 
-    let bld = device.building || '';
-    let flr = device.floor || '';
-    let rm = device.room || '';
+    let bld = '';
+    let flr = '';
+    let rm = '';
     if (updated.length > 0 && updated[0].includes('/')) {
       const parts = updated[0].split('/').map(s => s.trim());
       if (parts.length >= 3) {
@@ -4060,8 +4134,6 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
       } else if (parts.length === 2) {
         bld = parts[0]; flr = '1 этаж'; rm = parts[1];
       }
-    } else if (updated.length === 0) {
-      bld = ''; flr = ''; rm = '';
     }
 
     try {
@@ -4086,17 +4158,26 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
 
   const handleExecuteGroupTransfer = async () => {
     if (!device) return;
+    if (isObserver) {
+      notify('Отказ в доступе: роль «Наблюдатель» имеет доступ только для чтения');
+      return;
+    }
     const chosenGroup = (isCustomTransferGroup ? customTransferGroupInput : transferTargetGroup).trim();
     if (!chosenGroup) {
       notify('Пожалуйста, выберите или укажите группу');
       return;
     }
 
+    if (hasRestrictedScope && !isPathInScope(chosenGroup, allowedGroupsList)) {
+      notify(`Перенос невозможен: группа/кабинет «${chosenGroup}» находится вне вашей зоны ответственности (${allowedGroupsList.join(', ')})`);
+      return;
+    }
+
     const finalGroups = [chosenGroup];
 
-    let bld = device.building || '';
-    let flr = device.floor || '';
-    let rm = device.room || '';
+    let bld = '';
+    let flr = '';
+    let rm = '';
     if (chosenGroup.includes('/')) {
       const parts = chosenGroup.split('/').map(s => s.trim());
       if (parts.length >= 3) {
@@ -4728,43 +4809,47 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                         style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', padding: '3px 8px', borderRadius: '6px' }}
                       >
                         <span>{g}</span>
-                        <button
-                          type="button"
-                          onClick={() => handleQuickRemoveGroup(g)}
-                          title={`Отвязать компьютер от группы «${g}»`}
-                          style={{
-                            background: 'none',
-                            border: 'none',
-                            cursor: 'pointer',
-                            color: 'inherit',
-                            padding: '0 2px',
-                            display: 'inline-flex',
-                            alignItems: 'center',
-                            opacity: 0.7,
-                            borderRadius: '3px'
-                          }}
-                          onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
-                          onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
-                        >
-                          <X size={12} />
-                        </button>
+                        {!isObserver && (
+                          <button
+                            type="button"
+                            onClick={() => handleQuickRemoveGroup(g)}
+                            title={`Отвязать компьютер от группы «${g}»`}
+                            style={{
+                              background: 'none',
+                              border: 'none',
+                              cursor: 'pointer',
+                              color: 'inherit',
+                              padding: '0 2px',
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              opacity: 0.7,
+                              borderRadius: '3px'
+                            }}
+                            onMouseEnter={(e) => (e.currentTarget.style.opacity = '1')}
+                            onMouseLeave={(e) => (e.currentTarget.style.opacity = '0.7')}
+                          >
+                            <X size={12} />
+                          </button>
+                        )}
                       </span>
                     ))}
-                    <button
-                      type="button"
-                      className="button"
-                      onClick={() => {
-                        const defaultChoice = allSystemGroups.find(grp => !currentDevGroups.includes(grp)) || allSystemGroups[0] || 'Office';
-                        setTransferTargetGroup(defaultChoice);
-                        setIsCustomTransferGroup(false);
-                        setCustomTransferGroupInput('');
-                        setShowTransferModal(true);
-                      }}
-                      style={{ padding: '3px 8px', fontSize: '11.5px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-                      title="Перенести компьютер в другую группу / кабинет"
-                    >
-                      <FolderPlus size={12} /> Перенести в группу
-                    </button>
+                    {!isObserver && (
+                      <button
+                        type="button"
+                        className="button"
+                        onClick={() => {
+                          const defaultChoice = allSystemGroups.find(grp => !currentDevGroups.includes(grp)) || allSystemGroups[0] || (hasRestrictedScope && allowedGroupsList[0] ? allowedGroupsList[0] : 'Office');
+                          setTransferTargetGroup(defaultChoice);
+                          setIsCustomTransferGroup(false);
+                          setCustomTransferGroupInput('');
+                          setShowTransferModal(true);
+                        }}
+                        style={{ padding: '3px 8px', fontSize: '11.5px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
+                        title="Перенести компьютер в другую группу / кабинет"
+                      >
+                        <FolderPlus size={12} /> Перенести в группу
+                      </button>
+                    )}
                   </div>
                 </div>
                 <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--line)' }}>
@@ -5427,6 +5512,12 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                     onChange={(e) => setCustomTransferGroupInput(e.target.value)}
                     autoFocus
                   />
+                </div>
+              )}
+
+              {hasRestrictedScope && (
+                <div style={{ fontSize: '12px', color: 'var(--primary, #3b82f6)', background: 'rgba(59, 130, 246, 0.08)', padding: '8px 12px', borderRadius: '6px', border: '1px solid rgba(59, 130, 246, 0.2)' }}>
+                  Доступная зона ответственности: <strong>{allowedGroupsList.join(', ')}</strong>
                 </div>
               )}
 

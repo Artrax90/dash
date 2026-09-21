@@ -941,13 +941,13 @@ async def create_agentless_device(payload: AgentlessDeviceCreateSchema, request:
     # Scope validation: operator can only add devices to allowedGroups
     x_username = request.headers.get("X-Username")
     if x_username:
-        from backend.app.api.v1.users import load_users
+        from backend.app.api.v1.users import load_users, is_superadmin_role
+        from backend.app.core.scope import is_path_in_scope
         users = load_users()
         u = next((usr for usr in users if usr.get("username", "").lower() == x_username.strip().lower()), None)
-        if u and u.get("role") not in ["Суперадминистратор", "SuperAdmin"] and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
-            allowed_groups = [g.lower().strip() for g in u.get("allowedGroups", [])]
-            target_group = (payload.group or "").lower().strip()
-            if target_group and target_group not in allowed_groups:
+        if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
+            target_group = (payload.group or "").strip()
+            if target_group and not is_path_in_scope(target_group, u.get("allowedGroups")):
                 raise HTTPException(
                     status_code=403,
                     detail=f"Отказ в доступе: вы можете добавлять устройства только в разрешенные вам группы ({', '.join(u.get('allowedGroups', []))})."
@@ -1936,19 +1936,19 @@ async def update_device(device_id: str, payload: Dict[str, Any], request: Reques
     # Scope validation: cannot add or change group to one outside allowedGroups
     x_username = request.headers.get("X-Username")
     if x_username:
-        from backend.app.api.v1.users import load_users
+        from backend.app.api.v1.users import load_users, is_superadmin_role
+        from backend.app.core.scope import is_path_in_scope
         users = load_users()
         u = next((usr for usr in users if usr.get("username", "").lower() == x_username.strip().lower()), None)
-        if u and u.get("role") not in ["Суперадминистратор", "SuperAdmin"] and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
-            allowed_groups = [g.lower().strip() for g in u.get("allowedGroups", [])]
+        if u and not is_superadmin_role(u.get("role")) and u.get("scope") != "Все устройства" and u.get("allowedGroups"):
             new_groups = []
             if "groups" in payload and isinstance(payload["groups"], list):
-                new_groups = [str(g).strip().lower() for g in payload["groups"] if str(g).strip()]
+                new_groups = [str(g).strip() for g in payload["groups"] if str(g).strip()]
             elif "group" in payload and payload["group"]:
-                new_groups = [str(payload["group"]).strip().lower()]
+                new_groups = [str(payload["group"]).strip()]
             
             for ng in new_groups:
-                if ng not in allowed_groups:
+                if not is_path_in_scope(ng, u.get("allowedGroups")):
                     raise HTTPException(
                         status_code=403,
                         detail=f"Отказ в доступе: вы не можете привязать группу '{ng}', так как она не входит в вашу зону ответственности."
