@@ -17530,7 +17530,7 @@ function Groups({
                       Включить всю группу (WoL)
                     </Button>
                   )}
-                  {canManageGroup(selectedGroup.name) && !isObserver && (
+                  {!isObserver && (
                     <Button
                       icon={<Plus size={15} />}
                       onClick={() => setShowAddPcModal(true)}
@@ -17778,10 +17778,22 @@ function Groups({
                 )}
 
                 {groupDevices.length === 0 ? (
-                  <div className="empty-state" style={{ minHeight: '180px' }}>
-                    <Monitor size={26} />
-                    <span>В группе "{selectedGroup.name}" пока нет компьютеров</span>
-                    <small style={{ color: 'var(--muted)' }}>Нажмите кнопку «+ Добавить ПК» вверху для добавления существующих компьютеров</small>
+                  <div className="empty-state" style={{ minHeight: '190px' }}>
+                    <Monitor size={32} style={{ opacity: 0.6, marginBottom: '6px' }} />
+                    <span style={{ fontWeight: 600, fontSize: '15px' }}>В группе "{selectedGroup.name}" пока нет компьютеров</span>
+                    <small style={{ color: 'var(--muted)', marginTop: '4px', maxWidth: '420px', textAlign: 'center' }}>
+                      Вы можете привязать уже существующий ПК из парка или зарегистрировать новый агент
+                    </small>
+                    {!isObserver && (
+                      <Button
+                        primary
+                        icon={<Plus size={15} />}
+                        style={{ marginTop: '14px', padding: '8px 16px' }}
+                        onClick={() => setShowAddPcModal(true)}
+                      >
+                        + Добавить ПК в группу
+                      </Button>
+                    )}
                   </div>
                 ) : sortedGroupDevices.length === 0 ? (
                   <div className="empty-state" style={{ minHeight: '180px' }}>
@@ -18040,6 +18052,19 @@ function Groups({
                             <Button onClick={(e) => { e.stopPropagation(); onSelectGroup(group.name); }}>
                               Открыть ({group.name}) <ChevronRight size={14} />
                             </Button>
+                            {!isObserver && (
+                              <Button
+                                icon={<Plus size={14} />}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  onSelectGroup(group.name);
+                                  setTimeout(() => setShowAddPcModal(true), 50);
+                                }}
+                                title={`Добавить ПК в группу «${group.name}»`}
+                              >
+                                + ПК
+                              </Button>
+                            )}
                             {canManageGroup(group.name) && (
                               <Button
                                 icon={<Bell size={14} />}
@@ -18326,7 +18351,26 @@ function Groups({
                       <div style={{ fontSize: '13px', color: 'var(--muted)' }}>
                         Локация: <strong>{drillBuilding}</strong> → <strong>{drillFloor}</strong> ({floorRooms.length} кабинетов, {fStats.totalPcs} ПК)
                       </div>
-                      <div style={{ display: 'flex', gap: '8px' }}>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+                        {!isObserver && (
+                          <Button
+                            icon={<Plus size={14} />}
+                            onClick={() => {
+                              if (floorRooms.length > 0) {
+                                onSelectGroup(floorRooms[0].name);
+                                setTimeout(() => setShowAddPcModal(true), 50);
+                              } else {
+                                setIsHierarchicalCreate(true);
+                                setSelectedBuildingOption(drillBuilding);
+                                setSelectedFloorOption(drillFloor);
+                                setShowCreateGroup(true);
+                              }
+                            }}
+                            title="Добавить ПК на этот этаж"
+                          >
+                            + Добавить ПК на этаж
+                          </Button>
+                        )}
                         {canManageGroups && (!hasRestrictedScope || (allowedGroups && isFloorVisibleInScope(drillBuilding, drillFloor, allowedGroups))) && (
                           <Button
                             icon={<Zap size={14} />}
@@ -18450,9 +18494,27 @@ function Groups({
                               <span><Monitor size={14} /> {roomGroup.count} ПК</span>
                               <span><Clock3 size={14} /> {roomGroup.schedule}</span>
                             </div>
-                            <Button onClick={(e) => { e.stopPropagation(); onSelectGroup(roomGroup.name); }}>
-                              Открыть кабинет ({roomGroup.roomName}) <ChevronRight size={14} />
-                            </Button>
+                            <div style={{ display: 'flex', gap: '8px', marginTop: '12px' }}>
+                              <Button
+                                style={{ flex: 1 }}
+                                onClick={(e) => { e.stopPropagation(); onSelectGroup(roomGroup.name); }}
+                              >
+                                Открыть кабинет ({roomGroup.roomName}) <ChevronRight size={14} />
+                              </Button>
+                              {!isObserver && (
+                                <Button
+                                  icon={<Plus size={14} />}
+                                  title={`Добавить ПК в кабинет ${roomGroup.roomName}`}
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    onSelectGroup(roomGroup.name);
+                                    setTimeout(() => setShowAddPcModal(true), 50);
+                                  }}
+                                >
+                                  + ПК
+                                </Button>
+                              )}
+                            </div>
                           </div>
                         </section>
                       ))}
