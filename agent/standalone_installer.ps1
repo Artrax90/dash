@@ -493,7 +493,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.19"
+    agentVersion = "2.9.20"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -511,7 +511,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.19"
+    agentVersion = "2.9.20"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -580,7 +580,7 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.19'
+`$AgentVersion = '2.9.20'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$InstallDir = if (`$PSScriptRoot -and (Test-Path `$PSScriptRoot)) { `$PSScriptRoot } elseif (Test-Path "C:\Program Files\WorkstationManagerAgent") { "C:\Program Files\WorkstationManagerAgent" } else { (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent") }
@@ -663,9 +663,9 @@ try {
     [Win32PowerGuard]::SetThreadExecutionState(0x80000000 -bor 0x00000001 -bor 0x00000040)
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.19") {
+function Update-AgentService([string]`$targetVer = "2.9.20") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.19"
+        `$targetVer = "2.9.20"
     }
     Write-AgentLog "Update-AgentService initiated: current=`$AgentVersion, target=`$targetVer"
     try {
@@ -782,19 +782,19 @@ function Execute-PowerCommand([string]`$action, [bool]`$isDirectSignal = `$false
     }
 
     if (`$act -eq 'REBOOT' -or `$act -eq 'RESTART') {
-        Write-AgentLog "Executing REBOOT cascade..."
-        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(6) } catch {}
-        try { Restart-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
+        Write-AgentLog "Executing REBOOT cascade (shutdown.exe first)..."
         try { Start-Process -FilePath "`$env:SystemRoot\System32\shutdown.exe" -ArgumentList "/r /f /t 0 /d p:0:0" -WindowStyle Hidden } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0 /d p:0:0
+        try { & "`$env:SystemRoot\System32\shutdown.exe" /r /f /t 0 /d p:0:0 } catch {}
+        try { Restart-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
+        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(6) } catch {}
     }
     elseif (`$act -eq 'SHUTDOWN' -or `$act -eq 'FORCE_SHUTDOWN' -or `$act -eq 'POWEROFF') {
-        Write-AgentLog "Executing SHUTDOWN cascade..."
-        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(12) } catch {}
-        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(5) } catch {}
-        try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
+        Write-AgentLog "Executing SHUTDOWN cascade (shutdown.exe first for clean WoL ARM)..."
         try { Start-Process -FilePath "`$env:SystemRoot\System32\shutdown.exe" -ArgumentList "/s /f /t 0 /d p:0:0" -WindowStyle Hidden } catch {}
-        & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 /d p:0:0
+        try { & "`$env:SystemRoot\System32\shutdown.exe" /s /f /t 0 /d p:0:0 } catch {}
+        try { Stop-Computer -Force -Confirm:`$false -ErrorAction SilentlyContinue } catch {}
+        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(5) } catch {}
+        try { (Get-CimInstance Win32_OperatingSystem).Win32Shutdown(12) } catch {}
     }
     elseif (`$act -eq 'KILL_PROCESS' -or `$act -eq 'TERMINATE_PROCESS') {
         `$targetPid = `$null
@@ -2812,7 +2812,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.19"
+    agentVersion = "2.9.20"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

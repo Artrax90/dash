@@ -4,8 +4,8 @@ from pathlib import Path
 from backend.app.core.config import settings
 from backend.app.main import get_windows_agent_service_ps1
 
-def test_version_bumped_to_2_9_19():
-    assert settings.LATEST_AGENT_VERSION == "2.9.19"
+def test_version_bumped_to_2_9_20():
+    assert settings.LATEST_AGENT_VERSION == "2.9.20"
 
 def test_agent_service_script_has_valid_install_dir():
     script = get_windows_agent_service_ps1("http://172.19.33.68:2301", "PC-1F7D")
@@ -17,8 +17,8 @@ def test_installer_has_nvme_and_smart_support():
     assert installer_path.exists()
     content = installer_path.read_text(encoding="utf-8")
 
-    # 1. Must have version 2.9.19
-    assert "$AgentVersion = '2.9.19'" in content
+    # 1. Must have version 2.9.20
+    assert "$AgentVersion = '2.9.20'" in content
 
     # 2. Live disks must include healthPercent and temperatureC
     assert "healthPercent" in content

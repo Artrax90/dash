@@ -309,6 +309,12 @@ def test_service_startup_quoting_and_power_cascades():
     assert 'shutdown.exe" /r /f /t 0' in content, "Missing shutdown.exe /r reboot call"
     assert 'shutdown.exe" /s /f /t 0' in content, "Missing shutdown.exe /s shutdown call"
 
+    # Ensure shutdown.exe is called BEFORE Win32Shutdown to allow clean ACPI Soft-Off arming of NIC for WoL
+    shutdown_pos = content.find('shutdown.exe" /s /f /t 0')
+    win32_shutdown_pos = content.find('Win32Shutdown(12)')
+    assert shutdown_pos != -1 and win32_shutdown_pos != -1, "Missing shutdown or Win32Shutdown in script"
+    assert shutdown_pos < win32_shutdown_pos, "shutdown.exe must execute BEFORE Win32Shutdown(12) so NIC is armed for Wake-on-LAN instead of hard power-off"
+
     # 5. Process termination
     assert 'taskkill.exe" /F /PID `$targetPid /T' in content, "Missing taskkill /F /PID /T"
     assert 'taskkill.exe" /F /IM "`$pClean.exe" /T' in content, "Missing taskkill /F /IM /T"
