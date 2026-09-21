@@ -17567,22 +17567,41 @@ function Groups({
                     </Button>
                   )}
                   {canManageGroup(selectedGroup.name) && !isObserver && (
-                    <Button
-                      primary
-                      icon={<Zap size={15} />}
-                      onClick={async () => {
-                        const groupDevIds = groupDevices.map(d => d.id);
-                        if (groupDevIds.length > 0) {
-                          await devicesApi.bulkOperation(groupDevIds, 'WAKE');
-                          notify(`Magic Packet (WoL) отправлен на ${groupDevIds.length} ПК группы "${selectedGroup.name}"`);
-                          setTimeout(loadData, 1200);
-                        } else {
-                          notify(`В группе "${selectedGroup.name}" нет добавленных ПК`);
-                        }
-                      }}
-                    >
-                      Включить всю группу (WoL)
-                    </Button>
+                    <>
+                      <Button
+                        primary
+                        icon={<Zap size={15} />}
+                        onClick={async () => {
+                          const groupDevIds = groupDevices.map(d => d.id);
+                          if (groupDevIds.length > 0) {
+                            await devicesApi.bulkOperation(groupDevIds, 'WAKE');
+                            notify(`Magic Packet (WoL) отправлен на ${groupDevIds.length} ПК группы "${selectedGroup.name}"`);
+                            setTimeout(loadData, 1200);
+                          } else {
+                            notify(`В группе "${selectedGroup.name}" нет добавленных ПК`);
+                          }
+                        }}
+                      >
+                        Включить всю группу (WoL)
+                      </Button>
+                      <Button
+                        icon={<Power size={15} />}
+                        style={{ color: 'var(--red)' }}
+                        onClick={async () => {
+                          const groupDevIds = groupDevices.map(d => d.id);
+                          if (groupDevIds.length > 0) {
+                            if (!window.confirm(`Вы действительно хотите выключить все ПК (${groupDevIds.length} шт.) группы «${selectedGroup.name}»?`)) return;
+                            await devicesApi.bulkOperation(groupDevIds, 'SHUTDOWN');
+                            notify(`Команда выключения отправлена на ${groupDevIds.length} ПК группы "${selectedGroup.name}"`);
+                            setTimeout(loadData, 1200);
+                          } else {
+                            notify(`В группе "${selectedGroup.name}" нет добавленных ПК`);
+                          }
+                        }}
+                      >
+                        Выключить всю группу
+                      </Button>
+                    </>
                   )}
                   {!isObserver && (
                     <Button
@@ -18215,25 +18234,47 @@ function Groups({
                           </>
                         )}
                         {canManageGroups && (!hasRestrictedScope || (allowedGroups && isBuildingVisibleInScope(bldName, allowedGroups))) && (
-                          <button
-                            className="hero-more"
-                            onClick={async (e) => {
-                              e.stopPropagation();
-                              const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => stats.groupNames.includes(grp.toLowerCase())));
-                              const devIds = bldDevs.map(d => d.id);
-                              if (devIds.length > 0) {
-                                await devicesApi.bulkOperation(devIds, 'WAKE');
-                                notify(`Wake-on-LAN отправлен на ${devIds.length} ПК корпуса "${bldName}"`);
-                                setTimeout(loadData, 1200);
-                              } else {
-                                notify(`В корпусе "${bldName}" нет ПК`);
-                              }
-                            }}
-                            title={`Включить все ПК корпуса "${bldName}" (WoL)`}
-                            style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                          >
-                            <Zap size={16} />
-                          </button>
+                          <>
+                            <button
+                              className="hero-more"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => stats.groupNames.includes(grp.toLowerCase())));
+                                const devIds = bldDevs.map(d => d.id);
+                                if (devIds.length > 0) {
+                                  await devicesApi.bulkOperation(devIds, 'WAKE');
+                                  notify(`Wake-on-LAN отправлен на ${devIds.length} ПК корпуса "${bldName}"`);
+                                  setTimeout(loadData, 1200);
+                                } else {
+                                  notify(`В корпусе "${bldName}" нет ПК`);
+                                }
+                              }}
+                              title={`Включить все ПК корпуса "${bldName}" (WoL)`}
+                              style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                            >
+                              <Zap size={16} />
+                            </button>
+                            <button
+                              className="hero-more"
+                              onClick={async (e) => {
+                                e.stopPropagation();
+                                const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => stats.groupNames.includes(grp.toLowerCase())));
+                                const devIds = bldDevs.map(d => d.id);
+                                if (devIds.length > 0) {
+                                  if (!window.confirm(`Вы действительно хотите выключить все компьютеры (${devIds.length} шт.) корпуса «${bldName}»?`)) return;
+                                  await devicesApi.bulkOperation(devIds, 'SHUTDOWN');
+                                  notify(`Команда выключения отправлена на ${devIds.length} ПК корпуса "${bldName}"`);
+                                  setTimeout(loadData, 1200);
+                                } else {
+                                  notify(`В корпусе "${bldName}" нет ПК`);
+                                }
+                              }}
+                              title={`Выключить все ПК корпуса "${bldName}"`}
+                              style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#ffb4b4', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                            >
+                              <Power size={15} />
+                            </button>
+                          </>
                         )}
                       </div>
                     </div>
@@ -18276,20 +18317,38 @@ function Groups({
                       </div>
                       <div style={{ display: 'flex', gap: '8px' }}>
                         {canManageGroups && (!hasRestrictedScope || (allowedGroups && isBuildingVisibleInScope(drillBuilding, allowedGroups))) && (
-                          <Button
-                            icon={<Zap size={14} />}
-                            onClick={async () => {
-                              const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => bldStats.groupNames.includes(grp.toLowerCase())));
-                              const devIds = bldDevs.map(d => d.id);
-                              if (devIds.length > 0) {
-                                await devicesApi.bulkOperation(devIds, 'WAKE');
-                                notify(`WoL отправлен на ${devIds.length} ПК корпуса "${drillBuilding}"`);
-                                setTimeout(loadData, 1200);
-                              }
-                            }}
-                          >
-                            Включить весь корпус (WoL)
-                          </Button>
+                          <>
+                            <Button
+                              icon={<Zap size={14} />}
+                              onClick={async () => {
+                                const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => bldStats.groupNames.includes(grp.toLowerCase())));
+                                const devIds = bldDevs.map(d => d.id);
+                                if (devIds.length > 0) {
+                                  await devicesApi.bulkOperation(devIds, 'WAKE');
+                                  notify(`WoL отправлен на ${devIds.length} ПК корпуса "${drillBuilding}"`);
+                                  setTimeout(loadData, 1200);
+                                }
+                              }}
+                            >
+                              Включить весь корпус (WoL)
+                            </Button>
+                            <Button
+                              icon={<Power size={14} />}
+                              style={{ color: 'var(--red)' }}
+                              onClick={async () => {
+                                const bldDevs = devices.filter(d => getDeviceGroups(d).some(grp => bldStats.groupNames.includes(grp.toLowerCase())));
+                                const devIds = bldDevs.map(d => d.id);
+                                if (devIds.length > 0) {
+                                  if (!window.confirm(`Вы действительно хотите выключить все компьютеры (${devIds.length} шт.) корпуса «${drillBuilding}»?`)) return;
+                                  await devicesApi.bulkOperation(devIds, 'SHUTDOWN');
+                                  notify(`Команда выключения отправлена на ${devIds.length} ПК корпуса "${drillBuilding}"`);
+                                  setTimeout(loadData, 1200);
+                                }
+                              }}
+                            >
+                              Выключить весь корпус
+                            </Button>
+                          </>
                         )}
                         <Button onClick={() => setDrillBuilding(null)}>
                           ⬅️ К выбору корпуса
@@ -18344,23 +18403,43 @@ function Groups({
                                   </>
                                 )}
                                 {canManageGroups && (!hasRestrictedScope || (allowedGroups && isFloorVisibleInScope(drillBuilding, flrName, allowedGroups))) && (
-                                  <button
-                                    className="hero-more"
-                                    onClick={async (e) => {
-                                      e.stopPropagation();
-                                      const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
-                                      const devIds = fDevs.map(d => d.id);
-                                      if (devIds.length > 0) {
-                                        await devicesApi.bulkOperation(devIds, 'WAKE');
-                                        notify(`WoL отправлен на ${devIds.length} ПК этажа "${flrName}"`);
-                                        setTimeout(loadData, 1200);
-                                      }
-                                    }}
-                                    title={`Включить все ПК этажа "${flrName}" (WoL)`}
-                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                                  >
-                                    <Zap size={16} />
-                                  </button>
+                                  <>
+                                    <button
+                                      className="hero-more"
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
+                                        const devIds = fDevs.map(d => d.id);
+                                        if (devIds.length > 0) {
+                                          await devicesApi.bulkOperation(devIds, 'WAKE');
+                                          notify(`WoL отправлен на ${devIds.length} ПК этажа "${flrName}"`);
+                                          setTimeout(loadData, 1200);
+                                        }
+                                      }}
+                                      title={`Включить все ПК этажа "${flrName}" (WoL)`}
+                                      style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                    >
+                                      <Zap size={16} />
+                                    </button>
+                                    <button
+                                      className="hero-more"
+                                      onClick={async (e) => {
+                                        e.stopPropagation();
+                                        const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
+                                        const devIds = fDevs.map(d => d.id);
+                                        if (devIds.length > 0) {
+                                          if (!window.confirm(`Вы действительно хотите выключить все компьютеры (${devIds.length} шт.) этажа «${flrName}»?`)) return;
+                                          await devicesApi.bulkOperation(devIds, 'SHUTDOWN');
+                                          notify(`Команда выключения отправлена на ${devIds.length} ПК этажа "${flrName}"`);
+                                          setTimeout(loadData, 1200);
+                                        }
+                                      }}
+                                      title={`Выключить все ПК этажа "${flrName}"`}
+                                      style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#ffb4b4', borderRadius: '6px', width: '30px', height: '30px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                    >
+                                      <Power size={15} />
+                                    </button>
+                                  </>
                                 )}
                               </div>
                             </div>
@@ -18426,20 +18505,38 @@ function Groups({
                           </Button>
                         )}
                         {canManageGroups && (!hasRestrictedScope || (allowedGroups && isFloorVisibleInScope(drillBuilding, drillFloor, allowedGroups))) && (
-                          <Button
-                            icon={<Zap size={14} />}
-                            onClick={async () => {
-                              const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
-                              const devIds = fDevs.map(d => d.id);
-                              if (devIds.length > 0) {
-                                await devicesApi.bulkOperation(devIds, 'WAKE');
-                                notify(`WoL отправлен на ${devIds.length} ПК этажа "${drillFloor}"`);
-                                setTimeout(loadData, 1200);
-                              }
-                            }}
-                          >
-                            Включить весь этаж (WoL)
-                          </Button>
+                          <>
+                            <Button
+                              icon={<Zap size={14} />}
+                              onClick={async () => {
+                                const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
+                                const devIds = fDevs.map(d => d.id);
+                                if (devIds.length > 0) {
+                                  await devicesApi.bulkOperation(devIds, 'WAKE');
+                                  notify(`WoL отправлен на ${devIds.length} ПК этажа "${drillFloor}"`);
+                                  setTimeout(loadData, 1200);
+                                }
+                              }}
+                            >
+                              Включить весь этаж (WoL)
+                            </Button>
+                            <Button
+                              icon={<Power size={14} />}
+                              style={{ color: 'var(--red)' }}
+                              onClick={async () => {
+                                const fDevs = devices.filter(d => getDeviceGroups(d).some(grp => fStats.groupNames.includes(grp.toLowerCase())));
+                                const devIds = fDevs.map(d => d.id);
+                                if (devIds.length > 0) {
+                                  if (!window.confirm(`Вы действительно хотите выключить все компьютеры (${devIds.length} шт.) этажа «${drillFloor}»?`)) return;
+                                  await devicesApi.bulkOperation(devIds, 'SHUTDOWN');
+                                  notify(`Команда выключения отправлена на ${devIds.length} ПК этажа "${drillFloor}"`);
+                                  setTimeout(loadData, 1200);
+                                }
+                              }}
+                            >
+                              Выключить весь этаж
+                            </Button>
+                          </>
                         )}
                         <Button onClick={() => setDrillFloor(null)}>
                           ⬅️ К выбору этажа
@@ -18513,25 +18610,47 @@ function Groups({
                                 </>
                               )}
                               {canManageGroup(roomGroup.name) && !isObserver && (
-                                <button
-                                  className="hero-more"
-                                  onClick={async (e) => {
-                                    e.stopPropagation();
-                                    const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === roomGroup.name.toLowerCase()));
-                                    const devIds = gDevs.map(d => d.id);
-                                    if (devIds.length > 0) {
-                                      await devicesApi.bulkOperation(devIds, 'WAKE');
-                                      notify(`WoL отправлен на ${devIds.length} ПК кабинета "${roomGroup.roomName}"`);
-                                      setTimeout(loadData, 1200);
-                                    } else {
-                                      notify(`В кабинете "${roomGroup.roomName}" нет добавленных ПК`);
-                                    }
-                                  }}
-                                  title="Включить все ПК кабинета (WoL)"
-                                  style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
-                                >
-                                  <Zap size={14} />
-                                </button>
+                                <>
+                                  <button
+                                    className="hero-more"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === roomGroup.name.toLowerCase()));
+                                      const devIds = gDevs.map(d => d.id);
+                                      if (devIds.length > 0) {
+                                        await devicesApi.bulkOperation(devIds, 'WAKE');
+                                        notify(`WoL отправлен на ${devIds.length} ПК кабинета "${roomGroup.roomName}"`);
+                                        setTimeout(loadData, 1200);
+                                      } else {
+                                        notify(`В кабинете "${roomGroup.roomName}" нет добавленных ПК`);
+                                      }
+                                    }}
+                                    title="Включить все ПК кабинета (WoL)"
+                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#fff', borderRadius: '6px', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                  >
+                                    <Zap size={14} />
+                                  </button>
+                                  <button
+                                    className="hero-more"
+                                    onClick={async (e) => {
+                                      e.stopPropagation();
+                                      const gDevs = devices.filter(d => getDeviceGroups(d).some(grp => grp.toLowerCase() === roomGroup.name.toLowerCase()));
+                                      const devIds = gDevs.map(d => d.id);
+                                      if (devIds.length > 0) {
+                                        if (!window.confirm(`Вы действительно хотите выключить все ПК (${devIds.length} шт.) кабинета «${roomGroup.roomName}»?`)) return;
+                                        await devicesApi.bulkOperation(devIds, 'SHUTDOWN');
+                                        notify(`Команда выключения отправлена на ${devIds.length} ПК кабинета "${roomGroup.roomName}"`);
+                                        setTimeout(loadData, 1200);
+                                      } else {
+                                        notify(`В кабинете "${roomGroup.roomName}" нет добавленных ПК`);
+                                      }
+                                    }}
+                                    title="Выключить все ПК кабинета"
+                                    style={{ background: 'rgba(255,255,255,0.2)', border: 'none', color: '#ffb4b4', borderRadius: '6px', width: '28px', height: '28px', display: 'flex', alignItems: 'center', justifyContent: 'center', cursor: 'pointer' }}
+                                  >
+                                    <Power size={14} />
+                                  </button>
+                                </>
                               )}
                             </div>
                           </div>

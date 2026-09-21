@@ -1029,6 +1029,113 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             "alert": f"Выключение {shut} ПК"
         }
 
+    # ── Group-level confirm & execute power actions ──
+    if data.startswith("confirm:wakegrp:"):
+        grp_name = data.split(":", 2)[2]
+        return {
+            "text": f"⚡️ <b>Подтверждение включения группы</b>\n\nВы действительно хотите отправить Wake-on-LAN на <b>ВСЕ компьютеры группы «{grp_name}»</b>?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "⚡️ Да, включить всю группу", "callback_data": f"do:wakegrp:{grp_name}"},
+                        {"text": "❌ Отмена", "callback_data": "menu:buildings"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("confirm:shutgrp:"):
+        grp_name = data.split(":", 2)[2]
+        return {
+            "text": f"🛑 <b>Подтверждение выключения группы</b>\n\nВы действительно хотите выключить <b>ВСЕ компьютеры группы «{grp_name}»</b>?",
+            "reply_markup": {
+                "inline_keyboard": [
+                    [
+                        {"text": "🛑 Да, выключить группу", "callback_data": f"do:shutgrp:{grp_name}"},
+                        {"text": "❌ Отмена", "callback_data": "menu:buildings"}
+                    ]
+                ]
+            },
+            "alert": "Требуется подтверждение"
+        }
+
+    if data.startswith("do:wakegrp:"):
+        grp_name = data.split(":", 2)[2]
+        target_devs = [
+            d for d in user_devices
+            if grp_name.lower() in [g.lower() for g in (d.get("groups") if isinstance(d.get("groups"), list) else [d.get("group") or ""])]
+            or (d.get("group") or "").lower() == grp_name.lower()
+        ]
+        woken = 0
+        for d in target_devs:
+            if d.get("mac"):
+                send_wol_packet(
+                    d["mac"],
+                    ip_address=d.get("ip"),
+                    broadcast_ip=d.get("broadcast_ip"),
+                    device_id=d.get("id"),
+                    hostname=d.get("hostname")
+                )
+                woken += 1
+                try:
+                    log_device_power_event(
+                        device_id=d.get("id"),
+                        target_name=d.get("name") or d.get("id"),
+                        action="WAKE",
+                        status="SUCCESS",
+                        details=f"Групповой WoL на группу «{grp_name}» через Telegram",
+                        initiator=operator_label,
+                        source="TELEGRAM"
+                    )
+                except Exception:
+                    pass
+        record_audit(operator_label, "BULK_WAKE", f"GRP_{grp_name}", "SUCCESS", f"WoL отправлен на {woken} ПК в группе {grp_name}")
+        return {
+            "text": f"✅ <b>Wake-on-LAN отправлен!</b>\n\n⚡️ Разбужено компьютеров: <b>{woken}</b> из {len(target_devs)}\n📁 Группа: <b>{grp_name}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🏢 К корпусам", "callback_data": "menu:buildings"}]]
+            },
+            "alert": f"WoL на {woken} ПК"
+        }
+
+    if data.startswith("do:shutgrp:"):
+        grp_name = data.split(":", 2)[2]
+        if role == "Наблюдатель":
+            return {"text": "🚫 Роль «Наблюдатель» имеет доступ только для чтения.", "alert": "Отказ: роль Наблюдатель"}
+        target_devs = [
+            d for d in user_devices
+            if grp_name.lower() in [g.lower() for g in (d.get("groups") if isinstance(d.get("groups"), list) else [d.get("group") or ""])]
+            or (d.get("group") or "").lower() == grp_name.lower()
+        ]
+        from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+        shut = 0
+        for d in target_devs:
+            if d.get("ip"):
+                send_direct_lan_power_signal(ip_address=d["ip"], action="SHUTDOWN", device_id=d.get("id"), mac_address=d.get("mac", ""), hostname=d.get("hostname", ""))
+            queue_device_command(d.get("id"), "SHUTDOWN", force=True, reason=f"Telegram group shutdown by {operator_label}")
+            shut += 1
+            try:
+                log_device_power_event(
+                    device_id=d.get("id"),
+                    target_name=d.get("name") or d.get("id"),
+                    action="SHUTDOWN",
+                    status="SUCCESS",
+                    details=f"Групповое выключение группы «{grp_name}» через Telegram",
+                    initiator=operator_label,
+                    source="TELEGRAM"
+                )
+            except Exception:
+                pass
+        record_audit(operator_label, "BULK_SHUTDOWN", f"GRP_{grp_name}", "SUCCESS", f"Выключение {shut} ПК в группе {grp_name}")
+        return {
+            "text": f"✅ <b>Команда выключения отправлена!</b>\n\n🛑 Выключено станций: <b>{shut}</b> из {len(target_devs)}\n📁 Группа: <b>{grp_name}</b>",
+            "reply_markup": {
+                "inline_keyboard": [[{"text": "🏢 К корпусам", "callback_data": "menu:buildings"}]]
+            },
+            "alert": f"Выключение {shut} ПК"
+        }
+
     # ── Hierarchy navigation: Buildings → Floors → Rooms ──
     if data == "menu:buildings":
         res = build_hierarchy_buildings_view(user_devices, scope_desc)
@@ -1433,9 +1540,20 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
 
     if cmd in ["/wake", "/shutdown", "/reboot", "/poweroff"]:
         if not arg:
-            return f"⚠️ Пожалуйста, укажите имя или ID компьютера. Пример: <code>{cmd} xeon</code>"
+            return f"⚠️ Пожалуйста, укажите имя/ID компьютера, номер кабинета или группу. Пример: <code>{cmd} 518Т</code> или <code>{cmd} xeon</code>"
         
-        target_term = arg.strip().lower()
+        # Check if arg (or rest of message) matches a room, group, or building
+        full_arg = cmd_raw[len(cmd):].strip()
+        target_term = full_arg.lower()
+
+        # Check role permission early
+        if role == "Наблюдатель" and cmd not in ["/wake"]:
+            return "🚫 <b>Отказ в доступе:</b> Учетная запись с ролью «Наблюдатель» имеет доступ только для чтения."
+
+        tg_tag = f"@{from_user.get('username')}" if from_user and from_user.get("username") else f"ID:{chat_id}"
+        operator_label = f"{user_name} ({tg_tag})"
+
+        # 1. Check for single device match first
         target_dev = next((
             d for d in all_devs
             if d.get("name", "").lower() == target_term
@@ -1445,7 +1563,63 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
         ), None)
 
         if not target_dev:
-            return f"❌ Компьютер <b>{arg}</b> не найден в базе данных."
+            # Check for multiple devices in room, group, floor or building
+            bulk_matches = [
+                d for d in user_devices
+                if str(d.get("room", "")).lower() == target_term
+                or str(d.get("group", "")).lower() == target_term
+                or target_term in [g.lower() for g in (d.get("groups") if isinstance(d.get("groups"), list) else [d.get("group") or ""])]
+                or str(d.get("building", "")).lower() == target_term
+            ]
+
+            if bulk_matches:
+                from backend.app.api.v1.agents import queue_device_command, send_direct_lan_power_signal
+                if cmd == "/wake":
+                    woken = 0
+                    for d in bulk_matches:
+                        if d.get("mac"):
+                            send_wol_packet(
+                                d["mac"],
+                                ip_address=d.get("ip"),
+                                broadcast_ip=d.get("broadcast_ip"),
+                                device_id=d.get("id"),
+                                hostname=d.get("hostname")
+                            )
+                            woken += 1
+                    record_audit(operator_label, "BULK_WAKE", full_arg, "SUCCESS", f"WoL отправлен на {woken} ПК по запросу «{full_arg}»")
+                    return {
+                        "text": f"⚡️ <b>Wake-on-LAN отправлен!</b>\n\nРазбужено компьютеров: <b>{woken}</b> из {len(bulk_matches)}\nЦель: <b>{full_arg}</b>",
+                        "effect_id": "5046509860389126442",
+                        "reply_markup": {"inline_keyboard": [[{"text": "🏢 К списку корпусов", "callback_data": "menu:buildings"}]]}
+                    }
+                elif cmd in ["/shutdown", "/poweroff"]:
+                    shut = 0
+                    for d in bulk_matches:
+                        if d.get("ip"):
+                            send_direct_lan_power_signal(ip_address=d["ip"], action="SHUTDOWN", device_id=d.get("id"), mac_address=d.get("mac", ""), hostname=d.get("hostname", ""))
+                        queue_device_command(d.get("id"), "SHUTDOWN", force=True, reason=f"Telegram bulk shutdown by {operator_label}")
+                        shut += 1
+                    record_audit(operator_label, "BULK_SHUTDOWN", full_arg, "SUCCESS", f"Выключение {shut} ПК по запросу «{full_arg}»")
+                    return {
+                        "text": f"🛑 <b>Команда выключения отправлена!</b>\n\nВыключено компьютеров: <b>{shut}</b> из {len(bulk_matches)}\nЦель: <b>{full_arg}</b>",
+                        "effect_id": "5104841245755180586",
+                        "reply_markup": {"inline_keyboard": [[{"text": "🏢 К списку корпусов", "callback_data": "menu:buildings"}]]}
+                    }
+                elif cmd == "/reboot":
+                    rebooted = 0
+                    for d in bulk_matches:
+                        if d.get("ip"):
+                            send_direct_lan_power_signal(ip_address=d["ip"], action="REBOOT", device_id=d.get("id"), mac_address=d.get("mac", ""), hostname=d.get("hostname", ""))
+                        queue_device_command(d.get("id"), "REBOOT", force=True, reason=f"Telegram bulk reboot by {operator_label}")
+                        rebooted += 1
+                    record_audit(operator_label, "BULK_REBOOT", full_arg, "SUCCESS", f"Перезагрузка {rebooted} ПК по запросу «{full_arg}»")
+                    return {
+                        "text": f"🔄 <b>Команда перезагрузки отправлена!</b>\n\nПерезагружается компьютеров: <b>{rebooted}</b> из {len(bulk_matches)}\nЦель: <b>{full_arg}</b>",
+                        "effect_id": "5107584321108051014",
+                        "reply_markup": {"inline_keyboard": [[{"text": "🏢 К списку корпусов", "callback_data": "menu:buildings"}]]}
+                    }
+
+            return f"❌ Компьютер, кабинет или группа <b>{arg}</b> не найдены в базе данных."
 
         # Check Scope
         if not can_manage_device(target_dev):
