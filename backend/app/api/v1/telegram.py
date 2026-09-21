@@ -310,18 +310,35 @@ def load_devices() -> List[Dict[str, Any]]:
                 pass
     return []
 
-def send_wol_packet(mac_str: str) -> bool:
+def send_wol_packet(
+    mac_str: str,
+    ip_address: Optional[str] = None,
+    broadcast_ip: Optional[str] = None,
+    device_id: Optional[str] = None,
+    hostname: Optional[str] = None
+) -> bool:
     try:
-        clean_mac = mac_str.replace(":", "").replace("-", "").strip()
-        if len(clean_mac) != 12:
-            return False
-        data = bytes.fromhex("FF" * 6 + clean_mac * 16)
-        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.sendto(data, ("255.255.255.255", 9))
-        sock.close()
-        return True
-    except Exception:
+        from backend.app.services.wol_service import wol_service
+        from backend.app.api.v1.agents import clear_pending_power_commands
+        if device_id:
+            clear_pending_power_commands(device_id)
+        if hostname and hostname != device_id:
+            clear_pending_power_commands(hostname)
+
+        if device_id:
+            try:
+                from backend.app.services.scheduler_service import scheduler_service
+                scheduler_service.set_power_grace(device_id, 120.0)
+            except Exception:
+                pass
+
+        return wol_service.send_magic_packet_sync(
+            mac_address=mac_str,
+            broadcast_ip=broadcast_ip,
+            ip_address=ip_address
+        )
+    except Exception as e:
+        print(f"[Telegram WoL Error] {e}")
         return False
 
 def send_udp_command(ip: str, action: str) -> bool:
@@ -810,7 +827,13 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         for u_dev in rep.get("unreturned_devices", []):
             d_match = next((d for d in user_devices if d.get("id") == u_dev.get("id")), None)
             if d_match and d_match.get("mac"):
-                send_wol_packet(d_match["mac"])
+                send_wol_packet(
+                    d_match["mac"],
+                    ip_address=d_match.get("ip"),
+                    broadcast_ip=d_match.get("broadcast_ip"),
+                    device_id=d_match.get("id"),
+                    hostname=d_match.get("hostname")
+                )
                 woken += 1
         return {
             "text": f"⚡️ <b>Сигнал Wake-on-LAN отправлен на {woken} проблемных ПК!</b>",
@@ -845,7 +868,13 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         woken = 0
         for d in target_devs:
             if d.get("mac"):
-                send_wol_packet(d["mac"])
+                send_wol_packet(
+                    d["mac"],
+                    ip_address=d.get("ip"),
+                    broadcast_ip=d.get("broadcast_ip"),
+                    device_id=d.get("id"),
+                    hostname=d.get("hostname")
+                )
                 woken += 1
                 try:
                     log_device_power_event(
@@ -938,7 +967,13 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         woken = 0
         for d in target_devs:
             if d.get("mac"):
-                send_wol_packet(d["mac"])
+                send_wol_packet(
+                    d["mac"],
+                    ip_address=d.get("ip"),
+                    broadcast_ip=d.get("broadcast_ip"),
+                    device_id=d.get("id"),
+                    hostname=d.get("hostname")
+                )
                 woken += 1
                 try:
                     log_device_power_event(
@@ -1103,7 +1138,13 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
         woken = 0
         for d in target_devs:
             if d.get("mac"):
-                send_wol_packet(d["mac"])
+                send_wol_packet(
+                    d["mac"],
+                    ip_address=d.get("ip"),
+                    broadcast_ip=d.get("broadcast_ip"),
+                    device_id=d.get("id"),
+                    hostname=d.get("hostname")
+                )
                 woken += 1
                 try:
                     log_device_power_event(
@@ -1203,7 +1244,13 @@ def process_telegram_callback(chat_id_str: str, data_str: str, from_user: Dict[s
             mac = target.get("mac", "")
             if not mac:
                 return {"text": f"❌ У устройства {target.get('name')} нет MAC-адреса.", "alert": "Ошибка: нет MAC"}
-            send_wol_packet(mac)
+            send_wol_packet(
+                mac,
+                ip_address=target.get("ip"),
+                broadcast_ip=target.get("broadcast_ip"),
+                device_id=dev_id,
+                hostname=target.get("hostname")
+            )
             record_audit(operator_label, "WAKE", dev_id, "SUCCESS", "Magic Packet (WoL) отправлен через Telegram инлайн-кнопку")
             try:
                 log_device_power_event(
@@ -1421,7 +1468,13 @@ def process_telegram_command(chat_id_str: str, text: str, from_user: Dict[str, A
             mac = target_dev.get("mac", "")
             if not mac:
                 return f"❌ У устройства <b>{target_dev.get('name')}</b> не указан MAC-адрес для Wake-on-LAN."
-            send_wol_packet(mac)
+            send_wol_packet(
+                mac,
+                ip_address=target_dev.get("ip"),
+                broadcast_ip=target_dev.get("broadcast_ip"),
+                device_id=target_dev.get("id"),
+                hostname=target_dev.get("hostname")
+            )
             record_audit(operator_label, "WAKE", target_dev.get("id"), "SUCCESS", f"Magic Packet (WoL) отправлен через Telegram-бота")
             try:
                 log_device_power_event(

@@ -96,6 +96,88 @@ class WolService:
         return targets
 
     @classmethod
+    def send_magic_packet_sync(
+        cls,
+        mac_address: str,
+        broadcast_ip: Optional[str] = "255.255.255.255",
+        ip_address: Optional[str] = None,
+        ports: Optional[List[int]] = None,
+        bursts: int = 4
+    ) -> bool:
+        """
+        Broadcast Wake-on-LAN Magic Packet synchronously via UDP sockets bound to every local physical NIC
+        as well as an unbound socket to leverage the kernel default gateway and cross-subnet routing.
+        """
+        if not mac_address:
+            return False
+
+        if ports is None:
+            ports = [9, 7]
+
+        try:
+            packet = cls.create_magic_packet(mac_address)
+            extra_targets = cls.get_broadcast_targets(ip_address, broadcast_ip)
+            local_nics = cls.get_local_ipv4_interfaces()
+
+            dispatched_count = 0
+            all_targets = set(extra_targets)
+            all_targets.add("255.255.255.255")
+            for _, _, _, nic_bcast in local_nics:
+                all_targets.add(nic_bcast)
+
+            # 1. Send via sockets bound specifically to each local NIC
+            for nic_name, local_ip, _, _ in local_nics:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
+                        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                        try:
+                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                        except Exception:
+                            pass
+
+                        if local_ip != "0.0.0.0":
+                            try:
+                                sock.bind((local_ip, 0))
+                            except Exception as bind_err:
+                                print(f"[WoL Warning] Could not bind to {local_ip}: {bind_err}")
+
+                        for burst in range(bursts):
+                            for dest in all_targets:
+                                for port in ports:
+                                    try:
+                                        sock.sendto(packet, (dest, port))
+                                        dispatched_count += 1
+                                    except Exception as err:
+                                        print(f"[WoL Warning] Send via {local_ip} to {dest}:{port} error: {err}")
+                            if burst < bursts - 1:
+                                time.sleep(0.02)
+                except Exception as e:
+                    print(f"[WoL Error] Socket creation on {local_ip} failed: {e}")
+
+            # 2. ALSO send via an unbound socket (0.0.0.0) so the OS kernel routes to gateway
+            try:
+                with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as unbound_sock:
+                    unbound_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
+                    for burst in range(bursts):
+                        for dest in all_targets:
+                            for port in ports:
+                                try:
+                                    unbound_sock.sendto(packet, (dest, port))
+                                    dispatched_count += 1
+                                except Exception as err:
+                                    pass
+                        if burst < bursts - 1:
+                            time.sleep(0.02)
+            except Exception as e:
+                print(f"[WoL Error] Unbound socket dispatch failed: {e}")
+
+            print(f"[WoL Success] Dispatched {dispatched_count} Magic Packets for {mac_address} across {len(local_nics)} NICs + Gateway to {all_targets}")
+            return True
+        except Exception as e:
+            print(f"[WoL Error] Failed to dispatch magic packet for {mac_address} - {e}")
+            return False
+
+    @classmethod
     async def send_magic_packet(
         cls,
         mac_address: str,
@@ -105,81 +187,19 @@ class WolService:
         bursts: int = 4
     ) -> bool:
         """
-        Broadcast Wake-on-LAN Magic Packet asynchronously via UDP sockets bound to every local physical NIC
-        as well as an unbound socket to leverage the kernel default gateway and cross-subnet routing.
+        Broadcast Wake-on-LAN Magic Packet asynchronously via executor.
         """
-        if not mac_address:
-            return False
-            
-        if ports is None:
-            ports = [9, 7]
-
-        try:
-            packet = cls.create_magic_packet(mac_address)
-            extra_targets = cls.get_broadcast_targets(ip_address, broadcast_ip)
-            local_nics = cls.get_local_ipv4_interfaces()
-            loop = asyncio.get_running_loop()
-            
-            def _send_all():
-                dispatched_count = 0
-                all_targets = set(extra_targets)
-                all_targets.add("255.255.255.255")
-                for _, _, _, nic_bcast in local_nics:
-                    all_targets.add(nic_bcast)
-
-                # 1. Send via sockets bound specifically to each local NIC
-                for nic_name, local_ip, _, _ in local_nics:
-                    try:
-                        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as sock:
-                            sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                            try:
-                                sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                            except Exception:
-                                pass
-                            
-                            if local_ip != "0.0.0.0":
-                                try:
-                                    sock.bind((local_ip, 0))
-                                except Exception as bind_err:
-                                    print(f"[WoL Warning] Could not bind to {local_ip}: {bind_err}")
-
-                            for burst in range(bursts):
-                                for dest in all_targets:
-                                    for port in ports:
-                                        try:
-                                            sock.sendto(packet, (dest, port))
-                                            dispatched_count += 1
-                                        except Exception as err:
-                                            print(f"[WoL Warning] Send via {local_ip} to {dest}:{port} error: {err}")
-                                if burst < bursts - 1:
-                                    time.sleep(0.02)
-                    except Exception as e:
-                        print(f"[WoL Error] Socket creation on {local_ip} failed: {e}")
-
-                # 2. ALSO send via an unbound socket (0.0.0.0) so the OS kernel routes to gateway
-                try:
-                    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as unbound_sock:
-                        unbound_sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-                        for burst in range(bursts):
-                            for dest in all_targets:
-                                for port in ports:
-                                    try:
-                                        unbound_sock.sendto(packet, (dest, port))
-                                        dispatched_count += 1
-                                    except Exception as err:
-                                        pass
-                            if burst < bursts - 1:
-                                time.sleep(0.02)
-                except Exception as e:
-                    print(f"[WoL Error] Unbound socket dispatch failed: {e}")
-
-                print(f"[WoL Success] Dispatched {dispatched_count} Magic Packets for {mac_address} across {len(local_nics)} NICs + Gateway to {all_targets}")
-
-            await loop.run_in_executor(None, _send_all)
-            return True
-        except Exception as e:
-            print(f"[WoL Error] Failed to dispatch magic packet for {mac_address} - {e}")
-            return False
+        loop = asyncio.get_running_loop()
+        return await loop.run_in_executor(
+            None,
+            lambda: cls.send_magic_packet_sync(
+                mac_address=mac_address,
+                broadcast_ip=broadcast_ip,
+                ip_address=ip_address,
+                ports=ports,
+                bursts=bursts
+            )
+        )
 
     @staticmethod
     async def ping_device(ip_address: str, timeout_seconds: float = 1.5) -> bool:
