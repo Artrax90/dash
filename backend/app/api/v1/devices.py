@@ -1974,12 +1974,20 @@ async def update_device(device_id: str, payload: Dict[str, Any], request: Reques
 
     if device.building and device.floor and device.room and ("groups" not in payload and "group" not in payload):
         device.group_name = f"{device.building} / {device.floor} / {device.room}"
-    elif device.group_name and "/" in device.group_name and not device.building:
-        parts = [p.strip() for p in device.group_name.split("/")]
-        if len(parts) >= 3:
-            device.building, device.floor, device.room = parts[0], parts[1], parts[2]
-        elif len(parts) == 2:
-            device.building, device.room = parts[0], parts[1]
+    elif ("groups" in payload or "group" in payload or not device.building) and device.group_name and "/" in device.group_name and "building" not in payload:
+        # Take primary group to determine location
+        primary_grp = device.group_name.split(",")[0].strip()
+        if "/" in primary_grp:
+            parts = [p.strip() for p in primary_grp.split("/")]
+            if len(parts) >= 3:
+                device.building, device.floor, device.room = parts[0], parts[1], parts[2]
+            elif len(parts) == 2:
+                device.building, device.floor, device.room = parts[0], "1 этаж", parts[1]
+    elif ("groups" in payload or "group" in payload) and "building" not in payload and device.group_name and "/" not in device.group_name:
+        # Flat group assigned: clear building/floor/room so device doesn't retain obsolete hierarchy
+        device.building = ""
+        device.floor = ""
+        device.room = ""
     if "tags" in payload:
         device.tags = payload["tags"]
     if "maintenance" in payload:
