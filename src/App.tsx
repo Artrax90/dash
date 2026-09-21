@@ -3863,7 +3863,6 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
     'Office', 'Warehouse', 'Management', 'Testing', 'Dev'
   ]);
   const [showTransferModal, setShowTransferModal] = useState(false);
-  const [transferMode, setTransferMode] = useState<'replace' | 'add'>('replace');
   const [transferTargetGroup, setTransferTargetGroup] = useState<string>('');
   const [isCustomTransferGroup, setIsCustomTransferGroup] = useState(false);
   const [customTransferGroupInput, setCustomTransferGroupInput] = useState('');
@@ -4093,18 +4092,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
       return;
     }
 
-    const current = getDeviceGroups(device).filter(g => g !== 'Default');
-    let finalGroups: string[];
-    if (transferMode === 'replace') {
-      finalGroups = [chosenGroup];
-    } else {
-      if (current.some(g => g.toLowerCase() === chosenGroup.toLowerCase())) {
-        notify(`Компьютер уже состоит в группе «${chosenGroup}»`);
-        setShowTransferModal(false);
-        return;
-      }
-      finalGroups = [...current, chosenGroup];
-    }
+    const finalGroups = [chosenGroup];
 
     let bld = device.building || '';
     let flr = device.floor || '';
@@ -4132,11 +4120,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
         setDevice(prev => prev ? { ...prev, ...res, groups: finalGroups, building: bld, floor: flr, room: rm } : res);
         setEditGroups(finalGroups);
       }
-      if (transferMode === 'replace') {
-        notify(`ПК «${device.name}» успешно перенесен в группу «${chosenGroup}»!`);
-      } else {
-        notify(`ПК «${device.name}» успешно добавлен в группу «${chosenGroup}»!`);
-      }
+      notify(`ПК «${device.name}» успешно перенесен в группу «${chosenGroup}»!`);
       setShowTransferModal(false);
       setIsCustomTransferGroup(false);
       setCustomTransferGroupInput('');
@@ -4770,7 +4754,6 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                       type="button"
                       className="button"
                       onClick={() => {
-                        setTransferMode('replace');
                         const defaultChoice = allSystemGroups.find(grp => !currentDevGroups.includes(grp)) || allSystemGroups[0] || 'Office';
                         setTransferTargetGroup(defaultChoice);
                         setIsCustomTransferGroup(false);
@@ -4778,9 +4761,9 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                         setShowTransferModal(true);
                       }}
                       style={{ padding: '3px 8px', fontSize: '11.5px', display: 'inline-flex', alignItems: 'center', gap: '5px' }}
-                      title="Перенести компьютер в другую группу или добавить группу"
+                      title="Перенести компьютер в другую группу / кабинет"
                     >
-                      <Plus size={12} /> Перенести / В группу
+                      <FolderPlus size={12} /> Перенести в группу
                     </button>
                   </div>
                 </div>
@@ -5388,44 +5371,24 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
         );
       })()}
 
-      {/* Transfer / Add Group Modal in DeviceDetail */}
+      {/* Transfer Group Modal in DeviceDetail */}
       {showTransferModal && (
         <div className="modal-backdrop" onClick={() => !isTransferringGroup && setShowTransferModal(false)}>
-          <div className="confirm-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '520px', textAlign: 'left' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '14px' }}>
+          <div className="confirm-modal" onClick={e => e.stopPropagation()} style={{ maxWidth: '480px', textAlign: 'left' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', marginBottom: '16px' }}>
               <div className="confirm-icon" style={{ background: 'var(--blue-soft, rgba(59,130,246,0.12))', color: 'var(--blue, #3b82f6)', margin: 0 }}>
                 <FolderPlus size={22} />
               </div>
               <div>
-                <h2 style={{ fontSize: '17px', margin: 0 }}>Управление группой ПК «{device.name}»</h2>
-                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>Перенос в другой кабинет или включение в дополнительную группу</p>
+                <h2 style={{ fontSize: '17px', margin: 0 }}>Перенос в группу</h2>
+                <p style={{ margin: 0, fontSize: '12px', color: 'var(--muted)' }}>ПК «{device.name}»</p>
               </div>
-            </div>
-
-            {/* Mode Switcher */}
-            <div style={{ display: 'flex', gap: '8px', marginBottom: '16px', padding: '4px', background: 'var(--bg)', borderRadius: '8px', border: '1px solid var(--line)' }}>
-              <button
-                type="button"
-                className={`button ${transferMode === 'replace' ? 'button-primary' : ''}`}
-                style={{ flex: 1, padding: '6px', fontSize: '12px', fontWeight: transferMode === 'replace' ? 600 : 400 }}
-                onClick={() => setTransferMode('replace')}
-              >
-                🔁 Перенести (заменить группу)
-              </button>
-              <button
-                type="button"
-                className={`button ${transferMode === 'add' ? 'button-primary' : ''}`}
-                style={{ flex: 1, padding: '6px', fontSize: '12px', fontWeight: transferMode === 'add' ? 600 : 400 }}
-                onClick={() => setTransferMode('add')}
-              >
-                ➕ Добавить в еще одну группу
-              </button>
             </div>
 
             <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
               <div>
-                <label style={{ fontSize: '12px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>
-                  {transferMode === 'replace' ? 'Выберите новую группу / кабинет назначения:' : 'Выберите группу для добавления:'}
+                <label style={{ fontSize: '13px', fontWeight: 600, display: 'block', marginBottom: '6px' }}>
+                  Выберите группу / кабинет:
                 </label>
                 <select
                   className="text-input"
@@ -5443,7 +5406,7 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
                   <option value="" disabled>-- Выберите группу / кабинет --</option>
                   {allSystemGroups.map(grp => (
                     <option key={grp} value={grp}>
-                      {grp} {currentDevGroups.includes(grp) ? ' (уже назначена)' : ''}
+                      {grp} {currentDevGroups.includes(grp) ? ' (текущая)' : ''}
                     </option>
                   ))}
                   <option value="__custom__">+ Ввести другое имя группы / кабинета...</option>
@@ -5469,19 +5432,19 @@ function DeviceDetail({ deviceId, onBack, notify }: { deviceId: string; onBack: 
 
               {currentDevGroups.length > 0 && (
                 <div style={{ fontSize: '12px', color: 'var(--muted)', background: 'var(--surface-2, rgba(255,255,255,0.03))', padding: '8px 12px', borderRadius: '6px', border: '1px solid var(--border)' }}>
-                  Текущие группы ПК: <strong>{currentDevGroups.join(', ')}</strong>
+                  Текущая группа: <strong>{currentDevGroups.join(', ')}</strong>
                 </div>
               )}
             </div>
 
             <div className="modal-actions" style={{ marginTop: '20px', display: 'flex', justifyContent: 'flex-end', gap: '8px' }}>
-              <Button onClick={() => setShowTransferModal(false)} disabled={isTransferringGroup}>{t('common.cancel')}</Button>
+              <Button onClick={() => setShowTransferModal(false)} disabled={isTransferringGroup}>Отмена</Button>
               <Button
                 primary
                 onClick={handleExecuteGroupTransfer}
                 disabled={isTransferringGroup || (isCustomTransferGroup ? !customTransferGroupInput.trim() : !transferTargetGroup)}
               >
-                {isTransferringGroup ? 'Сохранение...' : (transferMode === 'replace' ? 'Перенести' : 'Добавить')}
+                {isTransferringGroup ? 'Сохранение...' : 'Подтвердить'}
               </Button>
             </div>
           </div>
