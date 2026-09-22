@@ -1918,7 +1918,6 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
                     device.health_status = HealthStatus.HEALTHY
 
             await db.commit()
-            await db.close()
 
             # Record real live telemetry point in history with top processes
             from backend.app.api.v1.devices import record_telemetry_snapshot, format_device_summary
@@ -1944,8 +1943,6 @@ async def agent_heartbeat(payload: Dict[str, Any], request: Request, db: AsyncSe
             }
             if should_broadcast_device_update(device.id, dev_state):
                 await ws_manager.broadcast_event("device.updated", format_device_summary(device))
-    else:
-        await db.close()
 
     # Pop pending commands for this device by checking all potential keys
     pending_cmds = []
@@ -2409,9 +2406,6 @@ async def report_agent_update_status(payload: Dict[str, Any], db: AsyncSession =
         )
         await db.commit()
         dev_summary = format_device_summary(device)
-        await db.close()
-    else:
-        await db.close()
 
     if dev_summary:
         await ws_manager.broadcast_event("device.updated", dev_summary)
