@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from sqlalchemy import create_engine, inspect, text, Table, Column, String, Integer, MetaData
 from sqlalchemy.dialects import postgresql, sqlite
+from backend.app.core.config import settings
 from backend.app.db.session import Base, get_engine_options, is_postgres_url
 from backend.app.models import (
     Device, UserModel, CustomRoleModel, ScheduleModel,
@@ -17,9 +18,9 @@ def test_is_postgres_url_detection():
 
 def test_get_engine_options_postgres_vs_sqlite():
     pg_opts = get_engine_options("postgresql+asyncpg://user:pass@localhost:5432/db")
-    assert pg_opts.get("pool_size") == 60
-    assert pg_opts.get("max_overflow") == 60
-    assert pg_opts.get("pool_timeout") == 30
+    assert pg_opts.get("pool_size") == settings.DB_POOL_SIZE
+    assert pg_opts.get("max_overflow") == settings.DB_MAX_OVERFLOW
+    assert pg_opts.get("pool_timeout") == settings.DB_POOL_TIMEOUT
     assert pg_opts.get("pool_pre_ping") is True
     assert pg_opts.get("pool_recycle") == 300
     assert pg_opts.get("pool_reset_on_return") == "rollback"
