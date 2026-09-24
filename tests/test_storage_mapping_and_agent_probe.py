@@ -4,8 +4,26 @@ from pathlib import Path
 from backend.app.core.config import settings
 from backend.app.main import get_windows_agent_service_ps1
 
-def test_version_bumped_to_2_9_20():
-    assert settings.LATEST_AGENT_VERSION == "2.9.20"
+def test_version_bumped_to_2_9_21():
+    assert settings.LATEST_AGENT_VERSION == "2.9.21"
+
+def test_agent_dual_server_ip_failover_support():
+    installer_path = Path("agent/standalone_installer.ps1")
+    assert installer_path.exists()
+    content = installer_path.read_text(encoding="utf-8")
+    
+    # 1. Must have version 2.9.21
+    assert "$AgentVersion = '2.9.21'" in content
+
+    # 2. Must support both primary and fallback IPs
+    assert "195.19.33.63" in content
+    assert "172.19.33.68" in content
+
+    # 3. Python agent must also support both IPs and version 2.9.21
+    py_agent = Path("agent/agent_standalone.py").read_text(encoding="utf-8")
+    assert 'AGENT_VERSION = "2.9.21"' in py_agent
+    assert "195.19.33.63" in py_agent
+    assert "172.19.33.68" in py_agent
 
 def test_agent_service_script_has_valid_install_dir():
     script = get_windows_agent_service_ps1("http://172.19.33.68:2301", "PC-1F7D")
@@ -17,8 +35,8 @@ def test_installer_has_nvme_and_smart_support():
     assert installer_path.exists()
     content = installer_path.read_text(encoding="utf-8")
 
-    # 1. Must have version 2.9.20
-    assert "$AgentVersion = '2.9.20'" in content
+    # 1. Must have version 2.9.21
+    assert "$AgentVersion = '2.9.21'" in content
 
     # 2. Live disks must include healthPercent and temperatureC
     assert "healthPercent" in content

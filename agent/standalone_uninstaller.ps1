@@ -102,7 +102,7 @@ $unregPayload = @{
 $candidateServers = @()
 if ($ServerUrl -and $ServerUrl -ne "__SERVER_URL__") { $candidateServers += $ServerUrl }
 if ($cfgServer -and $cfgServer -notmatch "localhost|127\.0\.0\.1") { $candidateServers += $cfgServer }
-if ($candidateServers.Count -eq 0) { $candidateServers += @("http://192.168.1.109:2301", "http://172.19.33.68:2301") }
+if ($candidateServers.Count -eq 0) { $candidateServers += @("http://195.19.33.63:2301", "http://172.19.33.68:2301", "http://192.168.1.109:2301") }
 $candidateServers = $candidateServers | Select-Object -Unique
 
 $unregDone = $false

@@ -60,7 +60,7 @@ if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or ($isLocalhost -and -not 
 
     # 2. Probe candidate LAN servers silently
     if (!$ServerUrl) {
-        $candidateList = @("http://192.168.1.109:2301", "http://172.19.33.68:2301")
+        $candidateList = @("http://195.19.33.63:2301", "http://172.19.33.68:2301", "http://192.168.1.109:2301")
         try {
             $gw = (Get-NetRoute -DestinationPrefix "0.0.0.0/0" -ErrorAction SilentlyContinue | Select-Object -ExpandProperty NextHop -First 1)
             if ($gw -and $gw -ne "0.0.0.0") {
@@ -83,7 +83,7 @@ if (!$ServerUrl -or $ServerUrl -eq "__SERVER_URL__" -or ($isLocalhost -and -not 
 
     # 3. Final default fallback (NEVER localhost on remote clients!)
     if (!$ServerUrl) {
-        $ServerUrl = "http://192.168.1.109:2301"
+        $ServerUrl = "http://195.19.33.63:2301"
     }
 }
 if (-not $Token) { $Token = "__TOKEN__" }
@@ -493,7 +493,7 @@ $enrollPayload = @{
     osType = "Windows"
     osVersion = $osCaption
     currentUser = $user
-    agentVersion = "2.9.20"
+    agentVersion = "2.9.21"
 }
 
 $enrollRes = Invoke-ApiPost "$ServerUrl/api/v1/agents/enroll" $enrollPayload
@@ -511,7 +511,7 @@ $hardwarePayload = @{
     ip = $ip
     mac = $mac
     group = $assignedGroup
-    agentVersion = "2.9.20"
+    agentVersion = "2.9.21"
     hardwareSpec = @{
         motherboard = @{ manufacturer = $mbManuf; model = $mbModel; serialNumber = $mbSerial; version = $mbVer }
         bios = @{ vendor = $biosVendor; version = $biosVer; releaseDate = $biosDate }
@@ -580,11 +580,22 @@ if (`$ServerUrl) {
 }
 `$DeviceId = '$deviceId'
 `$DeviceMac = '$mac'
-`$AgentVersion = '2.9.20'
+`$AgentVersion = '2.9.21'
 `$Token = '$Token'
 `$osCaption = '$osCaption'
 `$InstallDir = if (`$PSScriptRoot -and (Test-Path `$PSScriptRoot)) { `$PSScriptRoot } elseif (Test-Path "C:\Program Files\WorkstationManagerAgent") { "C:\Program Files\WorkstationManagerAgent" } else { (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent") }
 `$script:currentInterval = 5
+
+`$primaryServer = "http://195.19.33.63:2301"
+`$fallbackServer = "http://172.19.33.68:2301"
+`$script:candidateServers = @()
+if (`$ServerUrl -and `$ServerUrl -notmatch "localhost|127\.0\.0\.1") {
+    `$script:candidateServers += `$ServerUrl
+}
+`$script:candidateServers += `$primaryServer
+`$script:candidateServers += `$fallbackServer
+`$script:candidateServers = @(`$script:candidateServers | Select-Object -Unique)
+`$script:activeServerUrl = if (`$ServerUrl -and `$ServerUrl -notmatch "localhost|127\.0\.0\.1") { `$ServerUrl } else { `$primaryServer }
 
 # Dynamic config loader: read local config.json if present
 try {
@@ -595,7 +606,12 @@ try {
         `$dynCfg = Get-Content `$localCfgPath -Raw -ErrorAction SilentlyContinue | ConvertFrom-Json
         if (`$dynCfg) {
             if (`$dynCfg.server_url -and `$dynCfg.server_url.Trim() -ne "" -and `$dynCfg.server_url -notmatch "localhost|127\.0\.0\.1") {
-                `$ServerUrl = `$dynCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+                `$cfgClean = `$dynCfg.server_url.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+                `$ServerUrl = `$cfgClean
+                `$script:activeServerUrl = `$cfgClean
+                if (`$script:candidateServers -notcontains `$cfgClean) {
+                    `$script:candidateServers = @(`$cfgClean) + `$script:candidateServers
+                }
             }
             if (`$dynCfg.device_id -and `$dynCfg.device_id.Trim() -ne "") {
                 `$DeviceId = `$dynCfg.device_id.Trim()
@@ -663,9 +679,9 @@ try {
     [Win32PowerGuard]::SetThreadExecutionState(0x80000000 -bor 0x00000001 -bor 0x00000040)
 } catch {}
 
-function Update-AgentService([string]`$targetVer = "2.9.20") {
+function Update-AgentService([string]`$targetVer = "2.9.21") {
     if (-not `$targetVer -or `$targetVer.Trim() -eq "") {
-        `$targetVer = "2.9.20"
+        `$targetVer = "2.9.21"
     }
     Write-AgentLog "Update-AgentService initiated: current=`$AgentVersion, target=`$targetVer"
     try {
@@ -679,7 +695,8 @@ function Update-AgentService([string]`$targetVer = "2.9.20") {
         }
         `$json = `$updPayload | ConvertTo-Json -Depth 3 -Compress
         `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
-        `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/update-status")
+        `$statBase = if (`$script:activeServerUrl) { `$script:activeServerUrl } else { `$ServerUrl }
+        `$req = [System.Net.WebRequest]::Create("`$statBase/api/v1/agents/update-status")
         `$req.Proxy = `$null
         `$req.Method = 'POST'
         `$req.ContentType = 'application/json; charset=utf-8'
@@ -697,15 +714,35 @@ function Update-AgentService([string]`$targetVer = "2.9.20") {
         if (-not `$InstallDir -or -not (Test-Path `$InstallDir)) {
             `$InstallDir = if (`$PSScriptRoot -and (Test-Path `$PSScriptRoot)) { `$PSScriptRoot } elseif (Test-Path "C:\Program Files\WorkstationManagerAgent") { "C:\Program Files\WorkstationManagerAgent" } else { (Join-Path `$env:LOCALAPPDATA "WorkstationManagerAgent") }
         }
-        `$baseHost = `$ServerUrl -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
-        `$serviceUrl = "`$baseHost/api/v1/agents/service-script?deviceId=`$DeviceId&mac=`$DeviceMac"
         `$servicePath = Join-Path `$InstallDir "run_service.ps1"
         `$tempPath = Join-Path `$InstallDir "run_service_update.ps1"
 
-        Write-AgentLog "Update-AgentService downloading from `$serviceUrl to `$tempPath..."
-        Invoke-WebRequest -Uri `$serviceUrl -Headers @{ "X-Agent-Version" = "`$AgentVersion" } -OutFile `$tempPath -UseBasicParsing -TimeoutSec 15
+        `$serversToTry = @()
+        if (`$script:activeServerUrl) { `$serversToTry += `$script:activeServerUrl }
+        foreach (`$cs in `$script:candidateServers) {
+            if (`$cs -and `$cs -ne `$script:activeServerUrl) { `$serversToTry += `$cs }
+        }
 
-        if ((Test-Path `$tempPath) -and (Get-Item `$tempPath).Length -gt 1000) {
+        `$downloadSuccess = `$false
+        foreach (`$trySrv in `$serversToTry) {
+            try {
+                `$baseHost = `$trySrv -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+                `$serviceUrl = "`$baseHost/api/v1/agents/service-script?deviceId=`$DeviceId&mac=`$DeviceMac"
+                Write-AgentLog "Update-AgentService downloading from `$serviceUrl to `$tempPath..."
+                Invoke-WebRequest -Uri `$serviceUrl -Headers @{ "X-Agent-Version" = "`$AgentVersion" } -OutFile `$tempPath -UseBasicParsing -TimeoutSec 15
+
+                if ((Test-Path `$tempPath) -and (Get-Item `$tempPath).Length -gt 1000) {
+                    `$downloadSuccess = `$true
+                    `$script:activeServerUrl = `$trySrv
+                    `$ServerUrl = `$trySrv
+                    break
+                }
+            } catch {
+                Write-AgentLog "Update-AgentService download from `$trySrv failed: `$($_.Exception.Message)"
+            }
+        }
+
+        if (`$downloadSuccess) {
             # AST verification
             `$tokens = `$null
             `$astErrs = `$null
@@ -1992,19 +2029,43 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
 
         `$json = `$payload | ConvertTo-Json -Depth 5 -Compress
         `$bytes = [System.Text.Encoding]::UTF8.GetBytes(`$json)
-        `$req = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/heartbeat")
-        `$req.Proxy = `$null
-        `$req.Method = 'POST'
-        `$req.ContentType = 'application/json; charset=utf-8'
-        `$req.Timeout = 10000
-        `$stream = `$req.GetRequestStream()
-        `$stream.Write(`$bytes, 0, `$bytes.Length)
-        `$stream.Close()
-        `$resp = `$req.GetResponse()
-        `$reader = New-Object System.IO.StreamReader(`$resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
-        `$respText = `$reader.ReadToEnd()
-        `$reader.Close()
-        `$resp.Close()
+        `$respText = `$null
+
+        `$serversToTry = @()
+        if (`$script:activeServerUrl) { `$serversToTry += `$script:activeServerUrl }
+        foreach (`$cs in `$script:candidateServers) {
+            if (`$cs -and `$cs -ne `$script:activeServerUrl) { `$serversToTry += `$cs }
+        }
+
+        foreach (`$trySrv in `$serversToTry) {
+            try {
+                `$baseClean = `$trySrv.TrimEnd('/') -replace '(?i)/api/v1/?$', '' -replace '(?i)/api/?$', ''
+                `$req = [System.Net.WebRequest]::Create("`$baseClean/api/v1/agents/heartbeat")
+                `$req.Proxy = `$null
+                `$req.Method = 'POST'
+                `$req.ContentType = 'application/json; charset=utf-8'
+                `$req.Timeout = 8000
+                `$stream = `$req.GetRequestStream()
+                `$stream.Write(`$bytes, 0, `$bytes.Length)
+                `$stream.Close()
+                `$resp = `$req.GetResponse()
+                `$reader = New-Object System.IO.StreamReader(`$resp.GetResponseStream(), [System.Text.Encoding]::UTF8)
+                `$respText = `$reader.ReadToEnd()
+                `$reader.Close()
+                `$resp.Close()
+
+                if (`$respText) {
+                    if (`$trySrv -ne `$script:activeServerUrl) {
+                        Write-AgentLog "Heartbeat failover: switched active server from `$script:activeServerUrl to `$trySrv"
+                        `$script:activeServerUrl = `$trySrv
+                        `$ServerUrl = `$trySrv
+                    }
+                    break
+                }
+            } catch {
+                Write-AgentLog "Heartbeat to `$trySrv failed: `$($_.Exception.Message)"
+            }
+        }
 
         if (`$respText) {
             `$respObj = `$respText | ConvertFrom-Json
@@ -2029,7 +2090,8 @@ function Invoke-Heartbeat(`$isStartup = `$false) {
                                     }
                                     `$pJson = `$pRes | ConvertTo-Json -Compress
                                     `$pBytes = [System.Text.Encoding]::UTF8.GetBytes(`$pJson)
-                                    `$pReq = [System.Net.WebRequest]::Create("`$ServerUrl/api/v1/agents/probe-result")
+                                    `$targetPostSrv = if (`$script:activeServerUrl) { `$script:activeServerUrl } else { `$ServerUrl }
+                                    `$pReq = [System.Net.WebRequest]::Create("`$targetPostSrv/api/v1/agents/probe-result")
                                     `$pReq.Proxy = `$null
                                     `$pReq.Method = 'POST'
                                     `$pReq.ContentType = 'application/json; charset=utf-8'
@@ -2812,7 +2874,7 @@ $heartbeatPayload = @{
     uptimeSeconds = $initUptimeSec
     bootTime = $initBootTimeIso
     status = "online"
-    agentVersion = "2.9.20"
+    agentVersion = "2.9.21"
     osType = "Windows"
     osVersion = $osCaption
     rdpSessions = $initRdp

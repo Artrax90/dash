@@ -32,7 +32,7 @@ function Resolve-EffectiveServerUrl([string]$srv) {
     if (-not $srv) { $srv = "http://172.19.33.68:2301" }
     $srv = $srv.TrimEnd('/')
     
-    $candidates = @($srv, "http://172.19.33.68:2301", "http://192.168.1.109:2301")
+    $candidates = @($srv, "http://195.19.33.63:2301", "http://172.19.33.68:2301", "http://192.168.1.109:2301")
     $gw = (Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | Select-Object -ExpandProperty NextHop -First 1)
     if ($gw) { $candidates += "http://${gw}:2301" }
 

@@ -11,7 +11,10 @@ from datetime import datetime, timedelta
 import urllib.request
 import urllib.error
 
-AGENT_VERSION = "2.9.20"
+AGENT_VERSION = "2.9.21"
+PRIMARY_SERVER_URL = "http://195.19.33.63:2301"
+FALLBACK_SERVER_URL = "http://172.19.33.68:2301"
+CANDIDATE_SERVERS = [PRIMARY_SERVER_URL, FALLBACK_SERVER_URL]
 
 def execute_power_command(action: str, extra: dict = None):
     act = (action or "").upper().strip()
@@ -21,7 +24,7 @@ def execute_power_command(action: str, extra: dict = None):
     if act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
         cfg = load_config()
         server_base = cfg.get("server_url", "http://localhost:2301/api/v1").rstrip("/")
-        execute_agent_update(server_base, cfg, "2.9.20")
+        execute_agent_update(server_base, cfg, "2.9.21")
         return
     elif act in ["REBOOT", "RESTART"]:
         if is_win:
@@ -211,16 +214,31 @@ def save_config(cfg):
     with open(CONFIG_PATH, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
 
-AGENT_VERSION = "2.4.0"
-
 def http_post(url, data):
-    req = urllib.request.Request(
-        url,
-        data=json.dumps(data).encode("utf-8"),
-        headers={"Content-Type": "application/json", "User-Agent": f"WorkstationAgent/{AGENT_VERSION}"}
-    )
-    with urllib.request.urlopen(req, timeout=10) as resp:
-        return json.loads(resp.read().decode("utf-8"))
+    urls_to_try = [url]
+    for cs in CANDIDATE_SERVERS:
+        cand_api = f"{cs.rstrip('/')}/api/v1"
+        for orig_base in ["http://172.19.33.68:2301/api/v1", "http://195.19.33.63:2301/api/v1", "http://localhost:2301/api/v1"]:
+            if orig_base in url:
+                alt_url = url.replace(orig_base, cand_api)
+                if alt_url not in urls_to_try:
+                    urls_to_try.append(alt_url)
+
+    last_err = None
+    for target_url in urls_to_try:
+        try:
+            req = urllib.request.Request(
+                target_url,
+                data=json.dumps(data).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": f"WorkstationAgent/{AGENT_VERSION}"}
+            )
+            with urllib.request.urlopen(req, timeout=8) as resp:
+                return json.loads(resp.read().decode("utf-8"))
+        except Exception as e:
+            last_err = e
+            continue
+    if last_err:
+        raise last_err
 
 def get_cpu_usage():
     try:
@@ -1655,7 +1673,7 @@ def main():
                     if isinstance(cmd, dict) and cmd.get("action"):
                         c_act = cmd.get("action", "").upper()
                         if c_act in ["UPDATE_AGENT", "UPGRADE_AGENT", "UPDATE"]:
-                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.20"
+                            t_ver = cmd.get("targetVersion") or latest_srv_ver or "2.9.21"
                             u_url = cmd.get("updateUrl") or ""
                             execute_agent_update(server_base, cfg, update_url=u_url, target_version=t_ver)
                         else:
