@@ -430,14 +430,43 @@ def test_agent_installer_has_unattended_sleep_timeout_disabled():
 
 def test_wol_broadcast_targets_and_cross_subnet_support():
     from backend.app.services.wol_service import wol_service
-    targets = wol_service.get_broadcast_targets(ip_address="172.16.42.73")
-    assert "255.255.255.255" in targets
-    assert "172.16.42.255" in targets
-    assert "172.16.255.255" in targets, "Expected supernet Class B broadcast for 172.16.x.x to ensure delivery after ARP cache expiration"
+    # 1. MNOK network 172.16.40.0/22 (IP 172.16.42.73) -> broadcast must be 172.16.43.255
+    targets_mnok = wol_service.get_broadcast_targets(ip_address="172.16.42.73")
+    assert "255.255.255.255" in targets_mnok
+    assert "172.16.43.255" in targets_mnok, "True /22 broadcast 172.16.43.255 must be targeted"
+    assert "172.16.42.255" not in targets_mnok, "False /24 unicast host IP 172.16.42.255 must NOT be targeted"
+    assert "172.16.255.255" in targets_mnok, "Expected supernet Class B broadcast for 172.16.x.x"
+
+    # 2. CK network 172.16.44.0/22 (IP 172.16.45.14) -> broadcast must be 172.16.47.255
+    targets_ck = wol_service.get_broadcast_targets(ip_address="172.16.45.14")
+    assert "172.16.47.255" in targets_ck, "True /22 broadcast 172.16.47.255 must be targeted for CK"
+    assert "172.16.45.255" not in targets_ck, "False /24 unicast host IP 172.16.45.255 must NOT be targeted"
+
+    # 3. calculate_broadcast_ip helper
+    assert wol_service.calculate_broadcast_ip("172.16.42.73") == "172.16.43.255"
+    assert wol_service.calculate_broadcast_ip("172.16.40.1") == "172.16.43.255"
+    assert wol_service.calculate_broadcast_ip("172.16.45.14") == "172.16.47.255"
+    assert wol_service.calculate_broadcast_ip("192.168.1.50") == "192.168.1.255"
+
+    # 4. Normalization of stale /24 custom_broadcast (172.16.42.255)
+    targets_stale = wol_service.get_broadcast_targets(ip_address="172.16.42.73", custom_broadcast="172.16.42.255")
+    assert "172.16.43.255" in targets_stale
+    assert "172.16.42.255" not in targets_stale
 
 
 def test_docker_compose_has_network_mode_host():
     with open("docker-compose.yml", "r", encoding="utf-8") as f:
         compose_content = f.read()
     assert "network_mode: host" in compose_content, "workstation-manager must have network_mode: host for physical L2 broadcast WoL delivery"
+
+
+def test_group_updaters_powershell_syntax():
+    import glob
+    import subprocess
+    ps1_files = glob.glob("scripts/group_updaters/*.ps1")
+    assert len(ps1_files) > 0, "No group updater ps1 files found"
+    for f in ps1_files:
+        cmd = f"$t = $null; $errs = $null; [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path '{f}'), [ref]$t, [ref]$errs) | Out-Null; if ($errs.Count -gt 0) {{ foreach ($e in $errs) {{ [Console]::Error.WriteLine($e.Extent.StartLineNumber.ToString() + ': ' + $e.Message) }}; exit 1 }} else {{ exit 0 }}"
+        res = subprocess.run(["powershell", "-NoProfile", "-Command", cmd], capture_output=True)
+        assert res.returncode == 0, f"PowerShell syntax error in {f}: {res.stderr.decode('utf-8', errors='replace')}"
 

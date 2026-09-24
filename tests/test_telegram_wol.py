@@ -14,14 +14,14 @@ def test_wol_service_send_magic_packet_sync():
         res = wol_service.send_magic_packet_sync(
             mac_address="00:11:22:33:44:55",
             ip_address="172.16.42.50",
-            broadcast_ip="172.16.42.255"
+            broadcast_ip="172.16.43.255"
         )
         assert res is True
         assert mock_sock.sendto.called
         # Verify packet was sent to multiple targets including directed broadcast
         calls = [c[0] for c in mock_sock.sendto.call_args_list]
         dests = {c[1][0] for c in calls}
-        assert "172.16.42.255" in dests
+        assert "172.16.43.255" in dests
         assert "255.255.255.255" in dests
 
 
@@ -40,14 +40,14 @@ def test_telegram_send_wol_packet_clears_pending_and_calls_wol_service():
         res = send_wol_packet(
             mac_str="AA:BB:CC:DD:EE:FF",
             ip_address="172.16.42.100",
-            broadcast_ip="172.16.42.255",
+            broadcast_ip="172.16.43.255",
             device_id=test_dev_id,
             hostname=test_host
         )
         assert res is True
         mock_sync_send.assert_called_once_with(
             mac_address="AA:BB:CC:DD:EE:FF",
-            broadcast_ip="172.16.42.255",
+            broadcast_ip="172.16.43.255",
             ip_address="172.16.42.100"
         )
         # Pending shutdown commands must be wiped out so PC won't shut down upon booting

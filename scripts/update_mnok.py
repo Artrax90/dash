@@ -306,7 +306,7 @@ def execute_remote_update(ip, token, backends):
 def run_wol():
     """Широковещательный Wake-on-LAN для подсетей МНОК"""
     print_header("ОТПРАВКА WAKE-ON-LAN (WoL)")
-    subnets = ["172.16.42.255", "172.16.43.255", "172.16.255.255", "255.255.255.255"]
+    subnets = ["172.16.43.255", "172.16.255.255", "255.255.255.255"]
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
 

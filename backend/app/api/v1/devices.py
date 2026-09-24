@@ -999,7 +999,7 @@ async def create_agentless_device(payload: AgentlessDeviceCreateSchema, request:
             group_name=payload.group or "Тонкие клиенты",
             ip_address=clean_ip,
             mac_address=formatted_mac,
-            broadcast_ip=payload.broadcastIp or "255.255.255.255",
+            broadcast_ip=payload.broadcastIp if (payload.broadcastIp and payload.broadcastIp != "255.255.255.255") else wol_service.calculate_broadcast_ip(clean_ip),
             os_type="ThinClient",
             os_version="Тонкий клиент / Agentless",
             agent_version="Agentless",
@@ -1993,7 +1993,10 @@ async def update_device(device_id: str, payload: Dict[str, Any], request: Reques
     if "maintenance" in payload:
         device.maintenance_mode = payload["maintenance"]
     if "broadcastIp" in payload:
-        device.broadcast_ip = payload["broadcastIp"]
+        bip = (payload["broadcastIp"] or "").strip()
+        if (bip == "255.255.255.255" or not bip) and device.ip_address:
+            bip = wol_service.calculate_broadcast_ip(device.ip_address)
+        device.broadcast_ip = bip
     if "assetTag" in payload:
         device.asset_tag = payload["assetTag"]
     if "notes" in payload:

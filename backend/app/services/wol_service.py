@@ -52,7 +52,33 @@ class WolService:
         return interfaces
 
     @staticmethod
-    def get_broadcast_targets(ip_address: Optional[str] = None, custom_broadcast: Optional[str] = None) -> Set[str]:
+    def calculate_broadcast_ip(ip_address: Optional[str]) -> str:
+        """
+        Calculate the precise Subnet Directed Broadcast address, taking into account
+        enterprise /22 supernets (e.g. 172.16.40.0/22 -> 172.16.43.255, 172.16.44.0/22 -> 172.16.47.255).
+        """
+        if not ip_address:
+            return "255.255.255.255"
+        clean = ip_address.strip()
+        parts = clean.split(".")
+        if len(parts) != 4:
+            return "255.255.255.255"
+        try:
+            p0, p1, p2 = int(parts[0]), int(parts[1]), int(parts[2])
+            if p0 == 172 and 16 <= p1 <= 31:
+                # /22 CIDR subnets (mask 255.255.252.0)
+                return f"{p0}.{p1}.{p2 | 3}.255"
+            elif p0 == 10:
+                return f"10.{p1}.{p2}.255"
+            elif p0 == 192 and p1 == 168:
+                return f"192.168.{p2}.255"
+            else:
+                return f"{p0}.{p1}.{p2}.255"
+        except Exception:
+            return "255.255.255.255"
+
+    @classmethod
+    def get_broadcast_targets(cls, ip_address: Optional[str] = None, custom_broadcast: Optional[str] = None) -> Set[str]:
         """
         Generate set of broadcast destinations to ensure maximum delivery,
         including subnet broadcasts and supernet broadcasts to punch through
@@ -62,7 +88,17 @@ class WolService:
         targets.add("255.255.255.255")
         
         if custom_broadcast and custom_broadcast.strip() and custom_broadcast != "255.255.255.255":
-            targets.add(custom_broadcast.strip())
+            cb = custom_broadcast.strip()
+            # Normalize false /24 broadcasts for enterprise /22 subnets (e.g. 172.16.42.255 -> 172.16.43.255)
+            cb_parts = cb.split(".")
+            if len(cb_parts) == 4:
+                try:
+                    c0, c1, c2, c3 = int(cb_parts[0]), int(cb_parts[1]), int(cb_parts[2]), int(cb_parts[3])
+                    if c0 == 172 and 16 <= c1 <= 31 and c3 == 255:
+                        cb = f"{c0}.{c1}.{c2 | 3}.255"
+                except Exception:
+                    pass
+            targets.add(cb)
             
         if ip_address and ip_address.strip() and not ip_address.startswith("127.") and not ip_address.startswith("169.254."):
             clean_ip = ip_address.strip()
@@ -71,25 +107,25 @@ class WolService:
             if len(parts) == 4:
                 try:
                     p0, p1, p2 = int(parts[0]), int(parts[1]), int(parts[2])
-                    # Standard /24 Class C broadcast
-                    targets.add(f"{p0}.{p1}.{p2}.255")
 
                     # Enterprise multi-VLAN & supernet broadcasts
                     if p0 == 172 and 16 <= p1 <= 31:
+                        # True /22 subnet broadcast (e.g. 172.16.40.0/22 -> 172.16.43.255)
+                        targets.add(f"{p0}.{p1}.{p2 | 3}.255")
                         # Class B /16 broadcast (covers entire 172.16.x.x campus network)
                         targets.add(f"{p0}.{p1}.255.255")
-                        # Common enterprise /21 (e.g. 172.16.40.0/21 -> 172.16.47.255)
-                        targets.add(f"{p0}.{p1}.47.255")
-                        # Common enterprise /22 (e.g. 172.16.40.0/22 -> 172.16.43.255)
+                        # Common enterprise /22 known VLANs (MNOK: 172.16.43.255, CK: 172.16.47.255)
                         targets.add(f"{p0}.{p1}.43.255")
-                        # Common enterprise /20 (172.16.32.0/20 -> 172.16.47.255)
-                        targets.add(f"{p0}.{p1}.31.255")
+                        targets.add(f"{p0}.{p1}.47.255")
                     elif p0 == 10:
+                        targets.add(f"10.{p1}.{p2}.255")
                         targets.add(f"10.{p1}.255.255")
                         targets.add("10.255.255.255")
                     elif p0 == 192 and p1 == 168:
                         targets.add(f"192.168.{p2}.255")
                         targets.add("192.168.255.255")
+                    else:
+                        targets.add(f"{p0}.{p1}.{p2}.255")
                 except Exception:
                     targets.add(f"{parts[0]}.{parts[1]}.{parts[2]}.255")
         

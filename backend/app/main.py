@@ -118,6 +118,27 @@ def safe_migrate_columns_sync(connection):
             "Alerts USB/VGPU cleanup notice"
         )
 
+    if "devices" in tables:
+        # Normalize enterprise /22 WoL broadcasts (MNOK: 172.16.40-43.x -> 172.16.43.255, CK: 172.16.44-47.x -> 172.16.47.255)
+        _execute_safe(
+            """
+            UPDATE devices 
+            SET broadcast_ip = '172.16.43.255' 
+            WHERE (ip_address LIKE '172.16.40.%' OR ip_address LIKE '172.16.41.%' OR ip_address LIKE '172.16.42.%' OR ip_address LIKE '172.16.43.%')
+              AND (broadcast_ip IS NULL OR broadcast_ip = '255.255.255.255' OR broadcast_ip LIKE '172.16.40.%' OR broadcast_ip LIKE '172.16.41.%' OR broadcast_ip LIKE '172.16.42.%')
+            """,
+            "MNOK /22 WoL broadcast IP auto-normalization notice"
+        )
+        _execute_safe(
+            """
+            UPDATE devices 
+            SET broadcast_ip = '172.16.47.255' 
+            WHERE (ip_address LIKE '172.16.44.%' OR ip_address LIKE '172.16.45.%' OR ip_address LIKE '172.16.46.%' OR ip_address LIKE '172.16.47.%')
+              AND (broadcast_ip IS NULL OR broadcast_ip = '255.255.255.255' OR broadcast_ip LIKE '172.16.44.%' OR broadcast_ip LIKE '172.16.45.%' OR broadcast_ip LIKE '172.16.46.%')
+            """,
+            "CK /22 WoL broadcast IP auto-normalization notice"
+        )
+
     if "devices" in tables and "alerts" in tables and "hardware_changes" in tables:
         _execute_safe(
             """

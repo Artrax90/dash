@@ -48,6 +48,44 @@ function Resolve-EffectiveServerUrl([string]$srv) {
     return $srv
 }
 
+function Get-SubnetBroadcastForIP([string]$ip) {
+    if (-not $ip) { return "255.255.255.255" }
+    $parts = $ip.Split('.')
+    if ($parts.Count -ne 4) { return "255.255.255.255" }
+    [int]$p0 = 0; [int]$p1 = 0; [int]$p2 = 0
+    if ([int]::TryParse($parts[0], [ref]$p0) -and [int]::TryParse($parts[1], [ref]$p1) -and [int]::TryParse($parts[2], [ref]$p2)) {
+        if ($p0 -eq 172 -and ($p1 -ge 16 -and $p1 -le 31)) {
+            $bcast3 = ($p2 -bor 3)
+            return "$p0.$p1.$bcast3.255"
+        }
+        if ($p0 -eq 192 -and $p1 -eq 168) {
+            return "192.168.$p2.255"
+        }
+        if ($p0 -eq 10) {
+            return "10.$p1.$p2.255"
+        }
+    }
+    return "255.255.255.255"
+}
+
+function Send-WolPacket([string]$mac, [string]$broadcastIp = "255.255.255.255", [int]$port = 9) {
+    if (-not $mac) { return $false }
+    try {
+        $cleanMac = $mac -replace '[^a-fA-F0-9]', ''
+        if ($cleanMac.Length -ne 12) { return $false }
+        $macBytes = for ($i = 0; $i -lt 12; $i += 2) { [Convert]::ToByte($cleanMac.Substring($i, 2), 16) }
+        $packet = ([byte[]](,0xFF * 6)) + ([byte[]]($macBytes * 16))
+        
+        $udp = [System.Net.Sockets.UdpClient]::new()
+        $udp.EnableBroadcast = $true
+        $udp.Send($packet, $packet.Length, $broadcastIp, $port) | Out-Null
+        $udp.Close()
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 function Invoke-RemoteAgentUpdate {
     param(
         [string]$IP,
